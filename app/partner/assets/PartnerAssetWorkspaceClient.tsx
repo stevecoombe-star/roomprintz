@@ -1,9 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { formatPartnerIntakeMetresTriple, formatSha256Prefix } from "@/lib/vibode-stage/partner-asset-intake-display";
 import { putPartnerGlbToSignedUrl } from "@/lib/vibode-stage/partner-glb-signed-upload";
+import {
+  buildPartnerModelLibrary,
+  type PartnerModelLibraryStatusFilter,
+} from "@/lib/vibode-stage/partner-model-library";
+import { PartnerModelLibrary } from "./PartnerModelLibrary";
 
 type IntakeWarning = Readonly<{
   code: string;
@@ -26,6 +31,7 @@ type IntakeDto = Readonly<{
   errorCode: string | null;
   error: string | null;
   assetId: string | null;
+  byteSize?: number | null;
   createdAt: string;
   updatedAt: string;
 }>;
@@ -140,22 +146,49 @@ export function PartnerAssetWorkspaceClient() {
   const [lastIntake, setLastIntake] = useState<IntakeDto | null>(null);
   const [registeringId, setRegisteringId] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<unknown>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [libraryStatus, setLibraryStatus] = useState<PartnerModelLibraryStatusFilter>("all");
+
+  const library = useMemo(
+    () => buildPartnerModelLibrary({
+      assets: registeredAssets,
+      intakes,
+      catalog,
+    }),
+    [catalog, intakes, registeredAssets],
+  );
 
   const refresh = useCallback(async () => {
-    const [intakeResponse, assetResponse] = await Promise.all([
-      fetch("/api/vibode/partner/assets/intakes", { cache: "no-store" }),
-      fetch("/api/vibode/partner/assets", { cache: "no-store" }),
-    ]);
-    const intakeBody = await intakeResponse.json() as ListResponse;
-    if (!intakeResponse.ok || !intakeBody.ok || !Array.isArray(intakeBody.intakes)) {
-      setLoadError(intakeBody.error ?? "Asset intakes could not be loaded.");
-      return;
-    }
-    const assetBody = await assetResponse.json() as RegisteredListResponse;
-    setLoadError(null);
-    setIntakes(intakeBody.intakes);
-    if (assetResponse.ok && assetBody.ok && Array.isArray(assetBody.assets)) {
-      setRegisteredAssets(assetBody.assets);
+    try {
+      const [intakeResponse, assetResponse, catalogResponse] = await Promise.all([
+        fetch("/api/vibode/partner/assets/intakes", { cache: "no-store" }),
+        fetch("/api/vibode/partner/assets", { cache: "no-store" }),
+        fetch("/api/vibode/partner/catalog", { cache: "no-store" }),
+      ]);
+      const intakeBody = await intakeResponse.json() as ListResponse;
+      if (!intakeResponse.ok || !intakeBody.ok || !Array.isArray(intakeBody.intakes)) {
+        setLoadError(intakeBody.error ?? "3D models could not be loaded.");
+        return;
+      }
+      const assetBody = await assetResponse.json() as RegisteredListResponse;
+      const catalogBody = await catalogResponse.json() as { ok?: boolean };
+      setLoadError(null);
+      setIntakes(intakeBody.intakes);
+      if (assetResponse.ok && assetBody.ok && Array.isArray(assetBody.assets)) {
+        setRegisteredAssets(assetBody.assets);
+      }
+      if (catalogResponse.ok && catalogBody.ok === true) {
+        setCatalog(catalogBody);
+      } else {
+        setCatalog(null);
+      }
+    } catch {
+      setLoadError("3D models could not be loaded.");
+    } finally {
+      setLoaded(true);
     }
   }, []);
 
@@ -282,6 +315,39 @@ export function PartnerAssetWorkspaceClient() {
 
   return (
     <div className="space-y-8">
+      <PartnerModelLibrary
+        items={library.items}
+        loaded={loaded}
+        loadError={loadError}
+        associationsKnown={library.associationsKnown}
+        query={query}
+        status={libraryStatus}
+        onQueryChange={setQuery}
+        onStatusChange={setLibraryStatus}
+        onClearFilters={() => {
+          setQuery("");
+          setLibraryStatus("all");
+        }}
+      />
+      <section className="rounded-xl border border-slate-800 p-4">
+        <button
+          type="button"
+          className="text-sm text-slate-300 underline"
+          aria-expanded={advancedOpen}
+          onClick={() => setAdvancedOpen((current) => !current)}
+        >
+          Advanced / Technical tools
+        </button>
+        {advancedOpen ? (
+          <div className="mt-4 space-y-8">
+            <p className="text-xs text-slate-500">
+              Manual upload, registration, and runtime activation for beta fallback.
+              Enter the actual product dimensions in metres, or use the GLB measurement shortcut.
+              A validated intake is not a runtime-ready Asset. Register Asset creates an
+              immutable technical Asset whose runtime activation is still pending.
+              The GLB should already be modeled at real-world scale. Vibode does not
+              automatically resize uploaded furniture.
+            </p>
       <section className="rounded-xl border border-slate-800 p-4 space-y-4">
         <h3 className="font-medium">Upload GLB</h3>
         <label className="block space-y-1 text-sm">
@@ -561,6 +627,9 @@ export function PartnerAssetWorkspaceClient() {
           </ul>
         </section>
       ) : null}
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }

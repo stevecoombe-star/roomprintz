@@ -54,7 +54,7 @@ export default async function PartnerHomePage() {
         <Link href="/partner/assets" className={CARD}>
           <span className="block text-base font-medium">3D Models</span>
           <span className="mt-1 block text-sm text-slate-400">
-            Prepare the models your products use.
+            View the models used across your catalog.
           </span>
         </Link>
       </div>
