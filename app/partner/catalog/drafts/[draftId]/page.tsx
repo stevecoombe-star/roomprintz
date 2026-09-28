@@ -27,9 +27,9 @@ export default async function PartnerDraftWorkspacePage({
   if (!dto) {
     return (
       <main className="space-y-3">
-        <h2 className="text-lg font-semibold">Catalog draft</h2>
-        <p className="text-sm text-slate-300">Draft not found.</p>
-        <a className="text-sm text-slate-400 underline" href="/partner/catalog">Back to catalog</a>
+        <h2 className="text-lg font-semibold">Catalog</h2>
+        <p className="text-sm text-slate-300">This page could not be opened.</p>
+        <a className="text-sm text-slate-400 underline" href="/partner/catalog">Back to Catalog</a>
       </main>
     );
   }
@@ -37,12 +37,11 @@ export default async function PartnerDraftWorkspacePage({
   if (dto.status === "abandoned") {
     return (
       <main className="space-y-3">
-        <h2 className="text-lg font-semibold">Catalog draft</h2>
+        <h2 className="text-lg font-semibold">Catalog</h2>
         <p className="text-sm text-slate-300">
-          This draft is no longer active. Abandoned drafts stay on file for diagnostics
-          and are not shown as an editing workspace.
+          These unpublished changes were discarded.
         </p>
-        <a className="text-sm text-slate-400 underline" href="/partner/catalog">Back to catalog</a>
+        <a className="text-sm text-slate-400 underline" href="/partner/catalog">Back to Catalog</a>
       </main>
     );
   }
@@ -50,15 +49,15 @@ export default async function PartnerDraftWorkspacePage({
   if (dto.status === "published") {
     return (
       <main className="space-y-3">
-        <h2 className="text-lg font-semibold">Catalog draft</h2>
+        <h2 className="text-lg font-semibold">Catalog</h2>
         <p className="text-sm text-slate-300">
-          This draft is published and can no longer be edited. Open a new catalog draft
-          to make further changes.
+          These changes are already published.
         </p>
-        <p className="text-xs text-slate-500">
-          Draft {dto.draftId} · revision {dto.revision}
-        </p>
-        <a className="text-sm text-slate-400 underline" href="/partner/catalog">Back to catalog</a>
+        <details className="text-xs text-slate-500">
+          <summary>Technical details</summary>
+          <p className="mt-1">Draft {dto.draftId} · revision {dto.revision}</p>
+        </details>
+        <a className="text-sm text-slate-400 underline" href="/partner/catalog">Back to Catalog</a>
       </main>
     );
   }
@@ -67,9 +66,9 @@ export default async function PartnerDraftWorkspacePage({
   if (!loaded.ok) {
     return (
       <main>
-        <h2 className="text-lg font-semibold">Catalog draft</h2>
+        <h2 className="text-lg font-semibold">Catalog</h2>
         <p className="mt-3 text-sm text-slate-300">
-          Durable Partner catalog could not be loaded. Curated catalog data is not shown.
+          Your catalog could not be loaded. Try again in a moment.
         </p>
       </main>
     );
@@ -83,9 +82,9 @@ export default async function PartnerDraftWorkspacePage({
   if (!commercial.ok) {
     return (
       <main>
-        <h2 className="text-lg font-semibold">Catalog draft</h2>
+        <h2 className="text-lg font-semibold">Catalog</h2>
         <p className="mt-3 text-sm text-slate-300">
-          Partner commercial Assets could not be loaded. Catalog authoring is paused until Asset eligibility can be read.
+          3D models could not be loaded. Try again in a moment.
         </p>
       </main>
     );

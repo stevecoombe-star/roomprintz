@@ -20,7 +20,7 @@ export default async function PartnerHomePage() {
   return (
     <main className="space-y-8">
       <header className="max-w-2xl">
-        <h1 className="text-3xl font-semibold tracking-tight">{auth.context.partner.name}</h1>
+        <h1 className="break-words text-3xl font-semibold tracking-tight">{auth.context.partner.name}</h1>
         <p className="mt-2 text-sm text-slate-300">Your Vibode furniture catalog.</p>
       </header>
 

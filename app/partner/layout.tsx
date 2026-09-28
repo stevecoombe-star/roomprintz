@@ -23,7 +23,7 @@ function PartnerDenied({ result }: { result: Extract<PartnerPortalAuthResult, { 
         <h1 className="text-xl font-semibold">Partner Portal</h1>
         <p className="mt-3 text-sm text-slate-300">{deniedCopy(result)}</p>
         <p className="mt-1 text-xs text-slate-500">
-          Portal access requires an active STAGE Partner membership. Admin access is a separate authority.
+          Ask your Vibode contact if this store should be available on your account.
         </p>
         <div className="mt-6">
           <SignOutButton className="rounded-md border border-slate-700 px-3 py-1 text-xs text-slate-300" />

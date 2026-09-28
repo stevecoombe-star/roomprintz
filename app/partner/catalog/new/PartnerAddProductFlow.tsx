@@ -31,7 +31,10 @@ import type { PartnerCommercialAssetOption } from "@/lib/vibode-stage/partner-co
 import { presentPartnerDraftPreview } from "@/lib/vibode-stage/partner-draft-preview-view";
 import { partnerCatalogEditorPath } from "@/lib/vibode-stage/partner-catalog-workspace";
 import {
+  PARTNER_PAGE_CHANGED,
   PARTNER_PUBLISH_CONFIRMATION,
+  PARTNER_PUBLISH_FAILED,
+  PARTNER_SAVE_FAILED,
   describePartnerProductReview,
   describePartnerPublishInclusions,
   partnerEditorAssetLabel,
@@ -53,6 +56,15 @@ import { usePartnerInlineGlbUploads } from "../products/usePartnerInlineGlbUploa
 
 const MODEL_COPY = "Upload a GLB so customers can place this Product in their room.";
 const CATALOG_PATH = "/partner/catalog";
+
+function FieldName(props: Readonly<{ label: string; required?: boolean }>) {
+  return (
+    <>
+      {props.label}
+      {props.required ? <span className="text-slate-500"> (required)</span> : null}
+    </>
+  );
+}
 
 type SavedProduct = Readonly<{
   productId: string;
@@ -278,7 +290,7 @@ export function PartnerAddProductFlow(props: Readonly<{
       if (response.status === 409) {
         setConflict(true);
         setSaveFailed(true);
-        setError("These details were updated elsewhere. Reload this page and try again.");
+        setError(PARTNER_PAGE_CHANGED);
         return null;
       }
       const next = readPartnerEditorDraftResponse(body.draft);
@@ -293,7 +305,7 @@ export function PartnerAddProductFlow(props: Readonly<{
       return next;
     } catch {
       setSaveFailed(true);
-      setError("The change could not be saved.");
+      setError(PARTNER_SAVE_FAILED);
       return null;
     } finally {
       setBusy(null);
@@ -505,12 +517,12 @@ export function PartnerAddProductFlow(props: Readonly<{
         return;
       }
       if (!response.ok || body.ok !== true) {
-        setError(partnerEditorErrorMessage(body.error));
+        setError(partnerEditorErrorMessage(body.error, PARTNER_PUBLISH_FAILED));
         return;
       }
       window.location.assign(CATALOG_PATH);
     } catch {
-      setError("The changes could not be published.");
+      setError(PARTNER_PUBLISH_FAILED);
     } finally {
       setBusy(null);
     }
@@ -593,6 +605,11 @@ export function PartnerAddProductFlow(props: Readonly<{
   return (
     <div className="max-w-2xl space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0 space-y-2">
+          <p className="text-xs text-slate-400">
+            Step {currentIndex + 1} of {PARTNER_ADD_PRODUCT_STEPS.length}
+            {saveState === "saved" ? " · Not live until you publish" : ""}
+          </p>
         <ol aria-label="Product creation" className="flex flex-wrap gap-2 text-xs">
           {PARTNER_ADD_PRODUCT_STEPS.map((item, index) => (
             <li key={item.id}>
@@ -620,6 +637,7 @@ export function PartnerAddProductFlow(props: Readonly<{
             </li>
           ))}
         </ol>
+        </div>
         <PartnerSaveState state={saveState} />
       </div>
 
@@ -641,10 +659,12 @@ export function PartnerAddProductFlow(props: Readonly<{
         <section aria-labelledby="add-product-step" className="space-y-4">
           <h2 id="add-product-step" className="text-lg font-medium">Product</h2>
           <label className="block text-xs text-slate-400">
-            Product name
+            <FieldName label="Product name" required />
             <input
               className={FIELD}
               value={fields.name}
+              required
+              aria-required="true"
               disabled={locked}
               onChange={(event) => updateFields({ name: event.target.value })}
               onBlur={() => { if (savedRef.current) void flushSavedEdits("product"); }}
@@ -663,11 +683,13 @@ export function PartnerAddProductFlow(props: Readonly<{
           ) : null}
           <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto]">
             <label className="block text-xs text-slate-400">
-              Price
+              <FieldName label="Price" required />
               <input
                 className={FIELD}
                 inputMode="decimal"
                 value={fields.price}
+                required
+                aria-required="true"
                 disabled={locked}
                 onChange={(event) => updateFields({ price: event.target.value })}
                 onBlur={() => { if (savedRef.current) void flushSavedEdits("product"); }}
@@ -675,10 +697,12 @@ export function PartnerAddProductFlow(props: Readonly<{
             </label>
             {showCurrencySelect ? (
               <label className="block text-xs text-slate-400">
-                Currency
+                <FieldName label="Currency" required />
                 <select
                   className={FIELD}
                   value={fields.currency}
+                  required
+                  aria-required="true"
                   disabled={locked}
                   onChange={(event) => updateFields({ currency: event.target.value })}
                 >
@@ -693,20 +717,24 @@ export function PartnerAddProductFlow(props: Readonly<{
             ) : null}
           </div>
           <label className="block text-xs text-slate-400">
-            Product image URL
+            <FieldName label="Product image URL" required />
             <input
               className={FIELD}
               value={fields.imageUrl}
+              required
+              aria-required="true"
               disabled={locked}
               onChange={(event) => updateFields({ imageUrl: event.target.value })}
               onBlur={() => { if (savedRef.current) void flushSavedEdits("product"); }}
             />
           </label>
           <label className="block text-xs text-slate-400">
-            Product page URL
+            <FieldName label="Product page URL" required />
             <input
               className={FIELD}
               value={fields.productUrl}
+              required
+              aria-required="true"
               disabled={locked}
               onChange={(event) => updateFields({ productUrl: event.target.value })}
               onBlur={() => { if (savedRef.current) void flushSavedEdits("product"); }}
@@ -714,10 +742,12 @@ export function PartnerAddProductFlow(props: Readonly<{
           </label>
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block text-xs text-slate-400">
-              Category
+              <FieldName label="Category" required />
               <select
                 className={FIELD}
                 value={fields.categoryId}
+                required
+                aria-required="true"
                 disabled={locked}
                 onChange={(event) => updateFields({
                   categoryId: event.target.value,
@@ -781,10 +811,12 @@ export function PartnerAddProductFlow(props: Readonly<{
             This finish uses the product price{currencyLabel ? ` (${currencyLabel})` : ""}.
           </p>
           <label className="block text-xs text-slate-400">
-            Finish
+            <FieldName label="Finish" required />
             <input
               className={FIELD}
               value={fields.finish}
+              required
+              aria-required="true"
               disabled={locked}
               onChange={(event) => updateFields({ finish: event.target.value })}
               onBlur={() => { if (savedRef.current) void flushSavedEdits("variant"); }}
@@ -802,10 +834,12 @@ export function PartnerAddProductFlow(props: Readonly<{
             </label>
           ) : null}
           <label className="block text-xs text-slate-400">
-            SKU
+            <FieldName label="SKU" required />
             <input
               className={FIELD}
               value={fields.sku}
+              required
+              aria-required="true"
               disabled={locked}
               onChange={(event) => updateFields({ sku: event.target.value })}
               onBlur={() => { if (savedRef.current) void flushSavedEdits("variant"); }}

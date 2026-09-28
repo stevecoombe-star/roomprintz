@@ -82,7 +82,7 @@ export function PartnerCatalogWorkspace(props: Readonly<{
       ) : null}
 
       {props.rows.length > 0 ? (
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="grid flex-1 gap-3 sm:grid-cols-[minmax(0,1.4fr)_minmax(8rem,0.7fr)_minmax(9rem,0.8fr)]">
             <label className="block text-xs text-slate-400">
               Search
@@ -155,9 +155,9 @@ export function PartnerCatalogWorkspace(props: Readonly<{
             ) : null}
           </div>
           {visible.length === 0 ? (
-            <p className="rounded-xl border border-slate-800 px-4 py-8 text-sm text-slate-300">
-              No products match your search or filters.
-            </p>
+            <div className="rounded-xl border border-slate-800 px-4 py-8">
+              <h2 className="text-base font-medium">No products match these filters.</h2>
+            </div>
           ) : (
             <ul className="space-y-3">
               {visible.map((row) => (
@@ -228,7 +228,7 @@ function CatalogProductRow(props: Readonly<{ row: PartnerCatalogProductRow }>) {
       : "text-slate-400";
   return (
     <article className="relative flex flex-col gap-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4 sm:flex-row">
-      <div className="h-28 w-full shrink-0 overflow-hidden rounded-lg bg-slate-800 sm:h-24 sm:w-24">
+      <div className="h-28 w-full shrink-0 overflow-hidden rounded-lg bg-slate-800 sm:h-28 sm:w-28">
         {image ? (
           // eslint-disable-next-line @next/next/no-img-element -- partner catalog images are durable remote or public URLs
           <img src={image} alt="" className="h-full w-full object-cover" />
@@ -238,16 +238,17 @@ function CatalogProductRow(props: Readonly<{ row: PartnerCatalogProductRow }>) {
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
-          <h2 className="text-base font-medium text-slate-50">
+          <h2 className="min-w-0 text-base font-medium text-slate-50">
             <a
               href={partnerProductEditorPath(row.productKey)}
-              className={`rounded-sm after:absolute after:inset-0 hover:underline ${FOCUS}`}
+              className={`rounded-sm break-words after:absolute after:inset-0 hover:underline ${FOCUS}`}
             >
               {row.name}
             </a>
           </h2>
-          <p className="text-sm text-slate-200">{row.priceLabel || "Price on request"}</p>
+          <p className="shrink-0 whitespace-nowrap text-sm text-slate-200">{row.priceLabel || "Price on request"}</p>
         </div>
+        <p className="mt-1 text-xs text-slate-500">View product</p>
         {row.variantSummary ? (
           <p className="mt-1 text-sm text-slate-400">{row.variantSummary}</p>
         ) : null}

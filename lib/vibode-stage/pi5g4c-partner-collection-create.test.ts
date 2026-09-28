@@ -1252,7 +1252,7 @@ test("PI-5G4c Preview shows Create Collection, empty copy, and does not duplicat
   const workspace = source("app/partner/catalog/drafts/[draftId]/PartnerDraftWorkspaceClient.tsx");
   assert.match(workspace, /Create Collection/);
   assert.match(workspace, /Collection will be created with no Products/);
-  assert.match(workspace, /New Collection — pending publish/);
+  assert.match(workspace, /New collection — not published yet/);
   assert.match(workspace, /Add Collection/);
   assert.match(workspace, /collection\.create_edit/);
   assert.match(workspace, /collection\.create_remove/);

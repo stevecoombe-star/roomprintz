@@ -33,6 +33,13 @@ export const PARTNER_PUBLISHED_NO_MODEL_NOTE =
 
 export const PARTNER_PUBLISH_CONFIRMATION = "This updates your live Vibode catalog.";
 
+export const PARTNER_PAGE_CHANGED =
+  "This page has changed since you opened it. Reload before saving.";
+
+export const PARTNER_SAVE_FAILED = "Save failed. Reload and try again.";
+
+export const PARTNER_PUBLISH_FAILED = "The changes could not be published.";
+
 export const PARTNER_DISCARD_CONFIRMATION =
   "This discards all unpublished Partner catalog changes, not only this product.";
 
@@ -766,16 +773,16 @@ function reviewIssueText(code: string, message: string): string {
   return text;
 }
 
-export function partnerEditorErrorMessage(error: string | null | undefined): string {
+export function partnerEditorErrorMessage(
+  error: string | null | undefined,
+  fallback = PARTNER_SAVE_FAILED,
+): string {
   const message = error?.trim() ?? "";
-  if (!message) return "The change could not be saved.";
-  if (/slug|patch|revision|planVersion|current_asset|PI-5|asset id|sqlPlan/i.test(message)) {
-    return "The change could not be saved.";
-  }
-  if (/\b(prod|var|col|partner|asset)-[a-z0-9-]{6,}/i.test(message)) {
-    return "The change could not be saved.";
-  }
-  if (message.length > 180) return "The change could not be saved.";
+  if (!message) return fallback;
+  if (/revision is stale|stale draft|\brevision\b/i.test(message)) return PARTNER_PAGE_CHANGED;
+  if (/slug|patch|planVersion|current_asset|PI-5|asset id|sqlPlan/i.test(message)) return fallback;
+  if (/\b(prod|var|col|partner|asset)-[a-z0-9-]{6,}/i.test(message)) return fallback;
+  if (message.length > 180) return fallback;
   return message;
 }
 

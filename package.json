@@ -63,6 +63,7 @@
     "test:partner-ux4-inline-glb": "node --import tsx --test --test-concurrency=1 lib/vibode-stage/partner-inline-glb-upload.test.ts",
     "test:partner-ux5-model-library": "node --import tsx --test --test-concurrency=1 lib/vibode-stage/partner-model-library.test.ts",
     "test:partner-ux6-add-product": "node --import tsx --test --test-concurrency=1 lib/vibode-stage/partner-add-product.test.ts",
+    "test:partner-ux7-certification": "node --import tsx --test --test-concurrency=1 lib/vibode-stage/partner-ux7-certification.test.ts",
     "test:afc-v2-pi5g2": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-stage/pi5g2-partner-drafts.test.ts",
     "test:afc-v2-pi5g3": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-stage/pi5g3-partner-publish.test.ts",
     "test:afc-v2-pi5g4a": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-stage/pi5g4a-partner-variant-create.test.ts",

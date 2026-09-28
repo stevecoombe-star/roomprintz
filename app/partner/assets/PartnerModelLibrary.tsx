@@ -65,8 +65,8 @@ function ModelRow(props: Readonly<{
   const meta = metaLine(props.item);
   return (
     <li className="rounded-xl border border-slate-800 p-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="font-medium text-slate-100">{props.item.fileName}</h3>
+      <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-2">
+        <h3 className="min-w-0 break-all font-medium text-slate-100">{props.item.fileName}</h3>
         <div className="flex flex-wrap items-center gap-2 text-sm">
           {props.item.unused ? (
             <span className="rounded-full border border-slate-600 px-2 py-0.5 text-xs text-slate-300">

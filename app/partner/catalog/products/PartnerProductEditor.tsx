@@ -12,6 +12,9 @@ import {
 } from "@/lib/vibode-stage/partner-inline-glb-upload";
 import {
   PARTNER_DISCARD_CONFIRMATION,
+  PARTNER_PAGE_CHANGED,
+  PARTNER_PUBLISH_FAILED,
+  PARTNER_SAVE_FAILED,
   PARTNER_VARIANT_MODEL_REQUIRED,
   buildPartnerVariantCreate,
   collectionMembershipMutation,
@@ -68,8 +71,8 @@ import { PartnerSaveState, type PartnerSaveStateValue } from "./PartnerSaveState
 import { PartnerVariantFields } from "./PartnerVariantFields";
 import { usePartnerInlineGlbUploads } from "./usePartnerInlineGlbUploads";
 
-const PARTNER_EDITOR_CONFLICT = "This product was updated elsewhere. Reload it before saving again.";
-const PARTNER_EDITOR_CONFLICT_ALERT = "This product was updated elsewhere. Reload it and try again.";
+const PARTNER_EDITOR_CONFLICT = PARTNER_PAGE_CHANGED;
+const PARTNER_EDITOR_CONFLICT_ALERT = PARTNER_PAGE_CHANGED;
 
 type AddModelSelection = Readonly<{
   assetId: string;
@@ -293,7 +296,7 @@ export function PartnerProductEditor(props: Readonly<{
       return { ok: true };
     } catch {
       setSaveState("failed");
-      setError("The change could not be saved.");
+      setError(PARTNER_SAVE_FAILED);
       return { ok: false, conflict: false };
     } finally {
       setBusy(null);
@@ -441,12 +444,12 @@ export function PartnerProductEditor(props: Readonly<{
       if (response.status === 409 && (body.code === "STALE_LIVE_FIELD" || body.code === "STALE_CATALOG_BASE")) {
         setReview(null);
         setReviewedRevision(null);
-        setError("The live catalog changed since these edits were saved. Reload this product and review again before publishing.");
+        setError("The live catalog changed. Reload this product and review again before publishing.");
         return;
       }
       if (response.status === 409) {
         setConflict(true);
-        setError("This product was updated elsewhere. Reload it and try again.");
+        setError(PARTNER_PAGE_CHANGED);
         return;
       }
       if (response.status === 400) {
@@ -459,12 +462,12 @@ export function PartnerProductEditor(props: Readonly<{
         return;
       }
       if (!response.ok || body.ok !== true) {
-        setError(partnerEditorErrorMessage(body.error));
+        setError(partnerEditorErrorMessage(body.error, PARTNER_PUBLISH_FAILED));
         return;
       }
       window.location.assign("/partner/catalog");
     } catch {
-      setError("The changes could not be published.");
+      setError(PARTNER_PUBLISH_FAILED);
     } finally {
       setBusy(null);
     }
@@ -485,11 +488,11 @@ export function PartnerProductEditor(props: Readonly<{
       const body = await response.json() as { error?: string };
       if (response.status === 409) {
         setConflict(true);
-        setError("This product was updated elsewhere. Reload it and try again.");
+        setError(PARTNER_PAGE_CHANGED);
         return;
       }
       if (!response.ok) {
-        setError(partnerEditorErrorMessage(body.error));
+        setError(partnerEditorErrorMessage(body.error, "Unpublished changes could not be discarded."));
         return;
       }
       window.location.assign("/partner/catalog");
@@ -541,7 +544,7 @@ export function PartnerProductEditor(props: Readonly<{
               )}
             </div>
             <div className="min-w-0">
-              <h1 className="truncate text-2xl font-semibold tracking-tight">{productFields.name || props.product.name}</h1>
+              <h1 className="break-words text-2xl font-semibold tracking-tight">{productFields.name || props.product.name}</h1>
               <p className="mt-2">
                 <span className={props.product.status === "inactive"
                   ? "rounded-full border border-slate-600 px-2 py-0.5 text-xs text-slate-300"
@@ -554,14 +557,25 @@ export function PartnerProductEditor(props: Readonly<{
           </div>
           <div className="flex flex-col items-start gap-2 sm:items-end">
             <PartnerSaveState state={saveState} />
-            <button
-              type="button"
-              className="inline-flex items-center justify-center rounded-md bg-white px-3.5 py-2 text-sm font-medium text-slate-950 hover:bg-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={!canPublish}
-              onClick={() => void publish()}
-            >
-              {busy === "publish" ? "Publishing…" : "Publish changes"}
-            </button>
+            {canPublish || busy === "publish" ? (
+              <button
+                type="button"
+                className="inline-flex items-center justify-center rounded-md bg-white px-3.5 py-2 text-sm font-medium text-slate-950 hover:bg-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={!canPublish}
+                onClick={() => void publish()}
+              >
+                {busy === "publish" ? "Publishing…" : "Publish changes"}
+              </button>
+            ) : canReview || busy === "review" ? (
+              <button
+                type="button"
+                className="inline-flex items-center justify-center rounded-md bg-white px-3.5 py-2 text-sm font-medium text-slate-950 hover:bg-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={busy != null}
+                onClick={() => void runReview()}
+              >
+                {busy === "review" ? "Reviewing…" : "Review changes"}
+              </button>
+            ) : null}
           </div>
         </div>
         {conflict ? (
@@ -843,7 +857,7 @@ export function PartnerProductEditor(props: Readonly<{
                 />
               </label>
               <label className="block text-xs text-slate-400 sm:col-span-2">
-                Product URL
+                Product page URL
                 <input
                   className="mt-1 block w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
                   value={addUrl}

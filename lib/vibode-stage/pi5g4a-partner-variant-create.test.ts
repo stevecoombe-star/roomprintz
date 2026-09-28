@@ -537,7 +537,7 @@ test("PI-5G4a Preview shows Create Variant and keeps planner advisory", async ()
   const workspace = source("app/partner/catalog/drafts/[draftId]/PartnerDraftWorkspaceClient.tsx");
   assert.match(workspace, /Create Variant/);
   assert.match(workspace, /Update Variant/);
-  assert.match(workspace, /New Variant — pending publish/);
+  assert.match(workspace, /New variant — not published yet/);
   assert.match(workspace, /Add Variant/);
   assert.match(workspace, /variant\.create_edit/);
   assert.match(workspace, /variant\.create_remove/);

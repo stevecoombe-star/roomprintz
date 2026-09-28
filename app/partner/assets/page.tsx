@@ -7,7 +7,7 @@ export default function PartnerAssetsPage() {
   return (
     <main className="space-y-6">
       <section className="space-y-2">
-        <h1 className="text-lg font-semibold">3D Models</h1>
+        <h1 className="break-words text-lg font-semibold">3D Models</h1>
         <p className="max-w-2xl text-sm text-slate-300">
           View and manage the 3D models used across your Vibode catalog.
         </p>

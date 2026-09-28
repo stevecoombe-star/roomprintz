@@ -125,7 +125,8 @@ export function PartnerInlineModelPanel(props: Readonly<{
       <input
         ref={inputRef}
         type="file"
-        accept=".glb"
+        accept=".glb,model/gltf-binary"
+        aria-label="Upload GLB"
         className="sr-only"
         disabled={locked}
         onChange={(event) => {

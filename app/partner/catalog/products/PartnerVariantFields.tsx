@@ -81,7 +81,7 @@ export function PartnerVariantFields(props: Readonly<{
           />
         </label>
         <label className="block text-xs text-slate-400">
-          Product URL
+          Product page URL
           <input
             className={FIELD}
             value={props.productUrl}

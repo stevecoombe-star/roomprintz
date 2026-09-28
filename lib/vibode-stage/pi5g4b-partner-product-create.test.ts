@@ -999,7 +999,7 @@ test("PI-5G4b reuses the G4a Partner Asset picker and rejects unready/foreign As
   );
   assert.equal(reused.ok, true);
   assert.match(source("app/partner/catalog/drafts/[draftId]/page.tsx"), /listPartnerReadyAssetsForVariantCreate/);
-  assert.match(source("app/partner/catalog/drafts/[draftId]/PartnerDraftWorkspaceClient.tsx"), /Product creation requires an already-certified Partner Asset/);
+  assert.match(source("app/partner/catalog/drafts/[draftId]/PartnerDraftWorkspaceClient.tsx"), /A ready 3D model is needed before a product can be saved here/);
   assert.doesNotMatch(PI5G4B_FILES.map((file) => source(file)).join("\n"), /writeGeneratedFurnitureAssetRegistry/);
 });
 
@@ -1051,7 +1051,7 @@ test("PI-5G4b Preview shows Create Product, default Variant, and membership with
   const workspace = source("app/partner/catalog/drafts/[draftId]/PartnerDraftWorkspaceClient.tsx");
   assert.match(workspace, /Create Product/);
   assert.match(workspace, /Create Default Variant/);
-  assert.match(workspace, /New Product — pending publish/);
+  assert.match(workspace, /New product — not published yet/);
   assert.match(workspace, /Add Product/);
   assert.match(workspace, /product\.create_edit/);
   assert.match(workspace, /product\.create_remove/);
