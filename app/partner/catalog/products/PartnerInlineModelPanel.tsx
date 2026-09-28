@@ -28,6 +28,8 @@ export function PartnerInlineModelPanel(props: Readonly<{
   selectedAssetId: string;
   disabled: boolean;
   invalid: boolean;
+  emptyDetail?: string;
+  showSectionLabel?: boolean;
   onFile: (file: File) => void;
   onChoose: (assetId: string) => void;
 }>) {
@@ -66,7 +68,9 @@ export function PartnerInlineModelPanel(props: Readonly<{
         takeFile(event.dataTransfer.files?.[0]);
       }}
     >
-      <p className="text-xs uppercase tracking-wide text-slate-500">3D Model</p>
+      {props.showSectionLabel === false ? null : (
+        <p className="text-xs uppercase tracking-wide text-slate-500">3D Model</p>
+      )}
       <div aria-live="polite" className="space-y-1">
         {props.upload.phase === "uploading" ? (
           <p className="text-sm text-slate-100">{partnerInlineGlbUploadingLabel(props.upload.fileName)}</p>
@@ -114,7 +118,7 @@ export function PartnerInlineModelPanel(props: Readonly<{
         {props.upload.phase === "idle" && !savedReady && props.saved?.stateLabel !== "Needs attention" ? (
           <>
             <p className="text-sm font-medium text-slate-100">{PARTNER_INLINE_GLB_EMPTY_TITLE}</p>
-            <p className="text-sm text-slate-400">{PARTNER_INLINE_GLB_EMPTY_DETAIL}</p>
+            <p className="text-sm text-slate-400">{props.emptyDetail ?? PARTNER_INLINE_GLB_EMPTY_DETAIL}</p>
           </>
         ) : null}
       </div>

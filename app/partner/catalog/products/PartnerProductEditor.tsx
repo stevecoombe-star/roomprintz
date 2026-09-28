@@ -41,6 +41,7 @@ import {
   partnerPublishConfirmation,
   partnerVariantHeading,
   presentPartnerVariantModel,
+  readPartnerEditorDraftResponse,
   readPartnerProductFields,
   readPartnerVariantFields,
   readPendingVariantFields,
@@ -75,35 +76,6 @@ type AddModelSelection = Readonly<{
   fileName: string | null;
   source: "upload" | "existing";
 }>;
-
-function isEditorDocument(value: unknown): value is PartnerCatalogSyncDocument {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Partial<PartnerCatalogSyncDocument>;
-  return Boolean(
-    record.products
-    && Array.isArray(record.products.update)
-    && record.variants
-    && Array.isArray(record.variants.update)
-    && Array.isArray(record.variants.create)
-    && record.collections
-    && Array.isArray(record.collections.update)
-    && Array.isArray(record.collections.membershipAdd)
-    && Array.isArray(record.collections.membershipRemove),
-  );
-}
-
-function readReturnedDraft(value: unknown): PartnerEditorDraft | null {
-  if (!value || typeof value !== "object") return null;
-  const record = value as { draftId?: unknown; revision?: unknown; status?: unknown; document?: unknown };
-  if (typeof record.draftId !== "string" || !Number.isInteger(record.revision)) return null;
-  if (record.status != null && record.status !== "open") return null;
-  if (!isEditorDocument(record.document)) return null;
-  return {
-    draftId: record.draftId,
-    revision: record.revision as number,
-    document: record.document,
-  };
-}
 
 function variantFieldMap(
   productId: string,
@@ -271,7 +243,7 @@ export function PartnerProductEditor(props: Readonly<{
     if (draftRef.current) return draftRef.current;
     const response = await fetch("/api/vibode/partner/drafts", { method: "POST" });
     const body = await response.json() as { error?: string; draft?: unknown };
-    const next = readReturnedDraft(body.draft);
+    const next = readPartnerEditorDraftResponse(body.draft);
     if (!response.ok || !next) {
       setError(partnerEditorErrorMessage(body.error));
       return null;
@@ -310,7 +282,7 @@ export function PartnerProductEditor(props: Readonly<{
         setError(uploaded?.message ?? PARTNER_EDITOR_CONFLICT_ALERT);
         return { ok: false, conflict: true };
       }
-      const next = readReturnedDraft(body.draft);
+      const next = readPartnerEditorDraftResponse(body.draft);
       if (!response.ok || !next) {
         setSaveState("failed");
         setError(partnerEditorErrorMessage(body.error));

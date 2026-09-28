@@ -37,6 +37,8 @@ import {
   isCommercialId,
   isPlainObject,
   isUuidLike,
+  isValidCurrency,
+  normalizeCurrency,
   validateBrowseTaxonomy,
 } from "./product-variant-register";
 import type { StageCatalogSnapshot, StageCollection, StageProduct, StageVariant } from "./types";
@@ -82,6 +84,7 @@ export type PartnerDraftMutation =
       categoryId: string;
       subcategoryId?: string | null;
       productCreationSlug?: string | null;
+      priceCurrency?: string;
       defaultVariant: Readonly<{
         finishLabel?: string | null;
         sku?: string | null;
@@ -395,6 +398,7 @@ export function parsePartnerDraftMutation(
         "categoryId",
         "subcategoryId",
         "productCreationSlug",
+        "priceCurrency",
         "defaultVariant",
         "collectionIds",
       ]).length > 0) {
@@ -411,6 +415,12 @@ export function parsePartnerDraftMutation(
       const productCreationSlug = value.productCreationSlug === undefined
         ? undefined
         : nullableTrimmedString(value.productCreationSlug);
+      const priceCurrency = "priceCurrency" in value
+        ? asNonEmptyString(value.priceCurrency)
+        : undefined;
+      if ("priceCurrency" in value && !priceCurrency) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
       if (
         !name
         || !imageUrl
@@ -476,6 +486,7 @@ export function parsePartnerDraftMutation(
           categoryId,
           ...(subcategoryId !== undefined ? { subcategoryId } : {}),
           ...(productCreationSlug !== undefined ? { productCreationSlug } : {}),
+          ...(priceCurrency ? { priceCurrency } : {}),
           defaultVariant: {
             ...(finishLabel !== undefined ? { finishLabel } : {}),
             ...(sku !== undefined ? { sku } : {}),
@@ -901,10 +912,15 @@ function sortProductCreates(
   return [...items].sort((left, right) => left.productId.localeCompare(right.productId));
 }
 
-export function partnerCatalogCurrencyForCreate(
+export type PartnerCatalogCurrencyResolution =
+  | Readonly<{ status: "resolved"; currency: string }>
+  | Readonly<{ status: "empty" }>
+  | Readonly<{ status: "conflict" }>;
+
+export function resolvePartnerCatalogCurrency(
   catalog: StageCatalogSnapshot,
   partnerId: string,
-): string | null {
+): PartnerCatalogCurrencyResolution {
   const currencies = new Set<string>();
   for (const product of catalog.products) {
     if (product.partnerId === partnerId && product.source === "partner_catalog") {
@@ -912,8 +928,41 @@ export function partnerCatalogCurrencyForCreate(
       currencies.add(product.priceCurrency);
     }
   }
-  if (currencies.size !== 1) return null;
-  return [...currencies][0] ?? null;
+  if (currencies.size === 0) return { status: "empty" };
+  if (currencies.size > 1) return { status: "conflict" };
+  const currency = [...currencies][0];
+  if (!currency) return { status: "empty" };
+  return { status: "resolved", currency };
+}
+
+export function partnerCatalogCurrencyForCreate(
+  catalog: StageCatalogSnapshot,
+  partnerId: string,
+): string | null {
+  const resolved = resolvePartnerCatalogCurrency(catalog, partnerId);
+  return resolved.status === "resolved" ? resolved.currency : null;
+}
+
+function resolveProductCreateCurrency(
+  catalog: StageCatalogSnapshot,
+  partnerId: string,
+  supplied: string | undefined,
+): string | PartnerDraftMutationFailure {
+  const resolved = resolvePartnerCatalogCurrency(catalog, partnerId);
+  const normalized = supplied ? normalizeCurrency(supplied) : "";
+  if (resolved.status === "conflict") {
+    return fail("invalid_mutation", "Partner catalog currency could not be resolved.");
+  }
+  if (resolved.status === "resolved") {
+    if (normalized && normalized !== resolved.currency) {
+      return fail("invalid_mutation", "Partner catalog currency could not be resolved.");
+    }
+    return resolved.currency;
+  }
+  if (!normalized || !isValidCurrency(normalized)) {
+    return fail("invalid_mutation", "Partner catalog currency could not be resolved.");
+  }
+  return normalized;
 }
 
 function findPendingCollection(
@@ -1111,10 +1160,12 @@ function applyOne(
       return null;
     }
     case "product.create": {
-      const currency = partnerCatalogCurrencyForCreate(catalog, working.partnerId);
-      if (!currency) {
-        return fail("invalid_mutation", "Partner catalog currency could not be resolved.");
-      }
+      const currency = resolveProductCreateCurrency(
+        catalog,
+        working.partnerId,
+        mutation.priceCurrency,
+      );
+      if (typeof currency !== "string") return currency;
       const taxonomy = validateBrowseTaxonomy(mutation.categoryId, mutation.subcategoryId ?? null);
       if (taxonomy.length > 0) {
         return fail("invalid_mutation", taxonomy[0]?.message ?? "Invalid category.");

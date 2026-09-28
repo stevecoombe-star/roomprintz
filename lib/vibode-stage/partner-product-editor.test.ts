@@ -209,7 +209,6 @@ test("C a catalog product row links to the product editor", () => {
     }],
     openDraftId: null,
     hasUnpublishedChanges: false,
-    needsModelBeforeFirstProduct: false,
   }));
   assert.match(html, /href="\/partner\/catalog\/products\/prod-coffee"/);
   assert.match(html, />Coffee Table</);

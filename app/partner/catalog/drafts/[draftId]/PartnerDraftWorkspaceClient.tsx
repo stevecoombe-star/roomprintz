@@ -924,6 +924,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
         ) : null}
       </section>
 
+      {/* Superseded for Partner navigation by /partner/catalog/new. Retained for fallback and source-lock tests. */}
       <section id="partner-add-product" className="space-y-3 rounded-xl border border-slate-800 p-4">
         <div className="flex items-center justify-between gap-3">
           <h3 className="font-medium">Add Product</h3>

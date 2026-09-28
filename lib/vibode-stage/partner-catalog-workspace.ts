@@ -200,3 +200,7 @@ export function partnerCatalogEditorPath(
 export function partnerProductEditorPath(productId: string): string {
   return `/partner/catalog/products/${encodeURIComponent(productId)}`;
 }
+
+export function partnerAddProductPath(): string {
+  return "/partner/catalog/new";
+}

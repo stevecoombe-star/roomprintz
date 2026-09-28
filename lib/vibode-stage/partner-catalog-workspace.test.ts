@@ -10,6 +10,7 @@ import { createStageCatalogSnapshot } from "./catalog";
 import {
   buildPartnerCatalogRows,
   filterPartnerCatalogRows,
+  partnerAddProductPath,
   partnerCatalogEditorPath,
   type PartnerCatalogProductRow,
 } from "./partner-catalog-workspace";
@@ -273,7 +274,6 @@ test("B inactive products stay visible and are labeled Inactive", () => {
     rows: loaded,
     openDraftId: null,
     hasUnpublishedChanges: false,
-    needsModelBeforeFirstProduct: false,
   });
   assert.match(html, /Lounge Chair/);
   assert.match(html, />Inactive</);
@@ -327,7 +327,6 @@ test("E a product whose referenced assets are ready is labeled Ready", () => {
     rows: [coffee],
     openDraftId: null,
     hasUnpublishedChanges: false,
-    needsModelBeforeFirstProduct: false,
   });
   assert.match(html, /Ready/);
   assert.match(html, /\$459/);
@@ -347,7 +346,6 @@ test("F a product without a referenced asset is labeled No model", () => {
     rows: [side],
     openDraftId: null,
     hasUnpublishedChanges: false,
-    needsModelBeforeFirstProduct: false,
   });
   assert.match(html, /No model/);
   assert.match(html, /No image/);
@@ -386,7 +384,6 @@ test("G unresolved or unready assets need attention, and mixed variants say how 
     rows: [row("Bookcase"), row("Ottoman")],
     openDraftId: null,
     hasUnpublishedChanges: false,
-    needsModelBeforeFirstProduct: false,
   });
   assert.match(html, /1 of 3 ready/);
   assert.match(html, /Needs attention/);
@@ -398,7 +395,6 @@ test("H an open draft with changes is unpublished and continues into the existin
     rows: [row("Coffee Table")],
     openDraftId: DRAFT_ID,
     hasUnpublishedChanges: true,
-    needsModelBeforeFirstProduct: false,
   });
   assert.match(html, /Unpublished changes/);
   assert.match(html, /You have catalog changes that have not been published yet\./);
@@ -407,47 +403,36 @@ test("H an open draft with changes is unpublished and continues into the existin
   assert.doesNotMatch(html, /Resume draft|Edit catalog|revision/i);
 });
 
-test("I Add product reaches the existing draft workspace creation path", () => {
-  assert.equal(
-    partnerCatalogEditorPath(DRAFT_ID, "add-product"),
-    `/partner/catalog/drafts/${DRAFT_ID}?intent=add-product`,
-  );
+test("I Add product opens the guided creation flow", () => {
+  assert.equal(partnerAddProductPath(), "/partner/catalog/new");
   assert.equal(
     partnerCatalogEditorPath(DRAFT_ID, "manage"),
     `/partner/catalog/drafts/${DRAFT_ID}`,
+  );
+  assert.equal(
+    partnerCatalogEditorPath(DRAFT_ID, "add-product"),
+    `/partner/catalog/drafts/${DRAFT_ID}?intent=add-product`,
   );
 
   const withDraft = markup({
     rows: [row("Coffee Table")],
     openDraftId: DRAFT_ID,
     hasUnpublishedChanges: false,
-    needsModelBeforeFirstProduct: false,
   });
   assert.match(withDraft, /Add product/);
-  assert.match(withDraft, new RegExp(`href="/partner/catalog/drafts/${DRAFT_ID}\\?intent=add-product"`));
+  assert.match(withDraft, /href="\/partner\/catalog\/new"/);
+  assert.doesNotMatch(withDraft, /intent=add-product/);
 
   const firstProduct = markup({
     rows: [],
     openDraftId: null,
     hasUnpublishedChanges: false,
-    needsModelBeforeFirstProduct: false,
   });
   assert.match(firstProduct, /No products yet/);
   assert.match(firstProduct, /Add your first product to start building your Vibode catalog\./);
-  assert.match(firstProduct, /Add product/);
+  assert.match(firstProduct, /href="\/partner\/catalog\/new"/);
   assert.doesNotMatch(firstProduct, /Go to 3D Models/);
-
-  const needsModel = markup({
-    rows: [],
-    openDraftId: null,
-    hasUnpublishedChanges: false,
-    needsModelBeforeFirstProduct: true,
-  });
-  assert.match(needsModel, /A 3D model is needed before your first product can be added\./);
-  assert.match(needsModel, /href="\/partner\/assets"/);
-  assert.match(needsModel, /Go to 3D Models/);
-  assert.doesNotMatch(needsModel, /Add product/);
-  assert.doesNotMatch(needsModel, /mapped ready Partner Asset/);
+  assert.doesNotMatch(firstProduct, /A 3D model is needed before your first product can be added/);
 
   const workspace = source("app/partner/catalog/PartnerCatalogWorkspace.tsx");
   const draftPage = source("app/partner/catalog/drafts/[draftId]/page.tsx");
@@ -455,11 +440,11 @@ test("I Add product reaches the existing draft workspace creation path", () => {
   assert.match(workspace, /\/api\/vibode\/partner\/drafts/);
   assert.match(workspace, /method: "POST"/);
   assert.match(workspace, /partnerCatalogEditorPath/);
+  assert.match(workspace, /partnerAddProductPath/);
   assert.match(draftPage, /intent === "add-product"/);
   assert.match(draftPage, /openProductCreate=/);
   assert.match(draftClient, /id="partner-add-product"/);
-  assert.match(draftClient, /openProductCreate && canCreateProduct/);
-  assert.match(draftClient, /Product creation requires a mapped, ready Partner Asset/);
+  assert.match(draftClient, /Superseded for Partner navigation by \/partner\/catalog\/new/);
 });
 
 test("J partner catalog no longer shows planner diagnostic controls", () => {
@@ -479,7 +464,8 @@ test("J partner catalog no longer shows planner diagnostic controls", () => {
   assert.match(catalogPage, /Manage the products available through Vibode\./);
   assert.match(catalogPage, /buildPartnerCatalogRows/);
   assert.match(catalogPage, /countPartnerDraftOperations/);
-  assert.match(catalogPage, /loadPartnerCommercialAssetsForPortal/);
+  assert.doesNotMatch(catalogPage, /loadPartnerCommercialAssetsForPortal/);
+  assert.match(workspace, /partnerAddProductPath/);
   assert.doesNotMatch(catalogPage, /Durable catalog|commercial status|Curated catalog/);
   assert.match(previewRoute, /export async function POST/);
   assert.match(previewRoute, /partnerPortalPreviewResponse/);

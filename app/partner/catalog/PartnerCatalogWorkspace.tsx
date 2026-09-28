@@ -4,9 +4,9 @@ import { useMemo, useState } from "react";
 
 import {
   filterPartnerCatalogRows,
+  partnerAddProductPath,
   partnerCatalogEditorPath,
   partnerProductEditorPath,
-  type PartnerCatalogEditorIntent,
   type PartnerCatalogProductRow,
   type PartnerCatalogReadinessFilter,
   type PartnerCatalogStatusFilter,
@@ -25,12 +25,11 @@ export function PartnerCatalogWorkspace(props: Readonly<{
   rows: readonly PartnerCatalogProductRow[];
   openDraftId: string | null;
   hasUnpublishedChanges: boolean;
-  needsModelBeforeFirstProduct: boolean;
 }>) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<PartnerCatalogStatusFilter>("all");
   const [readiness, setReadiness] = useState<PartnerCatalogReadinessFilter>("all");
-  const [pending, setPending] = useState<PartnerCatalogEditorIntent | null>(null);
+  const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const filtersActive = query.trim().length > 0 || status !== "all" || readiness !== "all";
   const visible = useMemo(
@@ -38,12 +37,12 @@ export function PartnerCatalogWorkspace(props: Readonly<{
     [props.rows, query, readiness, status],
   );
 
-  async function openEditor(intent: PartnerCatalogEditorIntent) {
+  async function openEditor() {
     if (props.openDraftId) {
-      window.location.assign(partnerCatalogEditorPath(props.openDraftId, intent));
+      window.location.assign(partnerCatalogEditorPath(props.openDraftId, "manage"));
       return;
     }
-    setPending(intent);
+    setPending(true);
     setError(null);
     try {
       const response = await fetch("/api/vibode/partner/drafts", { method: "POST" });
@@ -52,11 +51,11 @@ export function PartnerCatalogWorkspace(props: Readonly<{
         setError(body.error ?? "The catalog editor could not be opened.");
         return;
       }
-      window.location.assign(partnerCatalogEditorPath(body.draft.draftId, intent));
+      window.location.assign(partnerCatalogEditorPath(body.draft.draftId, "manage"));
     } catch {
       setError("The catalog editor could not be opened.");
     } finally {
-      setPending(null);
+      setPending(false);
     }
   }
 
@@ -124,7 +123,7 @@ export function PartnerCatalogWorkspace(props: Readonly<{
           <CatalogEditorActions
             openDraftId={props.openDraftId}
             pending={pending}
-            onOpen={(intent) => void openEditor(intent)}
+            onOpen={() => void openEditor()}
           />
         </div>
       ) : null}
@@ -132,12 +131,7 @@ export function PartnerCatalogWorkspace(props: Readonly<{
       {error ? <p role="alert" className="text-sm text-rose-300">{error}</p> : null}
 
       {props.rows.length === 0 ? (
-        <CatalogEmptyState
-          needsModel={props.needsModelBeforeFirstProduct}
-          openDraftId={props.openDraftId}
-          pending={pending}
-          onOpen={(intent) => void openEditor(intent)}
-        />
+        <CatalogEmptyState openDraftId={props.openDraftId} />
       ) : (
         <section aria-label="Products" className="space-y-3">
           <div className="flex items-center justify-between gap-3">
@@ -181,8 +175,8 @@ export function PartnerCatalogWorkspace(props: Readonly<{
 
 function CatalogEditorActions(props: Readonly<{
   openDraftId: string | null;
-  pending: PartnerCatalogEditorIntent | null;
-  onOpen: (intent: PartnerCatalogEditorIntent) => void;
+  pending: boolean;
+  onOpen: () => void;
 }>) {
   return (
     <div className="flex flex-wrap gap-2">
@@ -194,70 +188,18 @@ function CatalogEditorActions(props: Readonly<{
         <button
           type="button"
           className={SECONDARY}
-          disabled={props.pending != null}
-          onClick={() => props.onOpen("manage")}
+          disabled={props.pending}
+          onClick={props.onOpen}
         >
-          {props.pending === "manage" ? "Opening…" : "Manage catalog"}
+          {props.pending ? "Opening…" : "Manage catalog"}
         </button>
       )}
-      <AddProductControl
-        openDraftId={props.openDraftId}
-        pending={props.pending}
-        onOpen={props.onOpen}
-      />
+      <a href={partnerAddProductPath()} className={PRIMARY}>Add product</a>
     </div>
   );
 }
 
-function AddProductControl(props: Readonly<{
-  openDraftId: string | null;
-  pending: PartnerCatalogEditorIntent | null;
-  onOpen: (intent: PartnerCatalogEditorIntent) => void;
-}>) {
-  if (props.openDraftId) {
-    return (
-      <a href={partnerCatalogEditorPath(props.openDraftId, "add-product")} className={PRIMARY}>
-        Add product
-      </a>
-    );
-  }
-  return (
-    <button
-      type="button"
-      className={PRIMARY}
-      disabled={props.pending != null}
-      onClick={() => props.onOpen("add-product")}
-    >
-      {props.pending === "add-product" ? "Opening…" : "Add product"}
-    </button>
-  );
-}
-
-function CatalogEmptyState(props: Readonly<{
-  needsModel: boolean;
-  openDraftId: string | null;
-  pending: PartnerCatalogEditorIntent | null;
-  onOpen: (intent: PartnerCatalogEditorIntent) => void;
-}>) {
-  if (props.needsModel) {
-    return (
-      <section className="rounded-xl border border-slate-800 px-5 py-10">
-        <h2 className="text-lg font-medium">No products yet</h2>
-        <p className="mt-2 max-w-lg text-sm text-slate-300">
-          A 3D model is needed before your first product can be added.
-        </p>
-        <div className="mt-5 flex flex-wrap gap-2">
-          <a href="/partner/assets" className={PRIMARY}>Go to 3D Models</a>
-          {props.openDraftId ? (
-            <a href={partnerCatalogEditorPath(props.openDraftId, "manage")} className={SECONDARY}>
-              Continue editing
-            </a>
-          ) : null}
-        </div>
-      </section>
-    );
-  }
-
+function CatalogEmptyState(props: Readonly<{ openDraftId: string | null }>) {
   return (
     <section className="rounded-xl border border-slate-800 px-5 py-10">
       <h2 className="text-lg font-medium">No products yet</h2>
@@ -265,11 +207,7 @@ function CatalogEmptyState(props: Readonly<{
         Add your first product to start building your Vibode catalog.
       </p>
       <div className="mt-5 flex flex-wrap gap-2">
-        <AddProductControl
-          openDraftId={props.openDraftId}
-          pending={props.pending}
-          onOpen={props.onOpen}
-        />
+        <a href={partnerAddProductPath()} className={PRIMARY}>Add product</a>
         {props.openDraftId ? (
           <a href={partnerCatalogEditorPath(props.openDraftId, "manage")} className={SECONDARY}>
             Continue editing

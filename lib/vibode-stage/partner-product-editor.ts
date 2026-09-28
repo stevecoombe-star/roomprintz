@@ -6,10 +6,11 @@
  * catalog-wide publish route.
  *
  * Currency: partnerCatalogCurrencyForCreate returns null for an empty
- * catalog and for a catalog with more than one currency. That still blocks
- * first Product creation. This editor does not change that helper. An
- * existing Product inherits priceCurrency from its own row, and a new
- * Variant on that Product inherits the same currency.
+ * catalog and for a catalog with more than one currency. The guided add
+ * product flow supplies priceCurrency on product.create when the catalog
+ * is empty. This editor does not change that helper. An existing Product
+ * inherits priceCurrency from its own row, and a new Variant on that
+ * Product inherits the same currency.
  */
 
 import { variantCreationSlugFor } from "./partner-catalog-ids";
@@ -170,6 +171,35 @@ export function partnerEditorDraftFromPortal(draft: Readonly<{
     draftId: draft.draftId,
     revision: draft.revision,
     document: draft.document,
+  };
+}
+
+function isPartnerEditorDocument(value: unknown): value is PartnerCatalogSyncDocument {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<PartnerCatalogSyncDocument>;
+  return Boolean(
+    record.products
+    && Array.isArray(record.products.update)
+    && record.variants
+    && Array.isArray(record.variants.update)
+    && Array.isArray(record.variants.create)
+    && record.collections
+    && Array.isArray(record.collections.update)
+    && Array.isArray(record.collections.membershipAdd)
+    && Array.isArray(record.collections.membershipRemove),
+  );
+}
+
+export function readPartnerEditorDraftResponse(value: unknown): PartnerEditorDraft | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as { draftId?: unknown; revision?: unknown; status?: unknown; document?: unknown };
+  if (typeof record.draftId !== "string" || !Number.isInteger(record.revision)) return null;
+  if (record.status != null && record.status !== "open") return null;
+  if (!isPartnerEditorDocument(record.document)) return null;
+  return {
+    draftId: record.draftId,
+    revision: record.revision as number,
+    document: record.document,
   };
 }
 

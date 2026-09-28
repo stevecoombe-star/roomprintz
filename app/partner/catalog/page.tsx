@@ -1,5 +1,4 @@
 import { countPartnerDraftOperations } from "@/lib/vibode-stage/partner-draft-mutations";
-import { loadPartnerCommercialAssetsForPortal } from "@/lib/vibode-stage/partner-commercial-assets.server";
 import { buildPartnerCatalogRows } from "@/lib/vibode-stage/partner-catalog-workspace";
 import { loadAuthorizedPartnerPortalCatalog } from "@/lib/vibode-stage/partner-portal-catalog.server";
 import { resolvePartnerPortalContext } from "@/lib/vibode-stage/partner-portal-auth.server";
@@ -26,14 +25,6 @@ export default async function PartnerCatalogPage() {
 
   const openDraft = await loadOpenPartnerPortalDraft(auth.context.partnerId);
   const rows = buildPartnerCatalogRows(loaded.catalog);
-  let needsModelBeforeFirstProduct = false;
-  if (rows.length === 0) {
-    const commercial = await loadPartnerCommercialAssetsForPortal(
-      auth.context.partnerId,
-      loaded.catalog,
-    );
-    needsModelBeforeFirstProduct = commercial.ok && commercial.options.length === 0;
-  }
 
   return (
     <main className="space-y-6">
@@ -49,7 +40,6 @@ export default async function PartnerCatalogPage() {
         hasUnpublishedChanges={
           openDraft != null && countPartnerDraftOperations(openDraft.document) > 0
         }
-        needsModelBeforeFirstProduct={needsModelBeforeFirstProduct}
       />
     </main>
   );
