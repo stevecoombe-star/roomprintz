@@ -25,6 +25,8 @@ import type {
   AfcDiagnosticAdminLegacyMetricConclusion,
   AfcDiagnosticAdminMetricDecision,
 } from "./admin-metric-decision-dto";
+import { mapAfcDiagnosticAdminSettleDecision } from "./admin-settle-decision";
+import type { AfcDiagnosticAdminSettleDecision } from "./admin-settle-decision-dto";
 import { isAfcQaIssueCode } from "./taxonomy";
 
 export const AFC_DIAGNOSTIC_ADMIN_CASE_LIST_DEFAULT_LIMIT = 25;
@@ -152,6 +154,7 @@ export type AfcDiagnosticAdminGenerationEvidence = Readonly<{
   recoverySafeFailureState: AfcDiagnosticAdminRecoverySafeFailureState | null;
 
   metricDecision: AfcDiagnosticAdminMetricDecision;
+  settleDecision: AfcDiagnosticAdminSettleDecision;
   legacyMetricConclusion: AfcDiagnosticAdminLegacyMetricConclusion | null;
 
   engineFingerprint: AfcDiagnosticAdminEngineFingerprint | null;
@@ -608,6 +611,7 @@ export type AfcDiagnosticAdminGenerationRecord = Readonly<{
   engineFingerprint: unknown;
   productionAuthority: unknown;
   metricDecision: unknown;
+  settleDecision: unknown;
   originalSha256: string | null;
   originalDecodedWidth: number | null;
   originalDecodedHeight: number | null;
@@ -671,6 +675,9 @@ export function parseAfcDiagnosticAdminGenerationRecord(
     metricDecision: Object.prototype.hasOwnProperty.call(row, "metric_decision")
       ? row.metric_decision ?? null
       : null,
+    settleDecision: Object.prototype.hasOwnProperty.call(row, "settle_decision")
+      ? row.settle_decision ?? null
+      : null,
     originalSha256: optionalString(row.original_sha256),
     originalDecodedWidth: optionalFiniteNumber(row.original_decoded_width),
     originalDecodedHeight: optionalFiniteNumber(row.original_decoded_height),
@@ -687,6 +694,14 @@ export function parseAfcDiagnosticAdminGenerationRecord(
 function mapMetricDecision(value: unknown): AfcDiagnosticAdminMetricDecision {
   try {
     return mapAfcDiagnosticAdminMetricDecision(value);
+  } catch {
+    return Object.freeze({ kind: "unreadable" });
+  }
+}
+
+function mapSettleDecision(value: unknown): AfcDiagnosticAdminSettleDecision {
+  try {
+    return mapAfcDiagnosticAdminSettleDecision(value);
   } catch {
     return Object.freeze({ kind: "unreadable" });
   }
@@ -746,6 +761,7 @@ export function mapAfcDiagnosticAdminGenerationEvidence(
       record.productionAuthority,
     ),
     metricDecision: mapMetricDecision(record.metricDecision),
+    settleDecision: mapSettleDecision(record.settleDecision),
     legacyMetricConclusion: mapLegacyMetricConclusion(record.productionAuthority),
     engineFingerprint: mapAfcDiagnosticAdminEngineFingerprint(
       record.engineFingerprint,
@@ -1116,6 +1132,17 @@ const FORBIDDEN_TEXT = [
 
 const FREE_TEXT_KEYS = new Set(["notes", "reviewNotes"]);
 
+const SETTLE_DECISION_KEY_EXCEPTIONS = new Set([
+  "reason",
+  "sourceNormalizedPolygon",
+]);
+
+function insideSettleDecision(path: string): boolean {
+  return path === "settleDecision"
+    || path.endsWith(".settleDecision")
+    || path.includes(".settleDecision.");
+}
+
 function walkForbiddenKeys(
   value: unknown,
   path: string,
@@ -1130,7 +1157,9 @@ function walkForbiddenKeys(
   if (!isRecord(value)) return;
   for (const [key, child] of Object.entries(value)) {
     const next = path ? `${path}.${key}` : key;
-    if (FORBIDDEN_OBJECT_KEYS.has(key)) found.push(next);
+    const settleDiagnosticKey = SETTLE_DECISION_KEY_EXCEPTIONS.has(key)
+      && insideSettleDecision(path);
+    if (FORBIDDEN_OBJECT_KEYS.has(key) && !settleDiagnosticKey) found.push(next);
     if (FREE_TEXT_KEYS.has(key)) continue;
     walkForbiddenKeys(child, next, found);
   }

@@ -8,6 +8,7 @@ import {
 import { durableArtifactBytesMatch } from "./production-artifact-integrity";
 import type { AfcV2ProductionRoomAuthority } from "./production-authority-contract";
 import type { AfcV2MetricDecisionPersistedValue } from "./metric-decision-diagnostic";
+import type { AfcV2SettleDecisionPersistedValue } from "./settle-decision-diagnostic";
 
 export const AFC_V2_ORIGINAL_STORAGE_BUCKET = "vibode-base-images";
 export const AFC_V2_PRODUCTION_STORAGE_BUCKET = "vibode-afc-v2";
@@ -68,6 +69,7 @@ export type AfcGenerationRecord = Readonly<{
   metricStatus: string | null;
   collisionStatus: string | null;
   metricDecision: AfcV2MetricDecisionPersistedValue;
+  settleDecision: AfcV2SettleDecisionPersistedValue;
   providerProvenance: Readonly<Record<string, unknown>>;
 }>;
 
@@ -121,6 +123,7 @@ export type UpdateAfcGenerationInput = Readonly<{
   metricStatus?: string | null;
   collisionStatus?: string | null;
   metricDecision?: AfcV2MetricDecisionPersistedValue;
+  settleDecision?: AfcV2SettleDecisionPersistedValue;
   providerProvenance?: Readonly<Record<string, unknown>>;
 }>;
 
@@ -194,12 +197,20 @@ function cloneRecord(record: AfcGenerationRecord): AfcGenerationRecord {
       : null,
     providerProvenance: Object.freeze({ ...record.providerProvenance }),
     metricDecision: cloneMetricDecision(record.metricDecision),
+    settleDecision: cloneSettleDecision(record.settleDecision),
   });
 }
 
 function cloneMetricDecision(
   value: AfcV2MetricDecisionPersistedValue,
 ): AfcV2MetricDecisionPersistedValue {
+  if (value === null) return null;
+  return structuredClone(value);
+}
+
+function cloneSettleDecision(
+  value: AfcV2SettleDecisionPersistedValue,
+): AfcV2SettleDecisionPersistedValue {
   if (value === null) return null;
   return structuredClone(value);
 }
@@ -249,6 +260,7 @@ function terminalEvidenceEqual(
     && existing.metricStatus === next.metricStatus
     && existing.collisionStatus === next.collisionStatus
     && jsonEqual(existing.metricDecision, next.metricDecision)
+    && jsonEqual(existing.settleDecision, next.settleDecision)
     && existing.completedAt === next.completedAt;
 }
 
@@ -315,6 +327,7 @@ export function createMemoryAfcProductionStore(
         metricStatus: null,
         collisionStatus: null,
         metricDecision: null,
+        settleDecision: null,
         providerProvenance: Object.freeze({}),
       });
       generations.set(id, record);
@@ -354,6 +367,9 @@ export function createMemoryAfcProductionStore(
         metricDecision: patch.metricDecision !== undefined
           ? cloneMetricDecision(patch.metricDecision)
           : existing.metricDecision,
+        settleDecision: patch.settleDecision !== undefined
+          ? cloneSettleDecision(patch.settleDecision)
+          : existing.settleDecision,
       });
       if (!identityFieldsEqual(existing, next)) {
         throw new AfcGenerationImmutabilityError(

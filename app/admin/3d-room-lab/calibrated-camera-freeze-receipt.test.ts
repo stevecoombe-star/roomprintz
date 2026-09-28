@@ -402,6 +402,12 @@ function hostInput(): AppliedTiledAfcCameraFreezeInput {
         base.applyEvidence.ratioFovSettle.observability,
       evaluatedCellCount: 100,
       applySafeCellCount: 4,
+      settleObservability: {
+        successfulCellCount: 4,
+        structuralFailureCount: 0,
+        structuralFailureReasons: {},
+        rejectionCounts: {},
+      },
     },
     candidate: {
       confidence: "high",

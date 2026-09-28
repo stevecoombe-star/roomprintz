@@ -15,6 +15,11 @@ import {
   settleAfcFixedSeamCalibrationWithRatioExtension,
 } from "@/app/admin/3d-room-lab/afc-fixed-seam-calibration";
 import {
+  afcV2SettleDecisionNotReached,
+  projectAfcV2SettleDecisionDiagnostic,
+  type AfcV2SettleDecisionPersistedValue,
+} from "@/lib/afc-v2-production/settle-decision-diagnostic";
+import {
   validatePendingAfcLabCameraApply,
 } from "@/app/admin/3d-room-lab/afc-lab-apply-transaction";
 import {
@@ -283,9 +288,11 @@ export type AfcV2AnalyzeResult =
       status: "failed";
       reason: string;
       product: AfcSr1LiveProductResult;
+      settleDecision: AfcV2SettleDecisionPersistedValue;
     }>
   | Readonly<AfcV2LivePipelineEvidence & {
       status: "applied";
+      settleDecision: AfcV2SettleDecisionPersistedValue;
       product: AfcSr1LiveAuthoritativeGeometry;
       floor: Readonly<{
         authorityKey: string;
@@ -1219,6 +1226,8 @@ export async function executeAfcV2Analysis(
       roomObservation,
     };
   };
+  let settleDecision: AfcV2SettleDecisionPersistedValue =
+    afcV2SettleDecisionNotReached();
   const failedResult = async (reason: string): Promise<AfcV2AnalyzeResult> => {
     const joined = await joinObservation();
     const metricRoomPrior = await metricPriorPromise;
@@ -1234,6 +1243,7 @@ export async function executeAfcV2Analysis(
       status: "failed",
       reason,
       product,
+      settleDecision,
     };
   };
   if (product.status !== "authoritative_geometry") {
@@ -1267,6 +1277,18 @@ export async function executeAfcV2Analysis(
     frameSize: input.frame,
     referenceDepthM: product.metric.referenceDepthM,
   });
+  try {
+    settleDecision = projectAfcV2SettleDecisionDiagnostic({
+      settle,
+      sourceNormalizedPolygon: product.geometry.sourceNormalizedPolygon,
+    });
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "afc_v2_settle_decision_capture_failed",
+      category: error instanceof Error ? error.name : "capture_threw",
+    }));
+    settleDecision = null;
+  }
   if (!settle.ok || !settle.applyObservability.available) {
     return failedResult(
       settle.ok
@@ -1621,6 +1643,7 @@ export async function executeAfcV2Analysis(
     observedSpanFreezePayloadSha256: observedSpanLaunch.freezePayloadSha256,
     observedSpanSuppressWhenCompleteBackGeometryExists:
       observedSpanLaunch.suppressWhenCompleteBackGeometryExists,
+    settleDecision,
   };
 }
 
@@ -1681,6 +1704,7 @@ export async function executeAfcV2ControlledReplay(
       status: "failed",
       reason: "Controlled replay evidence did not satisfy exact identity and lineage bindings.",
       product: rejectedProduct,
+      settleDecision: afcV2SettleDecisionNotReached(),
     };
   }
   return executeAfcV2Analysis(input, {

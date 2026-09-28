@@ -24,6 +24,10 @@ import {
   type AfcDiagnosticAdminLegacyMetricConclusion,
   type AfcDiagnosticAdminMetricDecision,
 } from "./admin-metric-decision-dto";
+import {
+  parseAfcDiagnosticAdminSettleDecisionDto,
+  type AfcDiagnosticAdminSettleDecision,
+} from "./admin-settle-decision-dto";
 
 export const AFC_DIAGNOSTIC_SELECTED_ATTEMPT_EXPORT_SCHEMA_VERSION =
   "vibode-afc-selected-attempt-export/v1" as const;
@@ -136,6 +140,7 @@ export type AfcDiagnosticSelectedAttemptExport = Readonly<{
     }> | null;
   }>;
   metricDecision: AfcDiagnosticAdminMetricDecision;
+  settleDecision: AfcDiagnosticAdminSettleDecision;
   legacyMetricConclusion: AfcDiagnosticAdminLegacyMetricConclusion | null;
   artifacts: Readonly<{
     empty: Readonly<{
@@ -408,6 +413,7 @@ export function buildAfcDiagnosticSelectedAttemptExport(
         : null,
     },
     metricDecision: parseAfcDiagnosticAdminMetricDecisionDto(generation.metricDecision),
+    settleDecision: parseAfcDiagnosticAdminSettleDecisionDto(generation.settleDecision),
     legacyMetricConclusion: parseAfcDiagnosticAdminLegacyMetricConclusion(
       generation.legacyMetricConclusion,
     ),

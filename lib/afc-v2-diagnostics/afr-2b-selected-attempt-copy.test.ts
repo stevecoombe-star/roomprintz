@@ -50,6 +50,7 @@ function generation(generationId: string) {
     analysisReason: null,
     recoverySafeFailureState: "none",
     metricDecision: mapAfcDiagnosticAdminMetricDecision(pathAAcceptedMetricDecisionRaw()),
+    settleDecision: null,
     legacyMetricConclusion: null,
     engineFingerprint: null,
     original: null,

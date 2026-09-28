@@ -29,6 +29,10 @@ import {
   type AfcDiagnosticAdminMetricDecision,
 } from "./admin-metric-decision-dto";
 import {
+  parseAfcDiagnosticAdminSettleDecisionDto,
+  type AfcDiagnosticAdminSettleDecision,
+} from "./admin-settle-decision-dto";
+import {
   isAfcDiagnosticCaseTrigger,
   isAfcDiagnosticMachineStatusSnapshot,
   isAfcDiagnosticReviewStatus,
@@ -129,6 +133,7 @@ export type AfcDiagnosticInspectorGenerationEvidence = Readonly<{
   analysisReason: string | null;
   recoverySafeFailureState: string | null;
   metricDecision: AfcDiagnosticAdminMetricDecision;
+  settleDecision: AfcDiagnosticAdminSettleDecision;
   legacyMetricConclusion: AfcDiagnosticAdminLegacyMetricConclusion | null;
   engineFingerprint: AfcDiagnosticInspectorEngineFingerprint | null;
   original: AfcDiagnosticInspectorSourceSummary | null;
@@ -446,6 +451,9 @@ export function parseAfcDiagnosticInspectorGenerationEvidence(
   const metricDecision = Object.prototype.hasOwnProperty.call(value, "metricDecision")
     ? parseAfcDiagnosticAdminMetricDecisionDto(value.metricDecision)
     : null;
+  const settleDecision = Object.prototype.hasOwnProperty.call(value, "settleDecision")
+    ? parseAfcDiagnosticAdminSettleDecisionDto(value.settleDecision)
+    : null;
   const legacyMetricConclusion = Object.prototype.hasOwnProperty.call(
     value,
     "legacyMetricConclusion",
@@ -479,6 +487,7 @@ export function parseAfcDiagnosticInspectorGenerationEvidence(
     analysisReason,
     recoverySafeFailureState,
     metricDecision,
+    settleDecision,
     legacyMetricConclusion,
     engineFingerprint,
     original,

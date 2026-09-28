@@ -33,7 +33,23 @@ export type AfcFixedSeamCalibrationSuccess = Readonly<{
   applyObservability: RatioFovApplyObservability;
   evaluatedCellCount: number;
   applySafeCellCount: number;
+  /**
+   * Counts already computed while ranking. Acceptance reads `ok`, the winning
+   * cell, and `applyObservability` only.
+   */
+  settleObservability: AfcFixedSeamSettleObservability;
   ratioExtensionDiagnostics?: AfcFixedSeamRatioExtensionDiagnostics;
+}>;
+
+export type AfcFixedSeamSettleObservability = Readonly<{
+  successfulCellCount: number;
+  structuralFailureCount: number;
+  structuralFailureReasons: Readonly<
+    Partial<Record<AfcFixedSeamStructuralFailureCategory, number>>
+  >;
+  rejectionCounts: Readonly<
+    Partial<Record<CalibratedCameraApplyFirstFailingGate, number>>
+  >;
 }>;
 
 export type AfcFixedSeamCalibrationBestRejectedCandidate = Readonly<{
@@ -85,12 +101,14 @@ export type AfcFixedSeamCalibrationResult =
       evaluatedCellCount: number;
       applySafeCellCount: number;
       diagnostics: AfcFixedSeamCalibrationNoApplySafeDiagnostics;
+      ratioExtensionAttempted?: true;
     }>
   | Readonly<{
       ok: false;
       reason: Exclude<AfcFixedSeamCalibrationFailure, "no_apply_safe_candidate">;
       evaluatedCellCount: number;
       applySafeCellCount: number;
+      ratioExtensionAttempted?: true;
     }>;
 
 export type AfcFixedSeamCalibrationInput = Readonly<{
@@ -414,6 +432,14 @@ export function settleAfcFixedSeamCalibration(
   if (!metricDomainAllows(winning.ratio, input.referenceDepthM)) {
     return Object.freeze({ ok: false as const, reason: "metric_domain_rejected", evaluatedCellCount, applySafeCellCount });
   }
+  const rejectionCounts: Partial<
+    Record<CalibratedCameraApplyFirstFailingGate, number>
+  > = {};
+  for (const cell of ranked) {
+    if (cell.applyObservability.available) continue;
+    const gate = cell.applyObservability.firstFailingGate;
+    rejectionCounts[gate] = (rejectionCounts[gate] ?? 0) + 1;
+  }
   return Object.freeze({
     ok: true as const,
     widthDepthRatio: winning.ratio,
@@ -425,6 +451,12 @@ export function settleAfcFixedSeamCalibration(
     applyObservability: winning.applyObservability,
     evaluatedCellCount,
     applySafeCellCount,
+    settleObservability: Object.freeze({
+      successfulCellCount: ranked.length,
+      structuralFailureCount,
+      structuralFailureReasons: Object.freeze({ ...structuralFailureReasons }),
+      rejectionCounts: Object.freeze({ ...rejectionCounts }),
+    }),
   });
 }
 
@@ -477,7 +509,12 @@ export function settleAfcFixedSeamCalibrationWithRatioExtension(
     ...input,
     ratioSearch: extension.ratioSearch,
   });
-  if (!extended.ok) return extended;
+  if (!extended.ok) {
+    return Object.freeze({
+      ...extended,
+      ratioExtensionAttempted: true as const,
+    });
+  }
 
   return Object.freeze({
     ...extended,

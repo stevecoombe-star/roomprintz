@@ -11,6 +11,10 @@ import {
   parseAfcV2MetricDecision,
   type AfcV2MetricDecisionPersistedValue,
 } from "./metric-decision-diagnostic";
+import {
+  parseAfcV2SettleDecision,
+  type AfcV2SettleDecisionPersistedValue,
+} from "./settle-decision-diagnostic";
 import { durableArtifactBytesMatch } from "./production-artifact-integrity";
 import {
   buildAfcV2EngineFingerprint,
@@ -44,6 +48,12 @@ type AnySupabase = SupabaseClient;
 function metricDecisionFromRow(value: unknown): AfcV2MetricDecisionPersistedValue {
   if (value == null) return null;
   const parsed = parseAfcV2MetricDecision(value);
+  return parsed.ok ? parsed.decision : null;
+}
+
+function settleDecisionFromRow(value: unknown): AfcV2SettleDecisionPersistedValue {
+  if (value == null) return null;
+  const parsed = parseAfcV2SettleDecision(value);
   return parsed.ok ? parsed.decision : null;
 }
 
@@ -152,6 +162,7 @@ function rowToGeneration(row: Record<string, unknown>): AfcGenerationRecord {
       ? row.collision_status
       : null,
     metricDecision: metricDecisionFromRow(row.metric_decision),
+    settleDecision: settleDecisionFromRow(row.settle_decision),
     providerProvenance: isRecord(row.provider_provenance)
       ? Object.freeze({ ...row.provider_provenance })
       : Object.freeze({}),
@@ -333,6 +344,9 @@ export function createSupabaseAfcProductionStore(
       }
       if (patch.metricDecision !== undefined) {
         update.metric_decision = patch.metricDecision;
+      }
+      if (patch.settleDecision !== undefined) {
+        update.settle_decision = patch.settleDecision;
       }
       if (patch.providerProvenance !== undefined) {
         update.provider_provenance = patch.providerProvenance;

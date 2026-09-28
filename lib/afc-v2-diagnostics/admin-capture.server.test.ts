@@ -140,6 +140,7 @@ function adminGeneration(
     analysisReason: null,
     recoverySafeFailureState: "none",
     metricDecision: null,
+    settleDecision: null,
     legacyMetricConclusion: null,
     engineFingerprint: fingerprint(),
     original: Object.freeze({
