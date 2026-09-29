@@ -15,6 +15,12 @@ import {
   settleAfcFixedSeamCalibrationWithRatioExtension,
 } from "@/app/admin/3d-room-lab/afc-fixed-seam-calibration";
 import {
+  afcV2CameraRealizabilityAspectBasisFromSettle,
+  afcV2CameraRealizabilityNotEvaluated,
+  evaluateAfcV2CameraRealizability,
+  type AfcV2CameraRealizabilityPersistedValue,
+} from "@/lib/afc-v2-production/camera-realizability-diagnostic";
+import {
   afcV2SettleDecisionNotReached,
   projectAfcV2SettleDecisionDiagnostic,
   type AfcV2SettleDecisionPersistedValue,
@@ -289,10 +295,12 @@ export type AfcV2AnalyzeResult =
       reason: string;
       product: AfcSr1LiveProductResult;
       settleDecision: AfcV2SettleDecisionPersistedValue;
+      cameraRealizability: AfcV2CameraRealizabilityPersistedValue;
     }>
   | Readonly<AfcV2LivePipelineEvidence & {
       status: "applied";
       settleDecision: AfcV2SettleDecisionPersistedValue;
+      cameraRealizability: AfcV2CameraRealizabilityPersistedValue;
       product: AfcSr1LiveAuthoritativeGeometry;
       floor: Readonly<{
         authorityKey: string;
@@ -1228,6 +1236,8 @@ export async function executeAfcV2Analysis(
   };
   let settleDecision: AfcV2SettleDecisionPersistedValue =
     afcV2SettleDecisionNotReached();
+  let cameraRealizability: AfcV2CameraRealizabilityPersistedValue =
+    afcV2CameraRealizabilityNotEvaluated();
   const failedResult = async (reason: string): Promise<AfcV2AnalyzeResult> => {
     const joined = await joinObservation();
     const metricRoomPrior = await metricPriorPromise;
@@ -1244,6 +1254,7 @@ export async function executeAfcV2Analysis(
       reason,
       product,
       settleDecision,
+      cameraRealizability,
     };
   };
   if (product.status !== "authoritative_geometry") {
@@ -1288,6 +1299,23 @@ export async function executeAfcV2Analysis(
       category: error instanceof Error ? error.name : "capture_threw",
     }));
     settleDecision = null;
+  }
+  try {
+    cameraRealizability = evaluateAfcV2CameraRealizability({
+      sourceNormalizedPolygon: product.geometry.sourceNormalizedPolygon,
+      sourceImageSize: {
+        width: product.originalBasis.decodedWidth,
+        height: product.originalBasis.decodedHeight,
+      },
+      frameSize: input.frame,
+      aspectBasis: afcV2CameraRealizabilityAspectBasisFromSettle(settle),
+    });
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "afc_v2_camera_realizability_capture_failed",
+      category: error instanceof Error ? error.name : "capture_threw",
+    }));
+    cameraRealizability = null;
   }
   if (!settle.ok || !settle.applyObservability.available) {
     return failedResult(
@@ -1644,6 +1672,7 @@ export async function executeAfcV2Analysis(
     observedSpanSuppressWhenCompleteBackGeometryExists:
       observedSpanLaunch.suppressWhenCompleteBackGeometryExists,
     settleDecision,
+    cameraRealizability,
   };
 }
 
@@ -1705,6 +1734,7 @@ export async function executeAfcV2ControlledReplay(
       reason: "Controlled replay evidence did not satisfy exact identity and lineage bindings.",
       product: rejectedProduct,
       settleDecision: afcV2SettleDecisionNotReached(),
+      cameraRealizability: afcV2CameraRealizabilityNotEvaluated(),
     };
   }
   return executeAfcV2Analysis(input, {

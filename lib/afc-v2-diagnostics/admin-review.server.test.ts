@@ -127,6 +127,7 @@ function generationEvidence(): AfcDiagnosticAdminGenerationEvidence {
     recoverySafeFailureState: "none",
     metricDecision: null,
     settleDecision: null,
+    cameraRealizability: null,
     legacyMetricConclusion: null,
     engineFingerprint: fingerprint(),
     original: Object.freeze({

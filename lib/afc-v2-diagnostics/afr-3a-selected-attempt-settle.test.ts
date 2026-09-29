@@ -69,6 +69,7 @@ function generation(settleDecision: unknown) {
     recoverySafeFailureState: null,
     metricDecision: null,
     settleDecision,
+    cameraRealizability: null,
     legacyMetricConclusion: null,
     engineFingerprint: null,
     original: null,

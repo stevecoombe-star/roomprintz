@@ -30,6 +30,7 @@ import {
 } from "./production-auto-metric";
 import { captureAfcV2MetricDecision } from "./metric-decision-projector";
 import type { AfcV2MetricDecisionPersistedValue } from "./metric-decision-diagnostic";
+import type { AfcV2CameraRealizabilityPersistedValue } from "./camera-realizability-diagnostic";
 import type { AfcV2SettleDecisionPersistedValue } from "./settle-decision-diagnostic";
 import {
   buildAfcV2ProductionRoomAuthority,
@@ -631,6 +632,7 @@ export async function runProductionAfcAnalysis(
       authority,
     }),
     settleDecision: terminalSettleDecision(analysis),
+    cameraRealizability: terminalCameraRealizability(analysis),
     providerProvenance: Object.freeze({
       emptyArtifactSource: capture.emptySource,
       tiledArtifactSource: capture.tiledSource,
@@ -712,6 +714,12 @@ function terminalSettleDecision(
   analysis: AfcV2AnalyzeResult | null,
 ): AfcV2SettleDecisionPersistedValue {
   return analysis?.settleDecision ?? null;
+}
+
+function terminalCameraRealizability(
+  analysis: AfcV2AnalyzeResult | null,
+): AfcV2CameraRealizabilityPersistedValue {
+  return analysis?.cameraRealizability ?? null;
 }
 
 function terminalMetricDecision(input: Readonly<{
@@ -839,6 +847,7 @@ async function persistFailedGeneration(input: Readonly<{
       authority: null,
     }),
     settleDecision: terminalSettleDecision(input.analysis),
+    cameraRealizability: terminalCameraRealizability(input.analysis),
     providerProvenance: Object.freeze({
       emptyArtifactSource: input.capture.emptySource,
       tiledArtifactSource: input.capture.tiledSource,

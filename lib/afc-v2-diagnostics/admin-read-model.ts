@@ -25,6 +25,8 @@ import type {
   AfcDiagnosticAdminLegacyMetricConclusion,
   AfcDiagnosticAdminMetricDecision,
 } from "./admin-metric-decision-dto";
+import { mapAfcDiagnosticAdminCameraRealizability } from "./admin-camera-realizability";
+import type { AfcDiagnosticAdminCameraRealizability } from "./admin-camera-realizability-dto";
 import { mapAfcDiagnosticAdminSettleDecision } from "./admin-settle-decision";
 import type { AfcDiagnosticAdminSettleDecision } from "./admin-settle-decision-dto";
 import { isAfcQaIssueCode } from "./taxonomy";
@@ -155,6 +157,7 @@ export type AfcDiagnosticAdminGenerationEvidence = Readonly<{
 
   metricDecision: AfcDiagnosticAdminMetricDecision;
   settleDecision: AfcDiagnosticAdminSettleDecision;
+  cameraRealizability: AfcDiagnosticAdminCameraRealizability;
   legacyMetricConclusion: AfcDiagnosticAdminLegacyMetricConclusion | null;
 
   engineFingerprint: AfcDiagnosticAdminEngineFingerprint | null;
@@ -612,6 +615,7 @@ export type AfcDiagnosticAdminGenerationRecord = Readonly<{
   productionAuthority: unknown;
   metricDecision: unknown;
   settleDecision: unknown;
+  cameraRealizability: unknown;
   originalSha256: string | null;
   originalDecodedWidth: number | null;
   originalDecodedHeight: number | null;
@@ -678,6 +682,9 @@ export function parseAfcDiagnosticAdminGenerationRecord(
     settleDecision: Object.prototype.hasOwnProperty.call(row, "settle_decision")
       ? row.settle_decision ?? null
       : null,
+    cameraRealizability: Object.prototype.hasOwnProperty.call(row, "camera_realizability_decision")
+      ? row.camera_realizability_decision ?? null
+      : null,
     originalSha256: optionalString(row.original_sha256),
     originalDecodedWidth: optionalFiniteNumber(row.original_decoded_width),
     originalDecodedHeight: optionalFiniteNumber(row.original_decoded_height),
@@ -702,6 +709,14 @@ function mapMetricDecision(value: unknown): AfcDiagnosticAdminMetricDecision {
 function mapSettleDecision(value: unknown): AfcDiagnosticAdminSettleDecision {
   try {
     return mapAfcDiagnosticAdminSettleDecision(value);
+  } catch {
+    return Object.freeze({ kind: "unreadable" });
+  }
+}
+
+function mapCameraRealizability(value: unknown): AfcDiagnosticAdminCameraRealizability {
+  try {
+    return mapAfcDiagnosticAdminCameraRealizability(value);
   } catch {
     return Object.freeze({ kind: "unreadable" });
   }
@@ -762,6 +777,7 @@ export function mapAfcDiagnosticAdminGenerationEvidence(
     ),
     metricDecision: mapMetricDecision(record.metricDecision),
     settleDecision: mapSettleDecision(record.settleDecision),
+    cameraRealizability: mapCameraRealizability(record.cameraRealizability),
     legacyMetricConclusion: mapLegacyMetricConclusion(record.productionAuthority),
     engineFingerprint: mapAfcDiagnosticAdminEngineFingerprint(
       record.engineFingerprint,

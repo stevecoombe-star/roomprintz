@@ -8,6 +8,7 @@ import {
 import { durableArtifactBytesMatch } from "./production-artifact-integrity";
 import type { AfcV2ProductionRoomAuthority } from "./production-authority-contract";
 import type { AfcV2MetricDecisionPersistedValue } from "./metric-decision-diagnostic";
+import type { AfcV2CameraRealizabilityPersistedValue } from "./camera-realizability-diagnostic";
 import type { AfcV2SettleDecisionPersistedValue } from "./settle-decision-diagnostic";
 
 export const AFC_V2_ORIGINAL_STORAGE_BUCKET = "vibode-base-images";
@@ -70,6 +71,7 @@ export type AfcGenerationRecord = Readonly<{
   collisionStatus: string | null;
   metricDecision: AfcV2MetricDecisionPersistedValue;
   settleDecision: AfcV2SettleDecisionPersistedValue;
+  cameraRealizability: AfcV2CameraRealizabilityPersistedValue;
   providerProvenance: Readonly<Record<string, unknown>>;
 }>;
 
@@ -124,6 +126,7 @@ export type UpdateAfcGenerationInput = Readonly<{
   collisionStatus?: string | null;
   metricDecision?: AfcV2MetricDecisionPersistedValue;
   settleDecision?: AfcV2SettleDecisionPersistedValue;
+  cameraRealizability?: AfcV2CameraRealizabilityPersistedValue;
   providerProvenance?: Readonly<Record<string, unknown>>;
 }>;
 
@@ -198,6 +201,7 @@ function cloneRecord(record: AfcGenerationRecord): AfcGenerationRecord {
     providerProvenance: Object.freeze({ ...record.providerProvenance }),
     metricDecision: cloneMetricDecision(record.metricDecision),
     settleDecision: cloneSettleDecision(record.settleDecision),
+    cameraRealizability: cloneCameraRealizability(record.cameraRealizability),
   });
 }
 
@@ -211,6 +215,13 @@ function cloneMetricDecision(
 function cloneSettleDecision(
   value: AfcV2SettleDecisionPersistedValue,
 ): AfcV2SettleDecisionPersistedValue {
+  if (value === null) return null;
+  return structuredClone(value);
+}
+
+function cloneCameraRealizability(
+  value: AfcV2CameraRealizabilityPersistedValue,
+): AfcV2CameraRealizabilityPersistedValue {
   if (value === null) return null;
   return structuredClone(value);
 }
@@ -261,6 +272,7 @@ function terminalEvidenceEqual(
     && existing.collisionStatus === next.collisionStatus
     && jsonEqual(existing.metricDecision, next.metricDecision)
     && jsonEqual(existing.settleDecision, next.settleDecision)
+    && jsonEqual(existing.cameraRealizability, next.cameraRealizability)
     && existing.completedAt === next.completedAt;
 }
 
@@ -328,6 +340,7 @@ export function createMemoryAfcProductionStore(
         collisionStatus: null,
         metricDecision: null,
         settleDecision: null,
+        cameraRealizability: null,
         providerProvenance: Object.freeze({}),
       });
       generations.set(id, record);
@@ -370,6 +383,9 @@ export function createMemoryAfcProductionStore(
         settleDecision: patch.settleDecision !== undefined
           ? cloneSettleDecision(patch.settleDecision)
           : existing.settleDecision,
+        cameraRealizability: patch.cameraRealizability !== undefined
+          ? cloneCameraRealizability(patch.cameraRealizability)
+          : existing.cameraRealizability,
       });
       if (!identityFieldsEqual(existing, next)) {
         throw new AfcGenerationImmutabilityError(

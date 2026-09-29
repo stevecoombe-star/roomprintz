@@ -51,6 +51,7 @@ function generation(generationId: string) {
     recoverySafeFailureState: "none",
     metricDecision: mapAfcDiagnosticAdminMetricDecision(pathAAcceptedMetricDecisionRaw()),
     settleDecision: null,
+    cameraRealizability: null,
     legacyMetricConclusion: null,
     engineFingerprint: null,
     original: null,

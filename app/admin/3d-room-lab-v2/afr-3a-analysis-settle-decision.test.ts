@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { AfcSr1TiledLiveProductDependencies } from "@/app/admin/3d-room-lab/afc-sr1-tiled-live-product";
 import { settleAfcFixedSeamCalibrationWithRatioExtension } from "@/app/admin/3d-room-lab/afc-fixed-seam-calibration";
+import { afcV2CameraRealizabilityNotEvaluated } from "@/lib/afc-v2-production/camera-realizability-diagnostic";
 import { projectAfcV2SettleDecisionDiagnostic } from "@/lib/afc-v2-production/settle-decision-diagnostic";
 
 import {
@@ -187,6 +188,13 @@ test("settle failure returns the same closed reason and keeps the diagnostic", a
   if (result.status !== "failed") return;
   assert.equal(result.reason, "AFC settle failed closed: no_apply_safe_candidate.");
   assert.deepEqual(result.settleDecision, projected);
+  assert.equal(
+    result.cameraRealizability != null
+      && "aspectBasis" in result.cameraRealizability
+      && result.cameraRealizability.aspectBasis?.kind === "best_rejected_ratio"
+      && result.cameraRealizability.evaluated === true,
+    true,
+  );
   assert.equal(JSON.stringify(result.settleDecision).includes("NaN"), false);
 });
 
@@ -217,6 +225,7 @@ test("analysis that never reaches settle records reached false and the existing 
     schemaVersion: "afc-v2-settle-decision-diagnostic/v1",
     reached: false,
   });
+  assert.deepEqual(result.cameraRealizability, afcV2CameraRealizabilityNotEvaluated());
 });
 
 test("successful analysis records the winning settle diagnostic without changing the camera", async () => {
@@ -242,6 +251,13 @@ test("successful analysis records the winning settle diagnostic without changing
   if (result.status !== "applied") return;
   assert.equal(result.camera.verticalFovDeg, direct.verticalFovDeg);
   assert.equal(result.floor.widthDepthRatio, direct.widthDepthRatio);
+  assert.equal(
+    result.cameraRealizability != null
+      && "aspectBasis" in result.cameraRealizability
+      && result.cameraRealizability.aspectBasis?.kind === "winning_ratio"
+      && result.cameraRealizability.aspectBasis.widthDepthRatio === direct.widthDepthRatio,
+    true,
+  );
   assert.deepEqual(
     result.settleDecision,
     projectAfcV2SettleDecisionDiagnostic({

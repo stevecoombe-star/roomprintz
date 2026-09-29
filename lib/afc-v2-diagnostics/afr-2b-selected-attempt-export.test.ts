@@ -99,6 +99,7 @@ function source(
     recoverySafeFailureState: "none",
     metricDecision: recorded(pathAAcceptedMetricDecisionRaw()),
     settleDecision: null,
+    cameraRealizability: null,
     legacyMetricConclusion: null,
     engineFingerprint: fingerprint(),
     original: {
@@ -205,6 +206,7 @@ test("export structure and property order are stable", () => {
     "productionAuthority",
     "metricDecision",
     "settleDecision",
+    "cameraRealizability",
     "legacyMetricConclusion",
     "artifacts",
   ]);

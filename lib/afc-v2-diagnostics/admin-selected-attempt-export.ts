@@ -25,6 +25,10 @@ import {
   type AfcDiagnosticAdminMetricDecision,
 } from "./admin-metric-decision-dto";
 import {
+  parseAfcDiagnosticAdminCameraRealizabilityDto,
+  type AfcDiagnosticAdminCameraRealizability,
+} from "./admin-camera-realizability-dto";
+import {
   parseAfcDiagnosticAdminSettleDecisionDto,
   type AfcDiagnosticAdminSettleDecision,
 } from "./admin-settle-decision-dto";
@@ -141,6 +145,7 @@ export type AfcDiagnosticSelectedAttemptExport = Readonly<{
   }>;
   metricDecision: AfcDiagnosticAdminMetricDecision;
   settleDecision: AfcDiagnosticAdminSettleDecision;
+  cameraRealizability: AfcDiagnosticAdminCameraRealizability;
   legacyMetricConclusion: AfcDiagnosticAdminLegacyMetricConclusion | null;
   artifacts: Readonly<{
     empty: Readonly<{
@@ -414,6 +419,9 @@ export function buildAfcDiagnosticSelectedAttemptExport(
     },
     metricDecision: parseAfcDiagnosticAdminMetricDecisionDto(generation.metricDecision),
     settleDecision: parseAfcDiagnosticAdminSettleDecisionDto(generation.settleDecision),
+    cameraRealizability: parseAfcDiagnosticAdminCameraRealizabilityDto(
+      generation.cameraRealizability,
+    ),
     legacyMetricConclusion: parseAfcDiagnosticAdminLegacyMetricConclusion(
       generation.legacyMetricConclusion,
     ),

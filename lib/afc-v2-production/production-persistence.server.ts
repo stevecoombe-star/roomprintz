@@ -12,6 +12,10 @@ import {
   type AfcV2MetricDecisionPersistedValue,
 } from "./metric-decision-diagnostic";
 import {
+  parseAfcV2CameraRealizability,
+  type AfcV2CameraRealizabilityPersistedValue,
+} from "./camera-realizability-diagnostic";
+import {
   parseAfcV2SettleDecision,
   type AfcV2SettleDecisionPersistedValue,
 } from "./settle-decision-diagnostic";
@@ -54,6 +58,14 @@ function metricDecisionFromRow(value: unknown): AfcV2MetricDecisionPersistedValu
 function settleDecisionFromRow(value: unknown): AfcV2SettleDecisionPersistedValue {
   if (value == null) return null;
   const parsed = parseAfcV2SettleDecision(value);
+  return parsed.ok ? parsed.decision : null;
+}
+
+function cameraRealizabilityFromRow(
+  value: unknown,
+): AfcV2CameraRealizabilityPersistedValue {
+  if (value == null) return null;
+  const parsed = parseAfcV2CameraRealizability(value);
   return parsed.ok ? parsed.decision : null;
 }
 
@@ -163,6 +175,7 @@ function rowToGeneration(row: Record<string, unknown>): AfcGenerationRecord {
       : null,
     metricDecision: metricDecisionFromRow(row.metric_decision),
     settleDecision: settleDecisionFromRow(row.settle_decision),
+    cameraRealizability: cameraRealizabilityFromRow(row.camera_realizability_decision),
     providerProvenance: isRecord(row.provider_provenance)
       ? Object.freeze({ ...row.provider_provenance })
       : Object.freeze({}),
@@ -347,6 +360,9 @@ export function createSupabaseAfcProductionStore(
       }
       if (patch.settleDecision !== undefined) {
         update.settle_decision = patch.settleDecision;
+      }
+      if (patch.cameraRealizability !== undefined) {
+        update.camera_realizability_decision = patch.cameraRealizability;
       }
       if (patch.providerProvenance !== undefined) {
         update.provider_provenance = patch.providerProvenance;
