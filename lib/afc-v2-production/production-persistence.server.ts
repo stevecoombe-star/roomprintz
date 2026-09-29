@@ -12,6 +12,10 @@ import {
   type AfcV2MetricDecisionPersistedValue,
 } from "./metric-decision-diagnostic";
 import {
+  parseAfcV2ArtifactLineage,
+  type AfcV2ArtifactLineagePersistedValue,
+} from "./artifact-lineage-diagnostic";
+import {
   parseAfcV2CameraRealizability,
   type AfcV2CameraRealizabilityPersistedValue,
 } from "./camera-realizability-diagnostic";
@@ -66,6 +70,14 @@ function cameraRealizabilityFromRow(
 ): AfcV2CameraRealizabilityPersistedValue {
   if (value == null) return null;
   const parsed = parseAfcV2CameraRealizability(value);
+  return parsed.ok ? parsed.decision : null;
+}
+
+function artifactLineageFromRow(
+  value: unknown,
+): AfcV2ArtifactLineagePersistedValue {
+  if (value == null) return null;
+  const parsed = parseAfcV2ArtifactLineage(value);
   return parsed.ok ? parsed.decision : null;
 }
 
@@ -176,6 +188,7 @@ function rowToGeneration(row: Record<string, unknown>): AfcGenerationRecord {
     metricDecision: metricDecisionFromRow(row.metric_decision),
     settleDecision: settleDecisionFromRow(row.settle_decision),
     cameraRealizability: cameraRealizabilityFromRow(row.camera_realizability_decision),
+    artifactLineage: artifactLineageFromRow(row.artifact_lineage_decision),
     providerProvenance: isRecord(row.provider_provenance)
       ? Object.freeze({ ...row.provider_provenance })
       : Object.freeze({}),
@@ -363,6 +376,9 @@ export function createSupabaseAfcProductionStore(
       }
       if (patch.cameraRealizability !== undefined) {
         update.camera_realizability_decision = patch.cameraRealizability;
+      }
+      if (patch.artifactLineage !== undefined) {
+        update.artifact_lineage_decision = patch.artifactLineage;
       }
       if (patch.providerProvenance !== undefined) {
         update.provider_provenance = patch.providerProvenance;

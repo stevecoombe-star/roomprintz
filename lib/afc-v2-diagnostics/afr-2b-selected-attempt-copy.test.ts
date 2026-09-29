@@ -52,6 +52,7 @@ function generation(generationId: string) {
     metricDecision: mapAfcDiagnosticAdminMetricDecision(pathAAcceptedMetricDecisionRaw()),
     settleDecision: null,
     cameraRealizability: null,
+    artifactLineage: null,
     legacyMetricConclusion: null,
     engineFingerprint: null,
     original: null,

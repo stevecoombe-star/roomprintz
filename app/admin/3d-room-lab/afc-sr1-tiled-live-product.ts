@@ -52,6 +52,7 @@ import {
   type AfcSr1LiveBasis,
   type AfcSr1LiveFailureReason,
   type AfcSr1LiveProductResult,
+  type AfcSr1TiledPerspectiveReaderObservation,
 } from "./afc-sr1-live-product-contract";
 
 type MutableCounts = {
@@ -75,6 +76,44 @@ function emptyCounts(): MutableCounts {
   };
 }
 
+function readerObservationFromResponse(
+  reader: AfcSr1TiledPerspectiveReaderResponse,
+): AfcSr1TiledPerspectiveReaderObservation {
+  if (reader.status === "failed") {
+    return Object.freeze({
+      readerVersion: reader.readerVersion,
+      status: "failed",
+      rawQuadCount: null,
+      deduplicatedCellCount: null,
+      selectedComponentTileCount: null,
+      selectedCore: null,
+      latticeReprojectionMeanPx: null,
+      latticeReprojectionMaxPx: null,
+      selectedPolygon: null,
+    });
+  }
+  return Object.freeze({
+    readerVersion: reader.readerVersion,
+    status: "ok",
+    rawQuadCount: reader.rawQuadrilateralCount,
+    deduplicatedCellCount: reader.deduplicatedCellCount,
+    selectedComponentTileCount: reader.selectedComponentTileCount,
+    selectedCore: Object.freeze({
+      rows: reader.authoritativeCore.rows,
+      columns: reader.authoritativeCore.columns,
+      j0: reader.authoritativeCore.j0,
+      i0: reader.authoritativeCore.i0,
+    }),
+    latticeReprojectionMeanPx: reader.reprojectionMeanPx,
+    latticeReprojectionMaxPx: reader.reprojectionMaxPx,
+    selectedPolygon: Object.freeze(
+      reader.authoritativeQuadSourceNormalized.map((point) =>
+        Object.freeze({ x: point.x, y: point.y }),
+      ),
+    ),
+  });
+}
+
 function diagnostics(
   counts: AfcSr1LiveAttemptCounts,
   detail: string | null,
@@ -82,7 +121,8 @@ function diagnostics(
     empty?: "cache" | "generated";
     tiled?: "cache" | "generated";
     tiledArtifactRefreshRequested?: boolean;
-  }> = {}
+  }> = {},
+  readerObservation: AfcSr1TiledPerspectiveReaderObservation | null = null,
 ) {
   return Object.freeze({
     finalReason: detail,
@@ -97,6 +137,7 @@ function diagnostics(
     ...(sources.empty ? { emptyArtifactSource: sources.empty } : {}),
     ...(sources.tiled ? { tiledArtifactSource: sources.tiled } : {}),
     tiledArtifactRefreshRequested: sources.tiledArtifactRefreshRequested === true,
+    ...(readerObservation ? { tiledPerspectiveReader: readerObservation } : {}),
   });
 }
 
@@ -177,6 +218,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
   } = {
     tiledArtifactRefreshRequested: forceTiledRegeneration,
   };
+  let readerObservation: AfcSr1TiledPerspectiveReaderObservation | null = null;
   const failed = (
     reason: AfcSr1LiveFailureReason,
     detail: string
@@ -188,7 +230,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     labLoadGeneration: request?.labLoadGeneration ?? -1,
     reason,
     detail,
-    diagnostics: diagnostics(counts, detail, artifactSources),
+    diagnostics: diagnostics(counts, detail, artifactSources, readerObservation),
   });
 
   if (!isValidAfcSr1LiveAnalyzeRequest(request)) {
@@ -337,6 +379,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
   if (!matchingIdentity(reader.decodedIdentity, lineage.tiledIdentity)) {
     return failed("tiled_identity_mismatch", "reader_identity_does_not_bind_generated_tiled");
   }
+  readerObservation = readerObservationFromResponse(reader);
   if (reader.status === "failed") {
     return reader.reason === "invalid_input_image"
       ? failed("tiled_reader_transport_failed", reader.reason)

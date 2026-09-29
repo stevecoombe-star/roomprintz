@@ -100,6 +100,7 @@ function source(
     metricDecision: recorded(pathAAcceptedMetricDecisionRaw()),
     settleDecision: null,
     cameraRealizability: null,
+    artifactLineage: null,
     legacyMetricConclusion: null,
     engineFingerprint: fingerprint(),
     original: {
@@ -207,6 +208,7 @@ test("export structure and property order are stable", () => {
     "metricDecision",
     "settleDecision",
     "cameraRealizability",
+    "artifactLineage",
     "legacyMetricConclusion",
     "artifacts",
   ]);

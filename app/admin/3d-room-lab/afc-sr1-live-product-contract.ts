@@ -118,6 +118,30 @@ export type AfcSr1LiveDiagnostics = Readonly<{
   emptyArtifactSource?: "cache" | "generated";
   tiledArtifactSource?: "cache" | "generated";
   tiledArtifactRefreshRequested?: boolean;
+  /**
+   * Reader evidence copied from a response that did not become authoritative
+   * geometry. Absent when the reader was not called, when its identity did
+   * not match, or when geometry already carries the same evidence.
+   * It does not change the failure reason.
+   */
+  tiledPerspectiveReader?: AfcSr1TiledPerspectiveReaderObservation;
+}>;
+
+export type AfcSr1TiledPerspectiveReaderObservation = Readonly<{
+  readerVersion: string | null;
+  status: "ok" | "failed" | null;
+  rawQuadCount: number | null;
+  deduplicatedCellCount: number | null;
+  selectedComponentTileCount: number | null;
+  selectedCore: Readonly<{
+    rows: number;
+    columns: number;
+    j0: number;
+    i0: number;
+  }> | null;
+  latticeReprojectionMeanPx: number | null;
+  latticeReprojectionMaxPx: number | null;
+  selectedPolygon: readonly Readonly<{ x: number; y: number }>[] | null;
 }>;
 
 export type AfcSr1LiveAuthoritativeGeometry = Readonly<{

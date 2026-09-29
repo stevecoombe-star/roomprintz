@@ -119,6 +119,7 @@ export const AFC_DIAGNOSTIC_ADMIN_GENERATION_COLUMNS = [
   "metric_decision",
   "settle_decision",
   "camera_realizability_decision",
+  "artifact_lineage_decision",
   "original_sha256",
   "original_decoded_width",
   "original_decoded_height",

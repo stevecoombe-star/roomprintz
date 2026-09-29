@@ -62,6 +62,7 @@ function generation(cameraRealizability: unknown) {
     metricDecision: null,
     settleDecision: null,
     cameraRealizability,
+    artifactLineage: null,
     legacyMetricConclusion: null,
     engineFingerprint: null,
     original: null,
@@ -141,6 +142,7 @@ test("selected attempt export records the camera-realizability diagnostic", () =
   assert.deepEqual(keys.slice(keys.indexOf("settleDecision"), keys.indexOf("legacyMetricConclusion") + 1), [
     "settleDecision",
     "cameraRealizability",
+    "artifactLineage",
     "legacyMetricConclusion",
   ]);
   const serialized = JSON.stringify(exported);

@@ -29,6 +29,10 @@ import {
   type AfcDiagnosticAdminMetricDecision,
 } from "./admin-metric-decision-dto";
 import {
+  parseAfcDiagnosticAdminArtifactLineageDto,
+  type AfcDiagnosticAdminArtifactLineage,
+} from "./admin-artifact-lineage-dto";
+import {
   parseAfcDiagnosticAdminCameraRealizabilityDto,
   type AfcDiagnosticAdminCameraRealizability,
 } from "./admin-camera-realizability-dto";
@@ -139,6 +143,7 @@ export type AfcDiagnosticInspectorGenerationEvidence = Readonly<{
   metricDecision: AfcDiagnosticAdminMetricDecision;
   settleDecision: AfcDiagnosticAdminSettleDecision;
   cameraRealizability: AfcDiagnosticAdminCameraRealizability;
+  artifactLineage: AfcDiagnosticAdminArtifactLineage;
   legacyMetricConclusion: AfcDiagnosticAdminLegacyMetricConclusion | null;
   engineFingerprint: AfcDiagnosticInspectorEngineFingerprint | null;
   original: AfcDiagnosticInspectorSourceSummary | null;
@@ -462,6 +467,9 @@ export function parseAfcDiagnosticInspectorGenerationEvidence(
   const cameraRealizability = Object.prototype.hasOwnProperty.call(value, "cameraRealizability")
     ? parseAfcDiagnosticAdminCameraRealizabilityDto(value.cameraRealizability)
     : null;
+  const artifactLineage = Object.prototype.hasOwnProperty.call(value, "artifactLineage")
+    ? parseAfcDiagnosticAdminArtifactLineageDto(value.artifactLineage)
+    : null;
   const legacyMetricConclusion = Object.prototype.hasOwnProperty.call(
     value,
     "legacyMetricConclusion",
@@ -497,6 +505,7 @@ export function parseAfcDiagnosticInspectorGenerationEvidence(
     metricDecision,
     settleDecision,
     cameraRealizability,
+    artifactLineage,
     legacyMetricConclusion,
     engineFingerprint,
     original,

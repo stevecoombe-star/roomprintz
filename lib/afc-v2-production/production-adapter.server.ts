@@ -11,7 +11,13 @@ import {
   buildAfcSr1TiledArtifactCacheKey,
   type AfcSr1GeneratedTiledArtifact,
 } from "@/app/admin/3d-room-lab/afc-sr1-tiled-artifact-cache";
-import { vibodeTileGridScaffoldAssist } from "@/app/admin/3d-room-lab/research/afc-sr1-tile-grid-scaffold";
+import {
+  AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
+  AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
+  AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
+  AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+  vibodeTileGridScaffoldAssist,
+} from "@/app/admin/3d-room-lab/research/afc-sr1-tile-grid-scaffold";
 import {
   AFC_V2_REFERENCE_DEPTH_M,
   executeAfcV2Analysis,
@@ -30,6 +36,15 @@ import {
 } from "./production-auto-metric";
 import { captureAfcV2MetricDecision } from "./metric-decision-projector";
 import type { AfcV2MetricDecisionPersistedValue } from "./metric-decision-diagnostic";
+import {
+  afcV2ReaderEvidenceFromProduct,
+  buildAfcV2ArtifactLineageDiagnostic,
+  unknownAfcV2ArtifactLineageEmpty,
+  unknownAfcV2ArtifactLineageTiled,
+  type AfcV2ArtifactLineageEmpty,
+  type AfcV2ArtifactLineagePersistedValue,
+  type AfcV2ArtifactLineageTiled,
+} from "./artifact-lineage-diagnostic";
 import type { AfcV2CameraRealizabilityPersistedValue } from "./camera-realizability-diagnostic";
 import type { AfcV2SettleDecisionPersistedValue } from "./settle-decision-diagnostic";
 import {
@@ -102,10 +117,12 @@ type ArtifactCapture = {
   empty: AfcSr1ResolvedEmpty | null;
   emptySource: AfcArtifactSource | null;
   emptyStoragePath: string | null;
+  emptyLineage: AfcV2ArtifactLineageEmpty | null;
   tiled: AfcSr1GeneratedTiledArtifact | null;
   tiledBytes: Uint8Array | null;
   tiledSource: AfcArtifactSource | null;
   tiledCacheKey: string | null;
+  tiledLineage: AfcV2ArtifactLineageTiled | null;
 };
 
 function detectMime(bytes: Uint8Array): AfcSr1LiveBasis["mimeType"] | null {
@@ -336,10 +353,12 @@ export async function runProductionAfcAnalysis(
     empty: null,
     emptySource: null,
     emptyStoragePath: null,
+    emptyLineage: null,
     tiled: null,
     tiledBytes: null,
     tiledSource: null,
     tiledCacheKey: null,
+    tiledLineage: null,
   };
   const innerResolveEmpty = input.analysisDependencies?.product?.resolveEmpty ??
     resolveAfcSr1LiveEmptyDefault;
@@ -389,6 +408,11 @@ export async function runProductionAfcAnalysis(
             })
           ) {
             capture.emptySource = "durable";
+            capture.emptyLineage = emptyLineageFromBasis(
+              durable.basis,
+              "durable",
+              durable.sourceGenerationId,
+            );
             capture.empty = Object.freeze({
               basis: durable.basis,
               bytes: durable.bytes,
@@ -398,7 +422,15 @@ export async function runProductionAfcAnalysis(
           }
           const resolved = await innerResolveEmpty(original);
           if (!resolved) return null;
+          // The durable|generated column still records a durable miss as
+          // "generated", including a process-local cache hit. Lineage splits
+          // those two cases. Promotion keeps using the column.
           capture.emptySource = "generated";
+          capture.emptyLineage = emptyLineageFromBasis(
+            resolved.basis,
+            resolved.generated ? "generated" : "process_cache",
+            null,
+          );
           capture.empty = resolved;
           const stored = await persistImageArtifact({
             store: input.store,
@@ -430,20 +462,44 @@ export async function runProductionAfcAnalysis(
               })
             ) {
               capture.tiledSource = "durable";
+              capture.tiledLineage = tiledLineageFromGenerated(
+                durable.result,
+                "durable",
+                durable.sourceGenerationId,
+              );
               capture.tiled = durable.result;
               capture.tiledBytes = durable.bytes;
               return durable.result;
             }
           }
-          const result = await innerGenerateTiled(args);
-          if (result.status === "generated") {
-            capture.tiledSource = "generated";
-            capture.tiled = result;
-            capture.tiledBytes = Uint8Array.from(
-              Buffer.from(result.tiled.base64, "base64"),
-            );
+          try {
+            const result = await innerGenerateTiled(args);
+            if (result.status === "generated") {
+              capture.tiledSource = "generated";
+              capture.tiled = result;
+              capture.tiledBytes = Uint8Array.from(
+                Buffer.from(result.tiled.base64, "base64"),
+              );
+              capture.tiledLineage = tiledLineageFromGenerated(
+                result,
+                "generated",
+                null,
+              );
+            } else {
+              capture.tiledLineage = tiledLineageFromStage2Failure(result);
+            }
+            return result;
+          } catch (error) {
+            capture.tiledLineage = {
+              ...unknownAfcV2ArtifactLineageTiled(),
+              source: "generated",
+              generatorId: AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
+              profileId: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
+              researchPreset: AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
+              requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+            };
+            throw error;
           }
-          return result;
         },
         useTiledArtifactCache: false,
       },
@@ -633,6 +689,7 @@ export async function runProductionAfcAnalysis(
     }),
     settleDecision: terminalSettleDecision(analysis),
     cameraRealizability: terminalCameraRealizability(analysis),
+    artifactLineage: terminalArtifactLineage(capture, analysis),
     providerProvenance: Object.freeze({
       emptyArtifactSource: capture.emptySource,
       tiledArtifactSource: capture.tiledSource,
@@ -720,6 +777,84 @@ function terminalCameraRealizability(
   analysis: AfcV2AnalyzeResult | null,
 ): AfcV2CameraRealizabilityPersistedValue {
   return analysis?.cameraRealizability ?? null;
+}
+
+function emptyLineageFromBasis(
+  basis: AfcSr1LiveBasis,
+  source: AfcV2ArtifactLineageEmpty["source"],
+  reusedFromGenerationId: string | null,
+): AfcV2ArtifactLineageEmpty {
+  return {
+    sha256: basis.sha256,
+    byteCount: basis.byteCount,
+    width: basis.decodedWidth,
+    height: basis.decodedHeight,
+    source,
+    reusedFromGenerationId,
+  };
+}
+
+function tiledLineageFromGenerated(
+  result: AfcSr1GeneratedTiledArtifact,
+  source: "generated" | "durable",
+  reusedFromGenerationId: string | null,
+): AfcV2ArtifactLineageTiled {
+  return {
+    sha256: result.tiled.identity.sha256,
+    byteCount: result.tiled.identity.byteCount,
+    width: result.tiled.identity.decodedWidth,
+    height: result.tiled.identity.decodedHeight,
+    source,
+    reusedFromGenerationId,
+    generatorId: result.provenance.generatorId,
+    profileId: result.provenance.profileId,
+    researchPreset: result.provenance.researchPreset,
+    requestedModelId: result.provenance.requestedModelId,
+    provenanceRunId: result.provenance.runId,
+  };
+}
+
+function tiledLineageFromStage2Failure(result: Readonly<{
+  runId: string;
+  tiled?: Readonly<{
+    sha256: string;
+    byteCount: number;
+    decodedWidth: number;
+    decodedHeight: number;
+  }>;
+}>): AfcV2ArtifactLineageTiled {
+  return {
+    sha256: result.tiled?.sha256 ?? null,
+    byteCount: result.tiled?.byteCount ?? null,
+    width: result.tiled?.decodedWidth ?? null,
+    height: result.tiled?.decodedHeight ?? null,
+    source: "generated",
+    reusedFromGenerationId: null,
+    generatorId: AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
+    profileId: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
+    researchPreset: AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
+    requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+    provenanceRunId: result.runId,
+  };
+}
+
+function terminalArtifactLineage(
+  capture: ArtifactCapture,
+  analysis: AfcV2AnalyzeResult | null,
+): AfcV2ArtifactLineagePersistedValue {
+  try {
+    return buildAfcV2ArtifactLineageDiagnostic({
+      empty: capture.emptyLineage ?? unknownAfcV2ArtifactLineageEmpty(),
+      tiled: capture.tiledLineage ?? unknownAfcV2ArtifactLineageTiled(),
+      reader: afcV2ReaderEvidenceFromProduct(analysis?.product),
+    });
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "afc_v2_artifact_lineage_capture_failed",
+      category: error instanceof Error ? error.name : "capture_threw",
+    }));
+    return null;
+  }
 }
 
 function terminalMetricDecision(input: Readonly<{
@@ -848,6 +983,7 @@ async function persistFailedGeneration(input: Readonly<{
     }),
     settleDecision: terminalSettleDecision(input.analysis),
     cameraRealizability: terminalCameraRealizability(input.analysis),
+    artifactLineage: terminalArtifactLineage(input.capture, input.analysis),
     providerProvenance: Object.freeze({
       emptyArtifactSource: input.capture.emptySource,
       tiledArtifactSource: input.capture.tiledSource,

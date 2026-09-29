@@ -70,6 +70,7 @@ function generation(settleDecision: unknown) {
     metricDecision: null,
     settleDecision,
     cameraRealizability: null,
+    artifactLineage: null,
     legacyMetricConclusion: null,
     engineFingerprint: null,
     original: null,

@@ -130,6 +130,7 @@ test("S2A performs one exact authority path and transfers the reader quad to Ori
   const { dependencies, calls } = harness();
   const result = await executeAfcSr1TiledLiveProductAttempt(request(), dependencies);
   assert.equal(result.status, "authoritative_geometry");
+  assert.equal("tiledPerspectiveReader" in result.diagnostics, false);
   assert.deepEqual(calls, { qualify: 1, empty: 1, tiled: 1, lineage: 1, reader: 1 });
   assert.equal(result.geometry.mode, "tiled-perspective-core");
   assert.equal(result.geometry.geometryAuthority, "tiled_perspective_reader");

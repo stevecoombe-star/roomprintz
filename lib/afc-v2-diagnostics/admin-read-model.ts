@@ -25,6 +25,8 @@ import type {
   AfcDiagnosticAdminLegacyMetricConclusion,
   AfcDiagnosticAdminMetricDecision,
 } from "./admin-metric-decision-dto";
+import { mapAfcDiagnosticAdminArtifactLineage } from "./admin-artifact-lineage";
+import type { AfcDiagnosticAdminArtifactLineage } from "./admin-artifact-lineage-dto";
 import { mapAfcDiagnosticAdminCameraRealizability } from "./admin-camera-realizability";
 import type { AfcDiagnosticAdminCameraRealizability } from "./admin-camera-realizability-dto";
 import { mapAfcDiagnosticAdminSettleDecision } from "./admin-settle-decision";
@@ -158,6 +160,7 @@ export type AfcDiagnosticAdminGenerationEvidence = Readonly<{
   metricDecision: AfcDiagnosticAdminMetricDecision;
   settleDecision: AfcDiagnosticAdminSettleDecision;
   cameraRealizability: AfcDiagnosticAdminCameraRealizability;
+  artifactLineage: AfcDiagnosticAdminArtifactLineage;
   legacyMetricConclusion: AfcDiagnosticAdminLegacyMetricConclusion | null;
 
   engineFingerprint: AfcDiagnosticAdminEngineFingerprint | null;
@@ -616,6 +619,7 @@ export type AfcDiagnosticAdminGenerationRecord = Readonly<{
   metricDecision: unknown;
   settleDecision: unknown;
   cameraRealizability: unknown;
+  artifactLineage: unknown;
   originalSha256: string | null;
   originalDecodedWidth: number | null;
   originalDecodedHeight: number | null;
@@ -685,6 +689,9 @@ export function parseAfcDiagnosticAdminGenerationRecord(
     cameraRealizability: Object.prototype.hasOwnProperty.call(row, "camera_realizability_decision")
       ? row.camera_realizability_decision ?? null
       : null,
+    artifactLineage: Object.prototype.hasOwnProperty.call(row, "artifact_lineage_decision")
+      ? row.artifact_lineage_decision ?? null
+      : null,
     originalSha256: optionalString(row.original_sha256),
     originalDecodedWidth: optionalFiniteNumber(row.original_decoded_width),
     originalDecodedHeight: optionalFiniteNumber(row.original_decoded_height),
@@ -717,6 +724,14 @@ function mapSettleDecision(value: unknown): AfcDiagnosticAdminSettleDecision {
 function mapCameraRealizability(value: unknown): AfcDiagnosticAdminCameraRealizability {
   try {
     return mapAfcDiagnosticAdminCameraRealizability(value);
+  } catch {
+    return Object.freeze({ kind: "unreadable" });
+  }
+}
+
+function mapArtifactLineage(value: unknown): AfcDiagnosticAdminArtifactLineage {
+  try {
+    return mapAfcDiagnosticAdminArtifactLineage(value);
   } catch {
     return Object.freeze({ kind: "unreadable" });
   }
@@ -778,6 +793,7 @@ export function mapAfcDiagnosticAdminGenerationEvidence(
     metricDecision: mapMetricDecision(record.metricDecision),
     settleDecision: mapSettleDecision(record.settleDecision),
     cameraRealizability: mapCameraRealizability(record.cameraRealizability),
+    artifactLineage: mapArtifactLineage(record.artifactLineage),
     legacyMetricConclusion: mapLegacyMetricConclusion(record.productionAuthority),
     engineFingerprint: mapAfcDiagnosticAdminEngineFingerprint(
       record.engineFingerprint,

@@ -142,6 +142,7 @@ function adminGeneration(
     metricDecision: null,
     settleDecision: null,
     cameraRealizability: null,
+    artifactLineage: null,
     legacyMetricConclusion: null,
     engineFingerprint: fingerprint(),
     original: Object.freeze({
