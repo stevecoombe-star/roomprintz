@@ -228,7 +228,7 @@ type AfcV2LivePipelineEvidence = Readonly<{
       requestedModelId: typeof AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID;
     }>;
     floorReaderContract: Readonly<{
-      authority: "tiled_perspective_reader";
+      authority: "tiled_perspective_reader" | "manual_source_quad";
       input: "full_tiled_raster";
       inputIdentitySha256: string;
       sourceNormalizedTransfer: "identity_source_normalized";
@@ -556,11 +556,17 @@ function livePipelineEvidence(
         requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
       }),
       floorReaderContract: Object.freeze({
-        authority: "tiled_perspective_reader" as const,
+        authority: product.status === "authoritative_geometry" &&
+            product.geometry.geometryAuthority === "manual_source_quad"
+          ? "manual_source_quad" as const
+          : "tiled_perspective_reader" as const,
         input: "full_tiled_raster" as const,
         inputIdentitySha256: evidence.tiledPerspective.tiledBasis.sha256,
         sourceNormalizedTransfer: "identity_source_normalized" as const,
-        readerVersion: perspective?.readerVersion ?? null,
+        readerVersion: product.status === "authoritative_geometry" &&
+            product.geometry.geometryAuthority === "manual_source_quad"
+          ? null
+          : perspective?.readerVersion ?? null,
       }),
     })
     : null;

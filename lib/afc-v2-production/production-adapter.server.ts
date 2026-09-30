@@ -11,6 +11,7 @@ import {
   buildAfcSr1TiledArtifactCacheKey,
   type AfcSr1GeneratedTiledArtifact,
 } from "@/app/admin/3d-room-lab/afc-sr1-tiled-artifact-cache";
+import { MANUAL_SOURCE_QUAD_GEOMETRY_AUTHORITY } from "./manual-source-quad";
 import {
   AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
   AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
@@ -26,6 +27,7 @@ import {
 } from "@/app/admin/3d-room-lab-v2/afc-v2-analysis.server";
 import { selectActiveRuntimeCollisionWalls } from "@/app/admin/3d-room-lab-v2/room-envelope-collision-authority-contract";
 import { inspectImageMetadata } from "@/lib/vibodeAutoFloorImageFetch";
+import { resolveEffectiveProductionAuthority } from "@/lib/afc-v2-runtime/effective-production-authority";
 
 import { durableArtifactBytesMatch, sha256Hex } from "./production-artifact-integrity";
 import {
@@ -85,6 +87,21 @@ export type ProductionAfcGenerationCreated = Readonly<{
   intent: ProductionAfcIntent;
 }>;
 
+export type ProductionManualPerspectiveRecovery = Readonly<{
+  sourceGenerationId: string;
+  provenance: unknown;
+  empty: Readonly<{
+    basis: AfcSr1LiveBasis;
+    bytes: Uint8Array;
+  }>;
+  tiled: Readonly<{
+    result: AfcSr1GeneratedTiledArtifact;
+    bytes: Uint8Array;
+    cacheKey: string;
+  }>;
+  manualSourceQuad: readonly Readonly<{ x: number; y: number }>[];
+}>;
+
 export type RunProductionAfcAnalysisInput = Readonly<{
   roomId: string;
   userId: string;
@@ -96,6 +113,7 @@ export type RunProductionAfcAnalysisInput = Readonly<{
   onGenerationCreated?: (
     created: ProductionAfcGenerationCreated,
   ) => Promise<unknown> | unknown;
+  recovery?: ProductionManualPerspectiveRecovery;
 }>;
 
 export type RestoreProductionAfcInput = Readonly<{
@@ -211,6 +229,17 @@ function lineageFromBasis(basis: AfcSr1LiveBasis) {
   });
 }
 
+function recoveryProductDependencies(
+  product: AfcV2AnalysisDependencies["product"],
+  recovery: ProductionManualPerspectiveRecovery | null,
+): AfcV2AnalysisDependencies["product"] {
+  if (!recovery) return product;
+  return {
+    ...product,
+    manualSourceQuad: recovery.manualSourceQuad,
+  };
+}
+
 function currentAuthorityFromGeneration(
   generation: AfcGenerationRecord | null,
 ): AfcV2ProductionRoomAuthority | null {
@@ -277,11 +306,15 @@ export async function restoreProductionAfcRoom(
       frame: generation?.frame ?? null,
     });
   }
+  const effective = resolveEffectiveProductionAuthority(
+    generation.productionAuthority,
+    generation.manualPerspective,
+  );
   return publicResponse({
     status: "ready",
     generationId: generation.id,
     currentGenerationId: generation.id,
-    authority: generation.productionAuthority,
+    authority: effective.authority,
     failureReason: null,
     frame: generation.frame,
   });
@@ -305,6 +338,38 @@ export async function runProductionAfcAnalysis(
   const parentId = room.currentAfcGenerationId;
   const parent = parentId ? await input.store.getGeneration(parentId) : null;
   const parentAuthority = currentAuthorityFromGeneration(parent);
+  const recovery = input.recovery ?? null;
+  if (recovery) {
+    const source = await input.store.getGeneration(recovery.sourceGenerationId);
+    const emptyMatches = durableArtifactBytesMatch({
+      bytes: recovery.empty.bytes,
+      sha256: recovery.empty.basis.sha256,
+      byteCount: recovery.empty.basis.byteCount,
+    });
+    const tiledMatches = durableArtifactBytesMatch({
+      bytes: recovery.tiled.bytes,
+      sha256: recovery.tiled.result.tiled.identity.sha256,
+      byteCount: recovery.tiled.result.tiled.identity.byteCount,
+    });
+    if (
+      !source ||
+      source.roomId !== input.roomId ||
+      source.userId !== input.userId ||
+      source.status !== "failed" ||
+      !emptyMatches ||
+      !tiledMatches ||
+      recovery.manualSourceQuad.length !== 4
+    ) {
+      return publicResponse({
+        status: "failed",
+        generationId: null,
+        currentGenerationId: parentId,
+        authority: parentAuthority,
+        failureReason: "Manual perspective recovery prerequisites were not met.",
+        frame: null,
+      });
+    }
+  }
   const sourceImageUrl = input.original.sourceImageUrl?.trim() ?? "";
   if (!isProductionOriginalSourceUrl(sourceImageUrl)) {
     return publicResponse({
@@ -316,9 +381,10 @@ export async function runProductionAfcAnalysis(
       frame: null,
     });
   }
-  const intent: ProductionAfcIntent = input.intent ??
-    (parentId ? "run_again" : "analyze");
-  const forceTiledRegeneration = intent === "reread_perspective";
+  const intent: ProductionAfcIntent = recovery
+    ? "run_again"
+    : input.intent ?? (parentId ? "run_again" : "analyze");
+  const forceTiledRegeneration = recovery ? false : intent === "reread_perspective";
   const originalIdentity = await resolveOriginalIdentity(input.original);
   const frame = Object.freeze({
     width: originalIdentity.decodedWidth,
@@ -327,7 +393,7 @@ export async function runProductionAfcAnalysis(
   const generation = await input.store.createGeneration({
     roomId: input.roomId,
     userId: input.userId,
-    parentGenerationId: parentId,
+    parentGenerationId: recovery ? recovery.sourceGenerationId : parentId,
     runId: randomUUID(),
     intent,
     tiledForceRegeneration: forceTiledRegeneration,
@@ -369,6 +435,7 @@ export async function runProductionAfcAnalysis(
   await input.store.updateGeneration(generation.id, {
     original: originalIdentity,
     frame,
+    ...(recovery ? { recoveryProvenance: recovery.provenance } : {}),
   });
 
   let analysis: AfcV2AnalyzeResult;
@@ -389,12 +456,27 @@ export async function runProductionAfcAnalysis(
     }, {
       ...input.analysisDependencies,
       product: {
-        ...input.analysisDependencies?.product,
+        ...recoveryProductDependencies(input.analysisDependencies?.product, recovery),
         qualifyOriginal: async () => Object.freeze({
           sourceImageUrl,
           basis: originalIdentity,
         }),
         resolveEmpty: async (original) => {
+          if (recovery) {
+            if (original.basis.sha256 !== originalIdentity.sha256) return null;
+            capture.emptySource = "durable";
+            capture.emptyLineage = emptyLineageFromBasis(
+              recovery.empty.basis,
+              "durable",
+              recovery.sourceGenerationId,
+            );
+            capture.empty = Object.freeze({
+              basis: recovery.empty.basis,
+              bytes: recovery.empty.bytes,
+              generated: false,
+            });
+            return capture.empty;
+          }
           const durable = await input.store.lookupDurableEmpty(
             input.userId,
             original.basis.sha256,
@@ -443,6 +525,18 @@ export async function runProductionAfcAnalysis(
           return resolved;
         },
         generateTiled: async (args) => {
+          if (recovery) {
+            capture.tiledCacheKey = recovery.tiled.cacheKey;
+            capture.tiledSource = "durable";
+            capture.tiled = recovery.tiled.result;
+            capture.tiledBytes = recovery.tiled.bytes;
+            capture.tiledLineage = tiledLineageFromGenerated(
+              recovery.tiled.result,
+              "durable",
+              recovery.sourceGenerationId,
+            );
+            return recovery.tiled.result;
+          }
           const cacheKey = buildAfcSr1TiledArtifactCacheKey({
             emptySha256: args.empty.identity.sha256,
           });
@@ -519,6 +613,7 @@ export async function runProductionAfcAnalysis(
       originalIdentity,
       frame,
       forceTiledRegeneration,
+      readerInvoked: recovery == null,
       reason: error instanceof Error ? error.message : "AFC analysis failed.",
       analysis: null,
     });
@@ -541,6 +636,7 @@ export async function runProductionAfcAnalysis(
       originalIdentity,
       frame,
       forceTiledRegeneration,
+      readerInvoked: recovery == null,
       reason: analysis.reason,
       analysis,
     });
@@ -566,6 +662,7 @@ export async function runProductionAfcAnalysis(
       originalIdentity,
       frame,
       forceTiledRegeneration,
+      readerInvoked: recovery == null,
       reason: "Production AFC artifacts were incomplete after analysis.",
       analysis,
     });
@@ -694,7 +791,10 @@ export async function runProductionAfcAnalysis(
       emptyArtifactSource: capture.emptySource,
       tiledArtifactSource: capture.tiledSource,
       tiledForceRegeneration: forceTiledRegeneration,
-      readerRerun: true,
+      readerRerun: recovery == null,
+      ...(recovery
+        ? { geometryAuthority: MANUAL_SOURCE_QUAD_GEOMETRY_AUTHORITY }
+        : {}),
     }),
   });
   const currentGenerationId = await input.store.activateGeneration({
@@ -914,6 +1014,7 @@ async function persistFailedGeneration(input: Readonly<{
   originalIdentity: AfcStoredImageIdentity;
   frame: Readonly<{ width: number; height: number }>;
   forceTiledRegeneration: boolean;
+  readerInvoked?: boolean;
   reason: string;
   analysis: AfcV2AnalyzeResult | null;
 }>) {
@@ -988,7 +1089,10 @@ async function persistFailedGeneration(input: Readonly<{
       emptyArtifactSource: input.capture.emptySource,
       tiledArtifactSource: input.capture.tiledSource,
       tiledForceRegeneration: input.forceTiledRegeneration,
-      readerRerun: true,
+      readerRerun: input.readerInvoked !== false,
+      ...(input.readerInvoked === false
+        ? { geometryAuthority: MANUAL_SOURCE_QUAD_GEOMETRY_AUTHORITY }
+        : {}),
     }),
   });
 }

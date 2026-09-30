@@ -65,6 +65,11 @@ export type AfcAdminVisualOverlayV1 = Readonly<{
   }>;
   floorQuad: AfcAdminVisualOverlayFloorQuad | null;
   collisionEdges: readonly AfcAdminVisualOverlayCollisionEdge[];
+  /**
+   * This artifact can host source-normalized image coordinates.
+   * Independent of whether an automatic floor quad exists.
+   */
+  sourceNormalizedHost: boolean;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -149,6 +154,7 @@ export function parseAfcAdminVisualOverlayV1(
     if (!edge) return null;
     collisionEdges.push(edge);
   }
+  if (typeof value.sourceNormalizedHost !== "boolean") return null;
   return Object.freeze({
     version: AFC_ADMIN_VISUAL_OVERLAY_VERSION,
     projectionVersion: AFC_ADMIN_VISUAL_OVERLAY_PROJECTION_VERSION,
@@ -156,6 +162,7 @@ export function parseAfcAdminVisualOverlayV1(
     frame: Object.freeze({ width, height }),
     floorQuad,
     collisionEdges: Object.freeze(collisionEdges),
+    sourceNormalizedHost: value.sourceNormalizedHost,
   });
 }
 
@@ -181,6 +188,27 @@ export function afcDiagnosticVisualOverlayFloorAvailable(
   overlay: AfcAdminVisualOverlayV1 | null | undefined,
 ): boolean {
   return overlay?.floorQuad != null;
+}
+
+export function afcDiagnosticSourceNormalizedHost(
+  overlay: AfcAdminVisualOverlayV1 | null | undefined,
+): boolean {
+  return overlay?.sourceNormalizedHost === true;
+}
+
+/**
+ * Bootstrap editing prefers the current artifact when it can host
+ * source-normalized points. Otherwise it moves once to ORIGINAL.
+ * A later manual tab change is left alone.
+ */
+export function bootstrapManualHostKind(input: {
+  current: AfcDiagnosticVisualArtifactKind;
+  sourceNormalizedHost: boolean;
+  pinned: boolean;
+}): AfcDiagnosticVisualArtifactKind | null {
+  if (input.pinned || input.sourceNormalizedHost) return null;
+  if (input.current === "original") return null;
+  return "original";
 }
 
 export function afcDiagnosticVisualOverlayCollisionAvailable(

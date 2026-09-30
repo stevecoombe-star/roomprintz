@@ -31,6 +31,12 @@ import {
 } from "./research/afc-sr1-tiled-perspective-exact-grid-lineage";
 import { classifyAfcR3cImagePairCompatibility } from "./research/gemini-floor-proposal-composition";
 import type { AfcSr1SourcePolygon } from "./research/afc-sr1-semantic-prior";
+import { validateFloorSourcePolygonExtent } from "./floor-coordinate-extent";
+import { validateOrderedFloorCorners } from "./perspective-solve";
+import {
+  MANUAL_SOURCE_QUAD_GEOMETRY_AUTHORITY,
+  MANUAL_SOURCE_QUAD_GEOMETRY_VERSION,
+} from "@/lib/afc-v2-production/manual-source-quad";
 import {
   afcSr1LiveSourceIdentityMatches,
   cloneAfcSr1LivePolygon,
@@ -153,6 +159,20 @@ function matchingIdentity(
     left.orientation === right.orientation;
 }
 
+function manualSourceQuadPolygon(
+  points: readonly Readonly<{ x: number; y: number }>[],
+): AfcSr1SourcePolygon | null {
+  if (points.length !== 4) return null;
+  const polygon = points.map((point) => Object.freeze({ x: point.x, y: point.y }));
+  if (!polygon.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) {
+    return null;
+  }
+  if (!validateFloorSourcePolygonExtent(polygon).ok) return null;
+  if (!validateOrderedFloorCorners(polygon).ok) return null;
+  const cloned = cloneAfcSr1LivePolygon(polygon as unknown as AfcSr1SourcePolygon);
+  return isValidAfcSr1LiveProductPolygon(cloned) ? cloned : null;
+}
+
 function readerPolygon(
   response: Extract<AfcSr1TiledPerspectiveReaderResponse, { status: "ok" }>
 ): AfcSr1SourcePolygon | null {
@@ -187,6 +207,11 @@ export type AfcSr1TiledLiveProductDependencies = Readonly<{
     imageBase64: string;
     claimedIdentity: AfcSr1TiledPerspectiveReaderIdentity;
   }) => Promise<AfcSr1TiledPerspectiveReaderResponse>;
+  /**
+   * Human NL/NR/FR/FL polygon. When present, the TILED perspective reader
+   * is not called and the quad is stamped manual_source_quad.
+   */
+  manualSourceQuad?: readonly Readonly<{ x: number; y: number }>[];
   onEmptyRetained?: (args: Readonly<{
     attemptId: string;
     resultId: string;
@@ -364,30 +389,71 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     );
   }
 
-  counts.tiledReader = 1;
-  let reader: AfcSr1TiledPerspectiveReaderResponse;
-  try {
-    reader = await (
-      dependencies.readTiledPerspective ?? callCompositorAfcSr1TiledPerspectiveReader
-    )({
-      imageBase64: tiled.tiled.base64,
-      claimedIdentity: lineage.tiledIdentity,
+  const manualPolygon = dependencies.manualSourceQuad
+    ? manualSourceQuadPolygon(dependencies.manualSourceQuad)
+    : null;
+  let sourceNormalizedPolygon: AfcSr1SourcePolygon;
+  let geometryAuthority:
+    | "tiled_perspective_reader"
+    | typeof MANUAL_SOURCE_QUAD_GEOMETRY_AUTHORITY;
+  let tiledPerspective: NonNullable<
+    Extract<AfcSr1LiveProductResult, { status: "authoritative_geometry" }>["geometry"]["tiledPerspective"]
+  >;
+  if (dependencies.manualSourceQuad) {
+    if (!manualPolygon) {
+      return failed("floor_proposal_invalid", "manual_source_quad_invalid");
+    }
+    counts.tiledReader = 0;
+    sourceNormalizedPolygon = manualPolygon;
+    geometryAuthority = MANUAL_SOURCE_QUAD_GEOMETRY_AUTHORITY;
+    tiledPerspective = Object.freeze({
+      tiledBasis: lineage.tiledIdentity,
+      emptyToTiledLineageDigest: lineage.authority.lineageEvidenceDigest,
+      emptyToTiledTransfer: "identity_source_normalized" as const,
+      emptyToOriginalCompatibilityTier: emptyToOriginal.tier,
+      readerVersion: MANUAL_SOURCE_QUAD_GEOMETRY_VERSION,
     });
-  } catch {
-    return failed("tiled_reader_transport_failed", "tiled_reader_transport_or_contract_failed");
-  }
-  if (!matchingIdentity(reader.decodedIdentity, lineage.tiledIdentity)) {
-    return failed("tiled_identity_mismatch", "reader_identity_does_not_bind_generated_tiled");
-  }
-  readerObservation = readerObservationFromResponse(reader);
-  if (reader.status === "failed") {
-    return reader.reason === "invalid_input_image"
-      ? failed("tiled_reader_transport_failed", reader.reason)
-      : failed(reader.reason, reader.reason);
-  }
-  const sourceNormalizedPolygon = readerPolygon(reader);
-  if (!sourceNormalizedPolygon) {
-    return failed("tiled_reader_transport_failed", "reader_authoritative_quad_invalid");
+  } else {
+    counts.tiledReader = 1;
+    let reader: AfcSr1TiledPerspectiveReaderResponse;
+    try {
+      reader = await (
+        dependencies.readTiledPerspective ?? callCompositorAfcSr1TiledPerspectiveReader
+      )({
+        imageBase64: tiled.tiled.base64,
+        claimedIdentity: lineage.tiledIdentity,
+      });
+    } catch {
+      return failed("tiled_reader_transport_failed", "tiled_reader_transport_or_contract_failed");
+    }
+    if (!matchingIdentity(reader.decodedIdentity, lineage.tiledIdentity)) {
+      return failed("tiled_identity_mismatch", "reader_identity_does_not_bind_generated_tiled");
+    }
+    readerObservation = readerObservationFromResponse(reader);
+    if (reader.status === "failed") {
+      return reader.reason === "invalid_input_image"
+        ? failed("tiled_reader_transport_failed", reader.reason)
+        : failed(reader.reason, reader.reason);
+    }
+    const readerQuad = readerPolygon(reader);
+    if (!readerQuad) {
+      return failed("tiled_reader_transport_failed", "reader_authoritative_quad_invalid");
+    }
+    sourceNormalizedPolygon = readerQuad;
+    geometryAuthority = "tiled_perspective_reader";
+    tiledPerspective = Object.freeze({
+      tiledBasis: lineage.tiledIdentity,
+      emptyToTiledLineageDigest: lineage.authority.lineageEvidenceDigest,
+      emptyToTiledTransfer: "identity_source_normalized" as const,
+      emptyToOriginalCompatibilityTier: emptyToOriginal.tier,
+      readerVersion: reader.readerVersion,
+      core: reader.authoritativeCore,
+      selectedComponentTileCount: reader.selectedComponentTileCount,
+      rawQuadrilateralCount: reader.rawQuadrilateralCount,
+      deduplicatedCellCount: reader.deduplicatedCellCount,
+      reprojectionMeanPx: reader.reprojectionMeanPx,
+      reprojectionMaxPx: reader.reprojectionMaxPx,
+    });
   }
 
   const transferKind = emptyToOriginal.tier === "exact_grid_compatible"
@@ -405,7 +471,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     photoClass: "tiled_perspective_core",
     geometry: Object.freeze({
       mode: "tiled-perspective-core",
-      geometryAuthority: "tiled_perspective_reader",
+      geometryAuthority,
       sourceNormalizedPolygon,
       rawSourceNormalizedPolygon: cloneAfcSr1LivePolygon(sourceNormalizedPolygon),
       fixedAnchor: null,
@@ -422,19 +488,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
       classifierVersion: null,
       anchorAuthorityKind: null,
       onAxisConstruction: null,
-      tiledPerspective: Object.freeze({
-        tiledBasis: lineage.tiledIdentity,
-        emptyToTiledLineageDigest: lineage.authority.lineageEvidenceDigest,
-        emptyToTiledTransfer: "identity_source_normalized",
-        emptyToOriginalCompatibilityTier: emptyToOriginal.tier,
-        readerVersion: reader.readerVersion,
-        core: reader.authoritativeCore,
-        selectedComponentTileCount: reader.selectedComponentTileCount,
-        rawQuadrilateralCount: reader.rawQuadrilateralCount,
-        deduplicatedCellCount: reader.deduplicatedCellCount,
-        reprojectionMeanPx: reader.reprojectionMeanPx,
-        reprojectionMaxPx: reader.reprojectionMaxPx,
-      }),
+      tiledPerspective,
     }),
     metric: Object.freeze({
       perspectiveAuthority: "tiled_perspective_core",

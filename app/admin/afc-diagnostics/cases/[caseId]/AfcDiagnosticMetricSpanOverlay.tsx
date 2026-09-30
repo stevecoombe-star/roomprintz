@@ -1,6 +1,13 @@
 "use client";
 
+import { useState } from "react";
+
 import { formatAfcDiagnosticMetricNumber } from "@/lib/afc-v2-diagnostics/admin-metric-decision-format";
+import {
+  MANUAL_PERSPECTIVE_HANDLE_HIT_RADIUS,
+  translateManualPerspectiveImagePoints,
+  type ManualPerspectiveImagePoints,
+} from "@/lib/afc-v2-diagnostics/manual-perspective-geometry";
 import {
   metricSpanViewBoxPoint,
   type AfcDiagnosticMetricSpanOverlayModel,
@@ -144,6 +151,9 @@ export function AfcDiagnosticEvidenceOverlaySvg({
   showCollision,
   collisionEdges,
   metricSpan,
+  manualFloor = null,
+  onManualPointChange = null,
+  onManualQuadChange = null,
 }: {
   showFloor: boolean;
   floorPoints: ReadonlyArray<{ x: number; y: number }> | null;
@@ -153,8 +163,12 @@ export function AfcDiagnosticEvidenceOverlaySvg({
     points: ReadonlyArray<{ x: number; y: number }>;
   }>;
   metricSpan: AfcDiagnosticMetricSpanOverlayModel | null;
+  manualFloor?: ReadonlyArray<{ x: number; y: number; label: string }> | null;
+  onManualPointChange?: ((label: string, x: number, y: number) => void) | null;
+  onManualQuadChange?: ((points: ManualPerspectiveImagePoints) => void) | null;
 }) {
-  if (!showFloor && !showCollision && !metricSpan) return null;
+  const [groupDragging, setGroupDragging] = useState(false);
+  if (!showFloor && !showCollision && !metricSpan && !manualFloor?.length) return null;
   return (
     <svg
       aria-hidden="true"
@@ -184,6 +198,141 @@ export function AfcDiagnosticEvidenceOverlaySvg({
           ))
         : null}
       {metricSpan ? <AfcDiagnosticMetricSpanOverlay span={metricSpan} /> : null}
+      {manualFloor && manualFloor.length >= 3 ? (
+        <g data-evidence-role="manual-perspective">
+          <polygon
+            points={polygonPoints(manualFloor)}
+            fill="rgba(251, 191, 36, 0.16)"
+            stroke="#fbbf24"
+            strokeWidth={2}
+            vectorEffect="non-scaling-stroke"
+            style={{ pointerEvents: "none" }}
+          />
+          {onManualQuadChange ? (
+            <polygon
+              data-evidence-role="manual-perspective-body"
+              points={polygonPoints(manualFloor)}
+              fill="transparent"
+              stroke="transparent"
+              strokeWidth={8}
+              vectorEffect="non-scaling-stroke"
+              style={{
+                pointerEvents: "auto",
+                cursor: groupDragging ? "grabbing" : "grab",
+              }}
+              onPointerDown={(event) => {
+                const svg = event.currentTarget.ownerSVGElement;
+                const start = imagePointsFromManualFloor(manualFloor);
+                if (!svg || !start) return;
+                const origin = svgNormalizedPoint(svg, event.clientX, event.clientY);
+                if (!origin) return;
+                event.preventDefault();
+                event.stopPropagation();
+                const previousCursor = document.body.style.cursor;
+                document.body.style.cursor = "grabbing";
+                setGroupDragging(true);
+                const move = (pointer: PointerEvent) => {
+                  const next = svgNormalizedPoint(svg, pointer.clientX, pointer.clientY);
+                  if (!next) return;
+                  onManualQuadChange(translateManualPerspectiveImagePoints(
+                    start,
+                    next.x - origin.x,
+                    next.y - origin.y,
+                  ));
+                };
+                const end = () => {
+                  document.body.style.cursor = previousCursor;
+                  setGroupDragging(false);
+                  window.removeEventListener("pointermove", move);
+                  window.removeEventListener("pointerup", end);
+                  window.removeEventListener("pointercancel", end);
+                };
+                window.addEventListener("pointermove", move);
+                window.addEventListener("pointerup", end);
+                window.addEventListener("pointercancel", end);
+              }}
+            />
+          ) : null}
+          {manualFloor.map((point) => (
+            <g key={point.label}>
+              <circle
+                cx={point.x}
+                cy={point.y}
+                r={MANUAL_PERSPECTIVE_HANDLE_HIT_RADIUS}
+                fill="transparent"
+                style={onManualPointChange ? {
+                  pointerEvents: "auto",
+                  cursor: groupDragging ? "grabbing" : "grab",
+                } : undefined}
+                onPointerDown={onManualPointChange
+                  ? (event) => {
+                    const svg = event.currentTarget.ownerSVGElement;
+                    if (!svg) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const move = (pointer: PointerEvent) => {
+                      const next = svgNormalizedPoint(svg, pointer.clientX, pointer.clientY);
+                      if (next) onManualPointChange(point.label, next.x, next.y);
+                    };
+                    const end = () => {
+                      window.removeEventListener("pointermove", move);
+                      window.removeEventListener("pointerup", end);
+                    };
+                    window.addEventListener("pointermove", move);
+                    window.addEventListener("pointerup", end);
+                  }
+                  : undefined}
+              />
+              <circle
+                cx={point.x}
+                cy={point.y}
+                r="0.012"
+                fill="#fbbf24"
+                stroke="rgb(15, 23, 42)"
+                strokeWidth="0.002"
+              />
+              <text
+                x={point.x}
+                y={point.y - 0.02}
+                fill="rgb(254, 243, 199)"
+                fontSize="0.028"
+                textAnchor="middle"
+              >
+                {point.label}
+              </text>
+            </g>
+          ))}
+        </g>
+      ) : null}
     </svg>
   );
+}
+
+function imagePointsFromManualFloor(
+  points: ReadonlyArray<{ x: number; y: number; label: string }>,
+): ManualPerspectiveImagePoints | null {
+  const found = new Map(points.map((point) => [point.label, point]));
+  const next: Partial<Record<"NL" | "NR" | "FR" | "FL", { x: number; y: number }>> = {};
+  for (const corner of ["NL", "NR", "FR", "FL"] as const) {
+    const point = found.get(corner);
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+    next[corner] = { x: point.x, y: point.y };
+  }
+  if (!next.NL || !next.NR || !next.FR || !next.FL) return null;
+  return { NL: next.NL, NR: next.NR, FR: next.FR, FL: next.FL };
+}
+
+function svgNormalizedPoint(
+  svg: SVGSVGElement,
+  clientX: number,
+  clientY: number,
+): { x: number; y: number } | null {
+  const matrix = svg.getScreenCTM();
+  if (!matrix) return null;
+  const point = svg.createSVGPoint();
+  point.x = clientX;
+  point.y = clientY;
+  const local = point.matrixTransform(matrix.inverse());
+  if (!Number.isFinite(local.x) || !Number.isFinite(local.y)) return null;
+  return { x: local.x, y: local.y };
 }

@@ -5,7 +5,14 @@ import {
   parseVersionId,
   productionAfcJson,
 } from "@/lib/afc-v2-production/production-http";
-import { AFC_V2_RUNTIME_COORDINATE_SPACE } from "@/lib/afc-v2-runtime/types";
+import { createProductionAfcStoreFromEnv } from "@/lib/afc-v2-production/production-persistence.server";
+import { mapSceneObjectsBetweenCameras } from "@/lib/afc-v2-runtime/effective-floor-remap";
+import { resolveEffectiveProductionAuthority } from "@/lib/afc-v2-runtime/effective-production-authority";
+import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
+import {
+  AFC_V2_RUNTIME_COORDINATE_SPACE,
+  type SceneObjectDefinition,
+} from "@/lib/afc-v2-runtime/types";
 import {
   validatePersistedSceneObjects,
 } from "@/lib/afc-v2-runtime/persisted-scene";
@@ -83,9 +90,17 @@ export async function GET(request: Request) {
     }, 200);
   }
 
+  const placed = await sceneObjectsForEditor(
+    query.afcGenerationId,
+    resolved.scene.objects,
+    "to-effective",
+  );
+  if (!placed.ok) {
+    return productionAfcJson({ error: placed.error }, placed.status);
+  }
   const readyBody: Record<string, unknown> = {
     status: "ready",
-    scene: resolved.scene,
+    scene: { ...resolved.scene, objects: placed.objects },
     origin: resolved.origin,
     currentAfcGenerationId: query.afcGenerationId,
   };
@@ -125,6 +140,14 @@ export async function PUT(request: Request) {
     return productionAfcJson({ error: objects.reason }, 400);
   }
 
+  const placed = await sceneObjectsForEditor(
+    query.afcGenerationId,
+    objects.objects,
+    "to-automatic",
+  );
+  if (!placed.ok) {
+    return productionAfcJson({ error: placed.error }, placed.status);
+  }
   const saved = await saveOwnedVersionScene({
     userId: auth.userId,
     scene: {
@@ -132,7 +155,7 @@ export async function PUT(request: Request) {
       versionId: query.versionId,
       afcGenerationId: query.afcGenerationId,
       coordinateSpace: AFC_V2_RUNTIME_COORDINATE_SPACE,
-      objects: objects.objects,
+      objects: placed.objects,
     },
   });
   if (!saved.ok) {
@@ -143,6 +166,41 @@ export async function PUT(request: Request) {
   await scheduleVibodeThumbnailAfterSceneSave(saved.scene);
   return productionAfcJson({
     status: "saved",
-    scene: saved.scene,
+    scene: { ...saved.scene, objects: objects.objects },
   }, 200);
+}
+
+async function sceneObjectsForEditor(
+  generationId: string,
+  objects: readonly SceneObjectDefinition[],
+  direction: "to-effective" | "to-automatic",
+): Promise<
+  | { ok: true; objects: readonly SceneObjectDefinition[] }
+  | { ok: false; status: 409 | 500; error: string }
+> {
+  const store = createProductionAfcStoreFromEnv();
+  if (!store) return { ok: false, status: 500, error: "Server misconfigured." };
+  const generation = await store.getGeneration(generationId);
+  const validated = validateProductionRuntimeAuthority(generation?.productionAuthority);
+  if (!generation || !validated.ok) return { ok: true, objects };
+  const effective = resolveEffectiveProductionAuthority(
+    validated.authority,
+    generation.manualPerspective,
+  );
+  if (effective.kind !== "manual") return { ok: true, objects };
+  const from = direction === "to-effective"
+    ? validated.authority.frozenCamera
+    : effective.authority.frozenCamera;
+  const to = direction === "to-effective"
+    ? effective.authority.frozenCamera
+    : validated.authority.frozenCamera;
+  const mapped = mapSceneObjectsBetweenCameras(objects, from, to);
+  if (!mapped) {
+    return {
+      ok: false,
+      status: 409,
+      error: "Saved furniture cannot be placed in the manual perspective.",
+    };
+  }
+  return { ok: true, objects: mapped };
 }

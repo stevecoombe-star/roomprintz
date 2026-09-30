@@ -19,6 +19,8 @@ import {
   AFC_V2_USER_SIZE_DEFAULT,
   type SceneObjectDefinition,
 } from "@/lib/afc-v2-runtime/types";
+import { mapSceneObjectsBetweenCameras } from "@/lib/afc-v2-runtime/effective-floor-remap";
+import { resolveEffectiveProductionAuthority } from "@/lib/afc-v2-runtime/effective-production-authority";
 import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
 import type { RuntimeAssetIssue } from "@/lib/afc-v2-runtime/runtime-furniture-assets";
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
@@ -75,6 +77,7 @@ type GenerationRecord = Readonly<{
   userId: string;
   status: string;
   productionAuthority: unknown;
+  manualPerspective?: unknown;
 }>;
 
 export type ThumbnailRenderSource = Readonly<{
@@ -138,8 +141,8 @@ export async function buildVibodeThumbnailRenderPayload(
     );
   }
 
-  const authority = validateProductionRuntimeAuthority(generation?.productionAuthority);
-  if (!authority.ok) {
+  const validated = validateProductionRuntimeAuthority(generation?.productionAuthority);
+  if (!validated.ok) {
     return thumbnailRenderError(
       "camera_authority_missing",
       "Production camera authority is missing.",
@@ -155,9 +158,21 @@ export async function buildVibodeThumbnailRenderPayload(
       false,
     );
   }
+  const placed = placeSceneInEffectiveWorld(
+    validated.authority,
+    generation?.manualPerspective ?? null,
+    loaded.scene,
+  );
+  if (!placed) {
+    return thumbnailRenderError(
+      "scene_missing",
+      "Saved furniture cannot be placed in the manual perspective.",
+      false,
+    );
+  }
   const compatibility = resolvePersistedSceneCompatibility({
-    storedAfcGenerationId: loaded.scene.afcGenerationId,
-    currentAfcGenerationId: authority.authority.generationId,
+    storedAfcGenerationId: placed.scene.afcGenerationId,
+    currentAfcGenerationId: placed.authority.generationId,
   });
   if (!compatibility.ok) {
     return thumbnailRenderError(
@@ -166,7 +181,7 @@ export async function buildVibodeThumbnailRenderPayload(
       false,
     );
   }
-  if (loaded.scene.objects.length === 0) {
+  if (placed.scene.objects.length === 0) {
     return thumbnailRenderError(
       "scene_empty",
       "Saved scene has no furniture.",
@@ -183,13 +198,13 @@ export async function buildVibodeThumbnailRenderPayload(
     );
   }
 
-  const resolvedAssets = await resolveObjectAssets(loaded.scene.objects, source);
+  const resolvedAssets = await resolveObjectAssets(placed.scene.objects, source);
   if (!resolvedAssets.ok) return resolvedAssets.failure;
 
   const payload = assemblePayload({
     jobId: input.jobId ?? randomUUID(),
-    scene: loaded.scene,
-    authority: authority.authority,
+    scene: placed.scene,
+    authority: placed.authority,
     background,
     glbUrls: resolvedAssets.glbUrls,
     policy: source.policy,
@@ -359,6 +374,30 @@ export function thumbnailSceneContentToken(input: Readonly<{
       userSizeMultiplier: object.userSizeMultiplier,
     })),
   });
+}
+
+function placeSceneInEffectiveWorld(
+  automatic: AfcV2ProductionRoomAuthority,
+  manualPerspective: unknown,
+  scene: PersistedVersionScene,
+): Readonly<{
+  authority: AfcV2ProductionRoomAuthority;
+  scene: PersistedVersionScene;
+}> | null {
+  const effective = resolveEffectiveProductionAuthority(automatic, manualPerspective);
+  if (effective.kind === "automatic") {
+    return { authority: automatic, scene };
+  }
+  const objects = mapSceneObjectsBetweenCameras(
+    scene.objects,
+    automatic.frozenCamera,
+    effective.authority.frozenCamera,
+  );
+  if (!objects) return null;
+  return {
+    authority: effective.authority,
+    scene: { ...scene, objects },
+  };
 }
 
 function assemblePayload(input: Readonly<{
@@ -653,8 +692,8 @@ export async function inspectVibodeThumbnailContent(
     }
     return thumbnailRenderError("render_access_denied", "Render access denied.", false);
   }
-  const authority = validateProductionRuntimeAuthority(generation?.productionAuthority);
-  if (!authority.ok) {
+  const validated = validateProductionRuntimeAuthority(generation?.productionAuthority);
+  if (!validated.ok) {
     return thumbnailRenderError(
       "camera_authority_missing",
       "Production camera authority is missing.",
@@ -668,9 +707,21 @@ export async function inspectVibodeThumbnailContent(
   if (!loaded.found || "malformed" in loaded || !sceneUpdatedAt) {
     return thumbnailRenderError("scene_missing", "Saved 3D scene is missing.", false);
   }
+  const placed = placeSceneInEffectiveWorld(
+    validated.authority,
+    generation?.manualPerspective ?? null,
+    loaded.scene,
+  );
+  if (!placed) {
+    return thumbnailRenderError(
+      "scene_missing",
+      "Saved furniture cannot be placed in the manual perspective.",
+      false,
+    );
+  }
   const compatibility = resolvePersistedSceneCompatibility({
-    storedAfcGenerationId: loaded.scene.afcGenerationId,
-    currentAfcGenerationId: authority.authority.generationId,
+    storedAfcGenerationId: placed.scene.afcGenerationId,
+    currentAfcGenerationId: placed.authority.generationId,
   });
   if (!compatibility.ok) {
     return thumbnailRenderError(
@@ -679,13 +730,13 @@ export async function inspectVibodeThumbnailContent(
       false,
     );
   }
-  if (loaded.scene.objects.length === 0) {
+  if (placed.scene.objects.length === 0) {
     return {
       ok: true,
       empty: true,
       roomId: input.roomId,
       versionId: input.versionId,
-      afcGenerationId: loaded.scene.afcGenerationId,
+      afcGenerationId: placed.scene.afcGenerationId,
       sceneUpdatedAt,
     };
   }
@@ -697,7 +748,7 @@ export async function inspectVibodeThumbnailContent(
       false,
     );
   }
-  const objects = loaded.scene.objects.map((object) => ({
+  const objects = placed.scene.objects.map((object) => ({
     objectId: object.objectId,
     assetId: object.assetId,
     position: { ...object.transform.position },
@@ -708,18 +759,18 @@ export async function inspectVibodeThumbnailContent(
     ok: true,
     empty: false,
     contentToken: thumbnailSceneContentToken({
-      scene: loaded.scene,
-      authority: authority.authority,
+      scene: placed.scene,
+      authority: placed.authority,
       background,
       objects,
     }),
-    roomId: loaded.scene.roomId,
-    versionId: loaded.scene.versionId,
-    afcGenerationId: authority.authority.generationId,
+    roomId: placed.scene.roomId,
+    versionId: placed.scene.versionId,
+    afcGenerationId: placed.authority.generationId,
     backgroundBucket: background.bucket,
     backgroundPath: background.objectPath,
     sceneUpdatedAt,
-    objects: loaded.scene.objects,
+    objects: placed.scene.objects,
   };
 }
 
@@ -782,6 +833,7 @@ export function createProductionThumbnailRenderSource(): ThumbnailRenderSource {
         userId: generation.userId,
         status: generation.status,
         productionAuthority: generation.productionAuthority,
+        manualPerspective: generation.manualPerspective,
       };
     },
     async loadScene(roomId, versionId) {

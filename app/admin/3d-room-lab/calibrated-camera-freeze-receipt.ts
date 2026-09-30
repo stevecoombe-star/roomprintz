@@ -12,6 +12,10 @@ import {
   sha256Hex,
   type Json,
 } from "../../../lib/sceneHash";
+import {
+  acceptedAfcGeometryAuthority,
+  recordedGeometryReaderVersion,
+} from "../../../lib/afc-v2-production/manual-source-quad";
 
 export const CALIBRATED_CAMERA_FREEZE_RECEIPT_VERSION =
   "afc-sr1-calibrated-camera-freeze-receipt/v1" as const;
@@ -39,7 +43,9 @@ export type CalibratedCameraFreezeReceiptPayload = Readonly<{
     resultId: string;
     labLoadGeneration: number;
     geometryMode: "tiled-perspective-core";
-    geometryAuthority: "tiled_perspective_reader";
+    geometryAuthority:
+      | "tiled_perspective_reader"
+      | "manual_source_quad";
     perspectiveAuthority: "tiled_perspective_core";
     metricScaleAuthority: "provisional_reference_depth";
     referenceDepthM: number;
@@ -49,7 +55,9 @@ export type CalibratedCameraFreezeReceiptPayload = Readonly<{
     }>;
     tiled: Readonly<{
       image: CalibratedCameraFreezeImageIdentity;
-      readerVersion: "afc-sr1-tiled-perspective-reader/s1";
+      readerVersion:
+        | "afc-sr1-tiled-perspective-reader/s1"
+        | "manual-source-quad/v1";
       lineageDigest: string;
       transfer: "identity_source_normalized";
       originalCompatibilityTier:
@@ -400,7 +408,7 @@ function parsePayload(
     !Number.isInteger(afc.labLoadGeneration) ||
     (afc.labLoadGeneration as number) < 0 ||
     afc.geometryMode !== "tiled-perspective-core" ||
-    afc.geometryAuthority !== "tiled_perspective_reader" ||
+    !acceptedAfcGeometryAuthority(afc.geometryAuthority, tiled.readerVersion) ||
     afc.perspectiveAuthority !== "tiled_perspective_core" ||
     afc.metricScaleAuthority !== "provisional_reference_depth" ||
     !finite(afc.referenceDepthM) ||
@@ -411,7 +419,7 @@ function parsePayload(
     afc.acceptedReferenceDepthEvidence.referenceDepthM !==
       afc.referenceDepthM ||
     !tiledImage ||
-    tiled.readerVersion !== "afc-sr1-tiled-perspective-reader/s1" ||
+    !acceptedAfcGeometryAuthority(afc.geometryAuthority, tiled.readerVersion) ||
     typeof tiled.lineageDigest !== "string" ||
     !SHA256_PATTERN.test(tiled.lineageDigest) ||
     tiled.transfer !== "identity_source_normalized" ||
@@ -435,6 +443,11 @@ function parsePayload(
   ) {
     return fail("tiled_provenance", "TILED AFC provenance is invalid.");
   }
+  if (!acceptedAfcGeometryAuthority(afc.geometryAuthority, tiled.readerVersion)) {
+    return fail("tiled_provenance", "TILED AFC provenance is invalid.");
+  }
+  const geometryAuthority = afc.geometryAuthority;
+  const readerVersion = recordedGeometryReaderVersion(geometryAuthority);
 
   const accepted = isRecord(raw.acceptedCalibration)
     ? raw.acceptedCalibration
@@ -609,7 +622,7 @@ function parsePayload(
         resultId: afc.resultId,
         labLoadGeneration: afc.labLoadGeneration as number,
         geometryMode: "tiled-perspective-core",
-        geometryAuthority: "tiled_perspective_reader",
+        geometryAuthority,
         perspectiveAuthority: "tiled_perspective_core",
         metricScaleAuthority: "provisional_reference_depth",
         referenceDepthM: afc.referenceDepthM,
@@ -619,7 +632,7 @@ function parsePayload(
         },
         tiled: {
           image: tiledImage,
-          readerVersion: "afc-sr1-tiled-perspective-reader/s1",
+          readerVersion,
           lineageDigest: tiled.lineageDigest as string,
           transfer: "identity_source_normalized",
           originalCompatibilityTier:

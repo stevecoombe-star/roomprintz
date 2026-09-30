@@ -75,6 +75,8 @@ export type AfcGenerationRecord = Readonly<{
   cameraRealizability: AfcV2CameraRealizabilityPersistedValue;
   artifactLineage: AfcV2ArtifactLineagePersistedValue;
   providerProvenance: Readonly<Record<string, unknown>>;
+  manualPerspective: unknown;
+  recoveryProvenance: unknown;
 }>;
 
 export type DurableEmptyArtifact = Readonly<{
@@ -131,6 +133,7 @@ export type UpdateAfcGenerationInput = Readonly<{
   cameraRealizability?: AfcV2CameraRealizabilityPersistedValue;
   artifactLineage?: AfcV2ArtifactLineagePersistedValue;
   providerProvenance?: Readonly<Record<string, unknown>>;
+  recoveryProvenance?: unknown;
 }>;
 
 export class AfcGenerationImmutabilityError extends Error {
@@ -202,11 +205,18 @@ function cloneRecord(record: AfcGenerationRecord): AfcGenerationRecord {
       ? cloneAfcV2EngineFingerprint(record.engineFingerprint)
       : null,
     providerProvenance: Object.freeze({ ...record.providerProvenance }),
+    recoveryProvenance: cloneUnknownJson(record.recoveryProvenance),
     metricDecision: cloneMetricDecision(record.metricDecision),
     settleDecision: cloneSettleDecision(record.settleDecision),
     cameraRealizability: cloneCameraRealizability(record.cameraRealizability),
     artifactLineage: cloneArtifactLineage(record.artifactLineage),
   });
+}
+
+function cloneUnknownJson(value: unknown): unknown {
+  if (value == null) return null;
+  if (typeof value !== "object") return null;
+  return structuredClone(value);
 }
 
 function cloneMetricDecision(
@@ -285,6 +295,7 @@ function terminalEvidenceEqual(
     && jsonEqual(existing.settleDecision, next.settleDecision)
     && jsonEqual(existing.cameraRealizability, next.cameraRealizability)
     && jsonEqual(existing.artifactLineage, next.artifactLineage)
+    && jsonEqual(existing.recoveryProvenance, next.recoveryProvenance)
     && existing.completedAt === next.completedAt;
 }
 
@@ -355,6 +366,8 @@ export function createMemoryAfcProductionStore(
         cameraRealizability: null,
         artifactLineage: null,
         providerProvenance: Object.freeze({}),
+        manualPerspective: null,
+        recoveryProvenance: null,
       });
       generations.set(id, record);
       return cloneRecord(record);
@@ -390,6 +403,9 @@ export function createMemoryAfcProductionStore(
         providerProvenance: patch.providerProvenance
           ? Object.freeze({ ...patch.providerProvenance })
           : existing.providerProvenance,
+        recoveryProvenance: patch.recoveryProvenance !== undefined
+          ? cloneUnknownJson(patch.recoveryProvenance)
+          : existing.recoveryProvenance,
         metricDecision: patch.metricDecision !== undefined
           ? cloneMetricDecision(patch.metricDecision)
           : existing.metricDecision,

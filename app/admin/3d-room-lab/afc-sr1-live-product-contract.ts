@@ -174,7 +174,8 @@ export type AfcSr1LiveAuthoritativeGeometry = Readonly<{
     geometryAuthority:
       | "supported_domain_near_side_derived"
       | "on_axis_parallel_width_derived"
-      | "tiled_perspective_reader";
+      | "tiled_perspective_reader"
+      | "manual_source_quad";
     sourceNormalizedPolygon: AfcSr1SourcePolygon;
     rawSourceNormalizedPolygon: AfcSr1SourcePolygon;
     fixedAnchor: "NL" | "NR" | null;
@@ -200,19 +201,21 @@ export type AfcSr1LiveAuthoritativeGeometry = Readonly<{
       emptyToOriginalCompatibilityTier:
         | "exact_grid_compatible"
         | "aspect_compatible_rescaled";
-      readerVersion: "afc-sr1-tiled-perspective-reader/s1";
-      core: Readonly<{
+      readerVersion:
+        | "afc-sr1-tiled-perspective-reader/s1"
+        | "manual-source-quad/v1";
+      core?: Readonly<{
         rows: number;
         columns: number;
         j0: number;
         i0: number;
         cellIds: readonly number[];
       }>;
-      selectedComponentTileCount: number;
-      rawQuadrilateralCount: number;
-      deduplicatedCellCount: number;
-      reprojectionMeanPx: number;
-      reprojectionMaxPx: number;
+      selectedComponentTileCount?: number;
+      rawQuadrilateralCount?: number;
+      deduplicatedCellCount?: number;
+      reprojectionMeanPx?: number;
+      reprojectionMaxPx?: number;
     }>;
   }>;
   metric: Readonly<{

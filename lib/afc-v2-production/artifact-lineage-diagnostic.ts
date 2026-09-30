@@ -535,6 +535,7 @@ export function isAfcV2ArtifactLineageRecorded(
 type ReaderProduct = Readonly<{
   status?: string;
   geometry?: Readonly<{
+    geometryAuthority?: string;
     sourceNormalizedPolygon?: readonly Readonly<{ x: number; y: number }>[];
     tiledPerspective?: Readonly<{
       readerVersion?: string;
@@ -568,6 +569,9 @@ export function afcV2ReaderEvidenceFromProduct(
   const perspective = candidate.status === "authoritative_geometry"
     ? candidate.geometry?.tiledPerspective
     : undefined;
+  if (candidate.geometry?.geometryAuthority === "manual_source_quad") {
+    return unknownAfcV2ArtifactLineageReader();
+  }
   if (perspective && candidate.geometry?.sourceNormalizedPolygon) {
     const coreValue = perspective.core;
     return buildAfcV2ArtifactLineageDiagnostic({

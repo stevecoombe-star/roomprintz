@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import {
   nextVisualEvidenceRequest,
@@ -21,10 +21,10 @@ import {
   selectAfcDiagnosticMetricSpanOverlay,
   type AfcDiagnosticMetricSpanSourcePath,
 } from "@/lib/afc-v2-diagnostics/admin-metric-span-overlay";
-import {
-  AfcDiagnosticEvidenceOverlaySvg,
-  AfcDiagnosticMetricSpanContext,
-} from "./AfcDiagnosticMetricSpanOverlay";
+import type {
+  ManualPerspectiveCorner,
+  ManualPerspectiveImagePoints,
+} from "@/lib/afc-v2-diagnostics/manual-perspective-geometry";
 import {
   AFC_DIAGNOSTIC_VISUAL_ARTIFACT_KINDS,
   AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY,
@@ -44,14 +44,23 @@ import {
   afcDiagnosticVisualOverlayBasisLabel,
   afcDiagnosticVisualOverlayCollisionAvailable,
   afcDiagnosticVisualOverlayErrorMessage,
+  afcDiagnosticSourceNormalizedHost,
   afcDiagnosticVisualOverlayFloorAvailable,
   afcDiagnosticVisualOverlayHasGeometry,
+  bootstrapManualHostKind,
   buildAfcDiagnosticVisualOverlayUrl,
   createAfcDiagnosticVisualOverlayCoordinator,
   isAfcDiagnosticVisualOverlayAbortError,
   parseAfcAdminVisualOverlayV1,
   type AfcAdminVisualOverlayV1,
 } from "@/lib/afc-v2-diagnostics/admin-visual-overlay.client";
+import {
+  AfcDiagnosticEvidenceOverlaySvg,
+  AfcDiagnosticMetricSpanContext,
+} from "./AfcDiagnosticMetricSpanOverlay";
+import AfcDiagnosticManualPerspective, {
+  type ManualPerspectiveOverlayPoint,
+} from "./AfcDiagnosticManualPerspective";
 
 const buttonClassName =
   "rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80 disabled:opacity-60";
@@ -126,6 +135,20 @@ type ArtifactSummary = Readonly<{
 
 function shortSha(value: string): string {
   return value.slice(0, 8);
+}
+
+function sameManualOverlay(
+  left: readonly ManualPerspectiveOverlayPoint[] | null,
+  right: readonly ManualPerspectiveOverlayPoint[] | null,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every(
+    (point, index) =>
+      point.label === right[index]?.label &&
+      point.x === right[index]?.x &&
+      point.y === right[index]?.y,
+  );
 }
 
 function metadataPresent(
@@ -212,6 +235,38 @@ export default function AfcDiagnosticVisualEvidence({
   const [retainedFrame, setRetainedFrame] = useState<VisualEvidenceFrame | null>(
     null,
   );
+  const [manualOverlay, setManualOverlay] = useState<
+    readonly ManualPerspectiveOverlayPoint[] | null
+  >(null);
+  const publishManualOverlay = useCallback(
+    (points: readonly ManualPerspectiveOverlayPoint[] | null) => {
+      setManualOverlay((current) =>
+        sameManualOverlay(current, points) ? current : points,
+      );
+    },
+    [],
+  );
+  const editPointRef = useRef<
+    ((corner: ManualPerspectiveCorner, x: number, y: number) => void) | null
+  >(null);
+  const editQuadRef = useRef<((points: ManualPerspectiveImagePoints) => void) | null>(null);
+  const [manualDragEnabled, setManualDragEnabled] = useState(false);
+  const [manualMode, setManualMode] = useState<"adjust" | "bootstrap" | null>(null);
+  const bootstrapHostPinned = useRef(false);
+  const registerPointEdit = useCallback((
+    edit: ((corner: ManualPerspectiveCorner, x: number, y: number) => void) | null,
+    mode?: "adjust" | "bootstrap",
+  ) => {
+    editPointRef.current = edit;
+    setManualDragEnabled(edit != null);
+    setManualMode(edit ? mode ?? "adjust" : null);
+    if (!edit) bootstrapHostPinned.current = false;
+  }, []);
+  const registerQuadEdit = useCallback((
+    edit: ((points: ManualPerspectiveImagePoints) => void) | null,
+  ) => {
+    editQuadRef.current = edit;
+  }, []);
   const identityKey = afcDiagnosticVisualEvidenceTupleKey({
     caseId,
     generationId,
@@ -257,11 +312,33 @@ export default function AfcDiagnosticVisualEvidence({
   const overlayError = overlayView.error;
   const overlay = overlayView.overlay;
   const committedOverlay = overlayIsCommitted ? overlay : null;
+  const sourceNormalizedHost = afcDiagnosticSourceNormalizedHost(committedOverlay);
   const readImageRequestEpoch = useEffectEvent(() => nextImageRequest.epoch);
   const readOverlayRequestEpoch = useEffectEvent(() => nextOverlayRequest.epoch);
   const floorAvailable = afcDiagnosticVisualOverlayFloorAvailable(
     committedOverlay,
   );
+  useEffect(() => {
+    if (manualMode !== "bootstrap" || !manualDragEnabled) return;
+    if (!overlayIsCommitted || overlayPhase !== "ready") return;
+    const nextKind = bootstrapManualHostKind({
+      current: kind,
+      sourceNormalizedHost,
+      pinned: bootstrapHostPinned.current,
+    });
+    if (nextKind) {
+      setKind(nextKind);
+      return;
+    }
+    bootstrapHostPinned.current = true;
+  }, [
+    kind,
+    manualDragEnabled,
+    manualMode,
+    overlayIsCommitted,
+    overlayPhase,
+    sourceNormalizedHost,
+  ]);
   const collisionAvailable = afcDiagnosticVisualOverlayCollisionAvailable(
     committedOverlay,
   );
@@ -520,12 +597,16 @@ export default function AfcDiagnosticVisualEvidence({
   const showFloorOverlay = showFloor && floorAvailable;
   const showCollisionOverlay = showCollision && collisionAvailable;
   const showMetricOverlay = showMetricSpan && metricAvailable;
+  const showManualOverlay = manualOverlay != null && manualOverlay.length > 0;
   const showSvg =
     showImage &&
     overlayIsCommitted &&
     overlayPhase === "ready" &&
     committedOverlay != null &&
-    (showFloorOverlay || showCollisionOverlay || showMetricOverlay);
+    (showFloorOverlay ||
+      showCollisionOverlay ||
+      showMetricOverlay ||
+      showManualOverlay);
 
   return (
     <div>
@@ -691,6 +772,16 @@ export default function AfcDiagnosticVisualEvidence({
         </div>
       </fieldset>
 
+      <AfcDiagnosticManualPerspective
+        key={`${caseId}:${generationId}`}
+        caseId={caseId}
+        generationId={generationId}
+        hostGeometryVisible={sourceNormalizedHost}
+        onProjectedQuad={publishManualOverlay}
+        onRegisterPointEdit={registerPointEdit}
+        onRegisterQuadEdit={registerQuadEdit}
+      />
+
       <div className="mt-3">
         {viewportStyle ? (
           <div className="flex justify-center overflow-hidden rounded-xl border border-slate-800 bg-slate-950 p-2">
@@ -743,6 +834,17 @@ export default function AfcDiagnosticVisualEvidence({
                   showCollision={showCollisionOverlay}
                   collisionEdges={committedOverlay.collisionEdges}
                   metricSpan={showMetricOverlay ? metricSpan : null}
+                  manualFloor={showManualOverlay ? manualOverlay : null}
+                  onManualPointChange={manualDragEnabled
+                    ? (label, x, y) => {
+                      editPointRef.current?.(label as ManualPerspectiveCorner, x, y);
+                    }
+                    : null}
+                  onManualQuadChange={manualDragEnabled
+                    ? (points) => {
+                      editQuadRef.current?.(points);
+                    }
+                    : null}
                 />
               ) : null}
             </div>

@@ -40,7 +40,14 @@ export function buildAfcTiledPerspectiveDiagnosticViewerModel(
 ) {
   const tiledPerspective = result.geometry.tiledPerspective;
   const diagnosticImages = result.diagnosticImages;
-  if (!tiledPerspective) return null;
+  if (
+    !tiledPerspective?.core
+    || tiledPerspective.selectedComponentTileCount == null
+    || tiledPerspective.rawQuadrilateralCount == null
+    || tiledPerspective.deduplicatedCellCount == null
+    || tiledPerspective.reprojectionMeanPx == null
+    || tiledPerspective.reprojectionMaxPx == null
+  ) return null;
   return Object.freeze({
     polygon: result.geometry.sourceNormalizedPolygon,
     originalBasis: result.originalBasis,

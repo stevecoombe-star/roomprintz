@@ -189,6 +189,12 @@ function rowToGeneration(row: Record<string, unknown>): AfcGenerationRecord {
     settleDecision: settleDecisionFromRow(row.settle_decision),
     cameraRealizability: cameraRealizabilityFromRow(row.camera_realizability_decision),
     artifactLineage: artifactLineageFromRow(row.artifact_lineage_decision),
+    manualPerspective: Object.prototype.hasOwnProperty.call(row, "manual_perspective")
+      ? row.manual_perspective ?? null
+      : null,
+    recoveryProvenance: Object.prototype.hasOwnProperty.call(row, "recovery_provenance")
+      ? row.recovery_provenance ?? null
+      : null,
     providerProvenance: isRecord(row.provider_provenance)
       ? Object.freeze({ ...row.provider_provenance })
       : Object.freeze({}),
@@ -382,6 +388,9 @@ export function createSupabaseAfcProductionStore(
       }
       if (patch.providerProvenance !== undefined) {
         update.provider_provenance = patch.providerProvenance;
+      }
+      if (patch.recoveryProvenance !== undefined) {
+        update.recovery_provenance = patch.recoveryProvenance;
       }
       const { data, error } = await supabase
         .from("vibode_afc_generations")

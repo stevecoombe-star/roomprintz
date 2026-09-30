@@ -8,6 +8,7 @@ import {
   afcDiagnosticVisualOverlayBasisLabel,
   afcDiagnosticVisualOverlayCollisionAvailable,
   afcDiagnosticVisualOverlayErrorMessage,
+  afcDiagnosticSourceNormalizedHost,
   afcDiagnosticVisualOverlayFloorAvailable,
   afcDiagnosticVisualOverlayHasGeometry,
   buildAfcDiagnosticVisualOverlayUrl,
@@ -42,6 +43,7 @@ const validOverlay = {
       ],
     },
   ],
+  sourceNormalizedHost: true,
 };
 
 test("overlay URL is case+generation+artifact scoped", () => {
@@ -69,6 +71,8 @@ test("parser accepts the versioned DTO and ignores extra JSON fields", () => {
   assert.equal(parsed.artifactBasis, "original");
   assert.deepEqual(parsed.frame, { width: 1200, height: 800 });
   assert.equal(parsed.floorQuad?.points.length, 4);
+  assert.equal(parsed.sourceNormalizedHost, true);
+  assert.equal(afcDiagnosticSourceNormalizedHost(parsed), true);
   assert.equal(parsed.collisionEdges[0]?.id, "rb_right");
 });
 
@@ -78,9 +82,11 @@ test("parser accepts null floor and empty collision arrays", () => {
     artifactBasis: "empty",
     floorQuad: null,
     collisionEdges: [],
+    sourceNormalizedHost: false,
   });
   assert.ok(parsed);
   assert.equal(parsed.floorQuad, null);
+  assert.equal(afcDiagnosticSourceNormalizedHost(parsed), false);
   assert.deepEqual(parsed.collisionEdges, []);
   assert.equal(afcDiagnosticVisualOverlayFloorAvailable(parsed), false);
   assert.equal(afcDiagnosticVisualOverlayCollisionAvailable(parsed), false);
@@ -96,6 +102,13 @@ test("parser rejects unknown versions, malformed frame, and invalid points", () 
     parseAfcAdminVisualOverlayV1({
       ...validOverlay,
       version: "afc-admin-visual-overlay/v0",
+    }),
+    null,
+  );
+  assert.equal(
+    parseAfcAdminVisualOverlayV1({
+      ...validOverlay,
+      sourceNormalizedHost: "yes",
     }),
     null,
   );
