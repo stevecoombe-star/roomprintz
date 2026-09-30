@@ -171,6 +171,27 @@ export type AfcDiagnosticAdminGenerationEvidence = Readonly<{
   tiled: AfcDiagnosticAdminArtifactSummary;
 }>;
 
+export const AFC_DIAGNOSTIC_ADMIN_VIEWPORT_ARTIFACT_KINDS = [
+  "original",
+  "empty",
+  "tiled",
+] as const;
+
+export type AfcDiagnosticAdminViewportArtifactKind =
+  (typeof AFC_DIAGNOSTIC_ADMIN_VIEWPORT_ARTIFACT_KINDS)[number];
+
+export type AfcDiagnosticAdminViewportFrame = Readonly<{
+  width: number;
+  height: number;
+}>;
+
+export type AfcDiagnosticAdminViewportArtifact = Readonly<{
+  id: string;
+  emptyPresent: boolean;
+  tiledPresent: boolean;
+  frame: AfcDiagnosticAdminViewportFrame | null;
+}>;
+
 export type AfcDiagnosticAdminCaseSummary = Readonly<{
   caseId: string;
   submittedAt: string;
@@ -183,6 +204,9 @@ export type AfcDiagnosticAdminCaseSummary = Readonly<{
   issueCodes: readonly string[];
   taxonomyVersion: string;
   hasNotes: boolean;
+  notes: string | null;
+  viewportArtifactKind: AfcDiagnosticAdminViewportArtifactKind | null;
+  viewportFrame: AfcDiagnosticAdminViewportFrame | null;
 
   roomId: string;
   sessionId: string;
@@ -307,6 +331,65 @@ export function afcDiagnosticAdminHasNotes(
   notes: string | null | undefined,
 ): boolean {
   return typeof notes === "string" && notes.trim().length > 0;
+}
+
+function presentArtifactSha(value: unknown): boolean | null {
+  if (value == null) return false;
+  if (typeof value !== "string") return null;
+  return value.length > 0;
+}
+
+function parseViewportFrame(
+  width: unknown,
+  height: unknown,
+): AfcDiagnosticAdminViewportFrame | null {
+  if (typeof width !== "number" || typeof height !== "number") return null;
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  if (!(width > 0) || !(height > 0)) return null;
+  return Object.freeze({ width, height });
+}
+
+export function parseAfcDiagnosticAdminViewportArtifact(
+  row: unknown,
+): AfcDiagnosticAdminViewportArtifact | null {
+  if (!isRecord(row)) return null;
+  const id = parseAfcDiagnosticAdminUuid(row.id);
+  if (!id) return null;
+  const emptyPresent = presentArtifactSha(row.empty_sha256);
+  const tiledPresent = presentArtifactSha(row.tiled_sha256);
+  if (emptyPresent == null || tiledPresent == null) return null;
+  const frame = parseViewportFrame(row.frame_width, row.frame_height);
+  return Object.freeze({
+    id,
+    emptyPresent,
+    tiledPresent,
+    frame,
+  });
+}
+
+/**
+ * Same preference as the case inspector's default Visual Evidence source:
+ * empty, then tiled, then the captured original.
+ */
+export function afcDiagnosticAdminCaseViewport(
+  artifact: AfcDiagnosticAdminViewportArtifact | null,
+): Readonly<{
+  viewportArtifactKind: AfcDiagnosticAdminViewportArtifactKind | null;
+  viewportFrame: AfcDiagnosticAdminViewportFrame | null;
+}> {
+  if (!artifact) {
+    return Object.freeze({
+      viewportArtifactKind: null,
+      viewportFrame: null,
+    });
+  }
+  let viewportArtifactKind: AfcDiagnosticAdminViewportArtifactKind = "original";
+  if (artifact.emptyPresent) viewportArtifactKind = "empty";
+  else if (artifact.tiledPresent) viewportArtifactKind = "tiled";
+  return Object.freeze({
+    viewportArtifactKind,
+    viewportFrame: artifact.frame,
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -857,7 +940,9 @@ export function mapAfcDiagnosticAdminCaseSummary(input: {
   caseRow: AfcDiagnosticAdminCaseListRecord;
   sessionStatus: AfcDiagnosticSessionStatus;
   sessionAttemptCount: number;
+  viewportArtifact: AfcDiagnosticAdminViewportArtifact | null;
 }): AfcDiagnosticAdminCaseSummary {
+  const viewport = afcDiagnosticAdminCaseViewport(input.viewportArtifact);
   return Object.freeze({
     caseId: input.caseRow.id,
     submittedAt: input.caseRow.submittedAt,
@@ -867,6 +952,11 @@ export function mapAfcDiagnosticAdminCaseSummary(input: {
     issueCodes: Object.freeze([...input.caseRow.issueCodes]),
     taxonomyVersion: input.caseRow.taxonomyVersion,
     hasNotes: afcDiagnosticAdminHasNotes(input.caseRow.notes),
+    notes: afcDiagnosticAdminHasNotes(input.caseRow.notes)
+      ? input.caseRow.notes
+      : null,
+    viewportArtifactKind: viewport.viewportArtifactKind,
+    viewportFrame: viewport.viewportFrame,
     roomId: input.caseRow.roomId,
     sessionId: input.caseRow.sessionId,
     sessionStatus: input.sessionStatus,

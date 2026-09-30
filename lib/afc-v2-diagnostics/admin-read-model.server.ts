@@ -35,6 +35,7 @@ import {
   parseAfcDiagnosticAdminSessionRecord,
   parseAfcDiagnosticAdminSessionStatusRow,
   parseAfcDiagnosticAdminUuid,
+  parseAfcDiagnosticAdminViewportArtifact,
   type AfcDiagnosticAdminCaseDetail,
   type AfcDiagnosticAdminCaseDetailRecord,
   type AfcDiagnosticAdminCaseListQuery,
@@ -46,6 +47,7 @@ import {
   type AfcDiagnosticAdminSessionDetail,
   type AfcDiagnosticAdminSessionRecord,
   type AfcDiagnosticAdminSessionStatusRow,
+  type AfcDiagnosticAdminViewportArtifact,
 } from "./admin-read-model";
 
 export const AFC_GENERATION_TABLE = "vibode_afc_generations";
@@ -96,6 +98,14 @@ export const AFC_DIAGNOSTIC_ADMIN_MEMBERSHIP_COLUMNS = [
 ].join(", ");
 
 export const AFC_DIAGNOSTIC_ADMIN_MEMBERSHIP_COUNT_COLUMNS = "session_id";
+
+export const AFC_DIAGNOSTIC_ADMIN_VIEWPORT_ARTIFACT_COLUMNS = [
+  "id",
+  "empty_sha256",
+  "tiled_sha256",
+  "frame_width",
+  "frame_height",
+].join(", ");
 
 export const AFC_DIAGNOSTIC_ADMIN_GENERATION_COLUMNS = [
   "id",
@@ -171,6 +181,9 @@ export type AfcDiagnosticAdminReadStore = {
   listGenerationsByIds(
     generationIds: readonly string[],
   ): Promise<readonly AfcDiagnosticAdminGenerationEvidence[]>;
+  listCaseViewportArtifacts(
+    generationIds: readonly string[],
+  ): Promise<readonly AfcDiagnosticAdminViewportArtifact[]>;
 };
 
 export class AfcDiagnosticAdminInputError extends Error {
@@ -392,6 +405,23 @@ export function createSupabaseAfcDiagnosticAdminReadStore<
       const rows = Array.isArray(data) ? data : [];
       return rows.map((row) => mapGenerationOrThrow(row));
     },
+
+    async listCaseViewportArtifacts(generationIds) {
+      const ids = uniqueIds(generationIds);
+      if (ids.length === 0) return [];
+      const { data, error } = await supabase
+        .from(AFC_GENERATION_TABLE)
+        .select(AFC_DIAGNOSTIC_ADMIN_VIEWPORT_ARTIFACT_COLUMNS)
+        .in("id", ids);
+      if (error) throwStoreError(error);
+      const rows = Array.isArray(data) ? data : [];
+      return rows.map((row) =>
+        requireMapped(
+          parseAfcDiagnosticAdminViewportArtifact(row),
+          "viewport",
+        ),
+      );
+    },
   };
 }
 
@@ -428,12 +458,17 @@ export async function listAfcDiagnosticAdminCaseSummaries(
   }
 
   const sessionIds = uniqueIds(page.map((row) => row.sessionId));
-  const [sessions, membershipSessionIds] = await Promise.all([
+  const generationIds = uniqueIds(page.map((row) => row.reportedGenerationId));
+  const [sessions, membershipSessionIds, viewportArtifacts] = await Promise.all([
     store.listSessionStatusesByIds(sessionIds),
     store.listMembershipSessionIds(sessionIds),
+    store.listCaseViewportArtifacts(generationIds),
   ]);
   const sessionsById = new Map(sessions.map((session) => [session.id, session]));
   const attemptCounts = sessionAttemptCounts(membershipSessionIds);
+  const viewportByGenerationId = new Map(
+    viewportArtifacts.map((artifact) => [artifact.id, artifact]),
+  );
 
   const items = page.map((caseRow) => {
     const session = sessionsById.get(caseRow.sessionId);
@@ -442,6 +477,8 @@ export async function listAfcDiagnosticAdminCaseSummaries(
       caseRow,
       sessionStatus: session.status,
       sessionAttemptCount: attemptCounts.get(caseRow.sessionId) ?? 0,
+      viewportArtifact:
+        viewportByGenerationId.get(caseRow.reportedGenerationId) ?? null,
     });
   });
 

@@ -60,6 +60,9 @@ function summary(
     issueCodes: ["perspective_off"],
     taxonomyVersion: "afc-qa-issue-taxonomy/v1",
     hasNotes: false,
+    notes: null,
+    viewportArtifactKind: null,
+    viewportFrame: null,
     roomId: ROOM_A,
     sessionId: SESSION_A,
     sessionStatus: "open",
@@ -170,8 +173,14 @@ test("submitted local time formatting and invalid fallback", () => {
   assert.equal(valid.title, "2026-09-18T12:00:00.000Z");
   assert.notEqual(valid.display, "—");
   assert.match(valid.display, /2026/);
+  assert.match(valid.date, /2026/);
+  assert.notEqual(valid.time, "");
+  assert.doesNotMatch(valid.date, /\d:\d/);
+  assert.match(valid.time, /\d:\d/);
   const invalid = formatAfcDiagnosticInboxSubmittedAt("not-a-date");
   assert.equal(invalid.display, "—");
+  assert.equal(invalid.date, "—");
+  assert.equal(invalid.time, "");
   assert.equal(invalid.title, "not-a-date");
 });
 
@@ -314,6 +323,12 @@ test("list payload parser accepts the certified shape and rejects malformed payl
       items: [{ ...summary(), caseId: "bad" }],
       nextCursor: null,
     }),
+    null,
+  );
+  const withoutNotes: Record<string, unknown> = { ...summary() };
+  delete withoutNotes.notes;
+  assert.equal(
+    parseAfcDiagnosticInboxListPayload({ items: [withoutNotes], nextCursor: null }),
     null,
   );
   const emptyCursor = parseAfcDiagnosticInboxListPayload({

@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import { closeAfcDiagnosticAdminCase } from "@/lib/afc-v2-diagnostics/admin-case-review.client";
 import {
   AFC_DIAGNOSTIC_INBOX_COPY,
   AFC_DIAGNOSTIC_INBOX_ISSUE_OPTIONS,
@@ -18,18 +19,20 @@ import {
   AFC_DIAGNOSTIC_INBOX_REVIEW_OPTIONS,
   AFC_DIAGNOSTIC_INBOX_TRIGGER_OPTIONS,
   afcDiagnosticInboxAttemptLabel,
+  afcDiagnosticInboxCaseCanClose,
+  afcDiagnosticInboxCaseNotesText,
   afcDiagnosticInboxClosedVisibilityLabel,
   afcDiagnosticInboxEffectiveShowClosed,
   afcDiagnosticInboxEmptyStateUsesFilterCopy,
   afcDiagnosticInboxHasCommittedFilters,
   afcDiagnosticInboxShowsClosedVisibilityToggle,
   afcDiagnosticInboxIssueDisplay,
+  afcDiagnosticInboxViewportThumbnailUrl,
   countAfcDiagnosticInboxClosedCases,
   filterAfcDiagnosticCasesByClosedVisibility,
   afcDiagnosticInboxLoadErrorMessage,
   afcDiagnosticInboxMachineLabel,
   afcDiagnosticInboxReviewLabel,
-  afcDiagnosticInboxSessionStatusLabel,
   afcDiagnosticInboxSourceText,
   buildAfcDiagnosticInboxListUrl,
   buildAfcDiagnosticInboxPageHref,
@@ -43,6 +46,7 @@ import {
   parseAfcDiagnosticInboxCommittedFilters,
   parseAfcDiagnosticInboxListPayload,
   shortAfcDiagnosticUuid,
+  suppressAfcDiagnosticInboxRowActivation,
   validateAfcDiagnosticInboxDraftFilters,
   type AfcDiagnosticAdminCaseSummary,
   type AfcDiagnosticInboxCommittedFilters,
@@ -54,6 +58,9 @@ const controlClassName =
 
 const buttonClassName =
   "rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80 disabled:opacity-60";
+
+const closeButtonClassName =
+  "rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80 disabled:opacity-60";
 
 const closedVisibilityButtonActiveClassName =
   "rounded-lg border border-emerald-400/80 px-3 py-1.5 text-xs text-emerald-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80";
@@ -148,26 +155,156 @@ function CopyIdButton({
   );
 }
 
+function viewportBoxStyle(
+  frame: AfcDiagnosticAdminCaseSummary["viewportFrame"],
+): { height: string; width?: string; maxWidth?: string; aspectRatio?: string } {
+  if (!frame) return { height: "3rem", width: "3rem" };
+  return {
+    height: "3rem",
+    width: "auto",
+    maxWidth: "5.5rem",
+    aspectRatio: `${frame.width} / ${frame.height}`,
+  };
+}
+
+export function AfcDiagnosticInboxCaseNotes({
+  notes,
+}: {
+  notes: string | null;
+}) {
+  const text = afcDiagnosticInboxCaseNotesText(notes);
+  if (!text) {
+    return (
+      <span className="text-slate-500" data-afc-inbox-notes="">
+        —
+      </span>
+    );
+  }
+  return (
+    <p
+      data-afc-inbox-notes=""
+      title={text}
+      className="max-w-[18rem] line-clamp-2 break-words text-[11px] leading-snug text-slate-300"
+    >
+      {text}
+    </p>
+  );
+}
+
+export function AfcDiagnosticInboxViewportThumbnail({
+  item,
+}: {
+  item: Pick<
+    AfcDiagnosticAdminCaseSummary,
+    "caseId" | "reportedGenerationId" | "viewportArtifactKind" | "viewportFrame"
+  >;
+}) {
+  const [failed, setFailed] = useState(false);
+  const src = afcDiagnosticInboxViewportThumbnailUrl({
+    caseId: item.caseId,
+    generationId: item.reportedGenerationId,
+    kind: item.viewportArtifactKind,
+  });
+  const boxStyle = viewportBoxStyle(item.viewportFrame);
+  if (!src || failed) {
+    return (
+      <span
+        data-afc-inbox-viewport="placeholder"
+        aria-label="No viewport image"
+        className="inline-flex shrink-0 items-center justify-center rounded-md border border-slate-700 bg-slate-950 text-[10px] text-slate-500"
+        style={boxStyle}
+      >
+        —
+      </span>
+    );
+  }
+  return (
+    <span
+      data-afc-inbox-viewport="image"
+      className="inline-flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700 bg-slate-950"
+      style={boxStyle}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt="Case viewport"
+        className="h-full w-full object-contain"
+        draggable={false}
+        decoding="async"
+        onError={() => setFailed(true)}
+      />
+    </span>
+  );
+}
+
+export function AfcDiagnosticInboxCloseCaseControl({
+  caseId,
+  reviewStatus,
+  pending,
+  errorMessage,
+  onClose,
+}: {
+  caseId: string;
+  reviewStatus: string;
+  pending: boolean;
+  errorMessage: string | null;
+  onClose: () => void;
+}) {
+  if (!afcDiagnosticInboxCaseCanClose(reviewStatus)) {
+    return (
+      <span
+        data-afc-inbox-closed-status=""
+        className={`inline-flex rounded-md border px-1.5 py-0.5 text-[11px] ${reviewBadgeClass("closed")}`}
+      >
+        {afcDiagnosticInboxReviewLabel("closed")}
+      </span>
+    );
+  }
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <button
+        type="button"
+        data-afc-inbox-close-case=""
+        className={closeButtonClassName}
+        disabled={pending}
+        aria-busy={pending}
+        aria-label={`${AFC_DIAGNOSTIC_INBOX_COPY.closeCase} ${shortAfcDiagnosticUuid(caseId)}`}
+        onClick={(event) => {
+          suppressAfcDiagnosticInboxRowActivation(event);
+          if (pending) return;
+          onClose();
+        }}
+      >
+        {pending
+          ? AFC_DIAGNOSTIC_INBOX_COPY.closingCase
+          : AFC_DIAGNOSTIC_INBOX_COPY.close}
+      </button>
+      {errorMessage ? (
+        <p role="alert" className="max-w-40 text-[10px] leading-snug text-rose-300">
+          {errorMessage}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function IdRow({
   label,
   id,
   ariaLabel,
-  extra,
 }: {
   label: string;
   id: string;
   ariaLabel: string;
-  extra?: string;
 }) {
   return (
     <div className="flex items-center gap-1.5">
       <span className="w-16 shrink-0 text-[10px] uppercase tracking-wide text-slate-500">
         {label}
       </span>
-      <span className="font-mono text-[11px] text-slate-200" title={id}>
+      <span className="w-[8ch] shrink-0 font-mono text-[11px] text-slate-200" title={id}>
         {shortAfcDiagnosticUuid(id)}
       </span>
-      {extra ? <span className="text-[11px] text-slate-500">· {extra}</span> : null}
       <CopyIdButton value={id} ariaLabel={ariaLabel} />
     </div>
   );
@@ -205,6 +342,14 @@ export default function AfcDiagnosticCaseInbox() {
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
   const [showClosed, setShowClosed] = useState(false);
   const [items, setItems] = useState<AfcDiagnosticAdminCaseSummary[]>([]);
+  const [revealedClosedIds, setRevealedClosedIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [closingIds, setClosingIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [closeErrors, setCloseErrors] = useState<Readonly<Record<string, string>>>(
+    {},
+  );
+  const closingRef = useRef(new Set<string>());
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [phase, setPhase] = useState<
@@ -357,14 +502,50 @@ export default function AfcDiagnosticCaseInbox() {
     replaceFilters(applyAfcDiagnosticInboxSelectFilter(committed, key, value));
   };
 
+  const closeCase = useCallback(async (caseId: string) => {
+    if (closingRef.current.has(caseId)) return;
+    closingRef.current.add(caseId);
+    setClosingIds(new Set(closingRef.current));
+    setCloseErrors((current) => {
+      if (!(caseId in current)) return current;
+      const next = { ...current };
+      delete next[caseId];
+      return next;
+    });
+    try {
+      const result = await closeAfcDiagnosticAdminCase({ caseId });
+      if (!result.ok) {
+        setCloseErrors((current) => ({ ...current, [caseId]: result.message }));
+        return;
+      }
+      setItems((current) =>
+        current.map((item) =>
+          item.caseId === caseId ? { ...item, reviewStatus: "closed" } : item,
+        ),
+      );
+      setRevealedClosedIds((current) => {
+        const next = new Set(current);
+        next.add(caseId);
+        return next;
+      });
+    } finally {
+      closingRef.current.delete(caseId);
+      setClosingIds(new Set(closingRef.current));
+    }
+  }, []);
+
   const effectiveShowClosed = afcDiagnosticInboxEffectiveShowClosed(
     showClosed,
     committed.reviewStatus,
   );
-  const visibleCases = useMemo(
-    () => filterAfcDiagnosticCasesByClosedVisibility(items, effectiveShowClosed),
-    [items, effectiveShowClosed],
-  );
+  const visibleCases = useMemo(() => {
+    const filtered = filterAfcDiagnosticCasesByClosedVisibility(items, effectiveShowClosed);
+    if (revealedClosedIds.size === 0) return filtered;
+    const included = new Set(filtered.map((item) => item.caseId));
+    return items.filter(
+      (item) => included.has(item.caseId) || revealedClosedIds.has(item.caseId),
+    );
+  }, [items, effectiveShowClosed, revealedClosedIds]);
   const closedCount = useMemo(
     () => countAfcDiagnosticInboxClosedCases(items),
     [items],
@@ -576,6 +757,9 @@ export default function AfcDiagnosticCaseInbox() {
                   <thead>
                     <tr className="text-slate-400">
                       <th scope="col" className="whitespace-nowrap px-3 py-2 font-medium">
+                        Viewport
+                      </th>
+                      <th scope="col" className="whitespace-nowrap px-3 py-2 font-medium">
                         Submitted (local)
                       </th>
                       <th scope="col" className="whitespace-nowrap px-3 py-2 font-medium">
@@ -605,6 +789,9 @@ export default function AfcDiagnosticCaseInbox() {
                       <th scope="col" className="whitespace-nowrap px-3 py-2 font-medium">
                         Open
                       </th>
+                      <th scope="col" className="w-px whitespace-nowrap px-3 py-2 font-medium">
+                        Close
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -615,8 +802,16 @@ export default function AfcDiagnosticCaseInbox() {
                       const issues = afcDiagnosticInboxIssueDisplay(item.issueCodes);
                       return (
                         <tr key={item.caseId} className="border-t border-slate-800">
-                          <td className="whitespace-nowrap px-3 py-3 text-slate-200">
-                            <span title={submitted.title}>{submitted.display}</span>
+                          <td className="px-3 py-3">
+                            <AfcDiagnosticInboxViewportThumbnail item={item} />
+                          </td>
+                          <td className="px-3 py-3 text-slate-200">
+                            <span title={submitted.title} className="block leading-tight">
+                              <span className="block whitespace-nowrap">{submitted.date}</span>
+                              {submitted.time ? (
+                                <span className="block whitespace-nowrap">{submitted.time}</span>
+                              ) : null}
+                            </span>
                           </td>
                           <td className="px-3 py-3">
                             <span
@@ -650,8 +845,10 @@ export default function AfcDiagnosticCaseInbox() {
                               ) : null}
                             </div>
                           </td>
-                          <td className="whitespace-nowrap px-3 py-3 text-slate-200">
-                            {afcDiagnosticInboxSourceText(item.origin, item.trigger)}
+                          <td className="px-3 py-3 text-slate-200">
+                            <span className="block max-w-[9rem] whitespace-normal leading-snug">
+                              {afcDiagnosticInboxSourceText(item.origin, item.trigger)}
+                            </span>
                           </td>
                           <td className="px-3 py-3">
                             <span
@@ -664,13 +861,7 @@ export default function AfcDiagnosticCaseInbox() {
                             {afcDiagnosticInboxAttemptLabel(item.sessionAttemptCount)}
                           </td>
                           <td className="px-3 py-3">
-                            {item.hasNotes ? (
-                              <span className="inline-flex rounded-md border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-[11px] text-slate-400">
-                                {AFC_DIAGNOSTIC_INBOX_COPY.notes}
-                              </span>
-                            ) : (
-                              <span className="text-slate-500">—</span>
-                            )}
+                            <AfcDiagnosticInboxCaseNotes notes={item.notes} />
                           </td>
                           <td className="hidden px-3 py-3 md:table-cell">
                             <div className="space-y-1">
@@ -688,9 +879,6 @@ export default function AfcDiagnosticCaseInbox() {
                                 label="Session"
                                 id={item.sessionId}
                                 ariaLabel="Copy Session ID"
-                                extra={afcDiagnosticInboxSessionStatusLabel(
-                                  item.sessionStatus,
-                                )}
                               />
                               <IdRow
                                 label="Gen"
@@ -712,6 +900,17 @@ export default function AfcDiagnosticCaseInbox() {
                             >
                               Open
                             </Link>
+                          </td>
+                          <td className="w-px whitespace-nowrap px-3 py-3">
+                            <AfcDiagnosticInboxCloseCaseControl
+                              caseId={item.caseId}
+                              reviewStatus={item.reviewStatus}
+                              pending={closingIds.has(item.caseId)}
+                              errorMessage={closeErrors[item.caseId] ?? null}
+                              onClose={() => {
+                                void closeCase(item.caseId);
+                              }}
+                            />
                           </td>
                         </tr>
                       );

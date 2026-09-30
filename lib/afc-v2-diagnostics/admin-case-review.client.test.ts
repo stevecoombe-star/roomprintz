@@ -13,6 +13,7 @@ import {
   isAfcDiagnosticAdminReviewDraftDirty,
   isAfcDiagnosticAdminReviewTargetDisabled,
   parseAfcDiagnosticAdminReviewSaved,
+  closeAfcDiagnosticAdminCase,
   patchAfcDiagnosticAdminCaseReview,
 } from "./admin-case-review.client";
 
@@ -309,4 +310,87 @@ test("PATCH helper keeps the draft caller-side and maps 409/401/403/404/500", as
   if (network.ok) return;
   assert.equal(network.status, "network");
   assert.equal(network.message, AFC_DIAGNOSTIC_ADMIN_REVIEW_COPY.errorGeneric);
+});
+
+test("close case PATCHes review status and keeps the existing review notes", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const open = caseDetail();
+  const closed = caseDetail({
+    review: {
+      reviewStatus: "closed",
+      reviewerUserId: ADMIN_ID,
+      reviewNotes: "checking walls",
+      reviewedAt: "2026-09-19T13:00:00.000Z",
+    },
+  });
+  const result = await closeAfcDiagnosticAdminCase({
+    caseId: CASE_1,
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const method = init?.method ?? "GET";
+      const payload = method === "PATCH" ? closed : open;
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.alreadyClosed, false);
+  assert.equal(result.reviewStatus, "closed");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[0].init.credentials, "same-origin");
+  assert.equal(calls[1].url, `/api/admin/afc-diagnostics/cases/${CASE_1}/review`);
+  assert.equal(calls[1].init.method, "PATCH");
+  assert.equal(
+    calls[1].init.body,
+    JSON.stringify({ reviewStatus: "closed", reviewNotes: "checking walls" }),
+  );
+  assert.doesNotMatch(String(calls[1].init.body), /tester notes stay put/);
+});
+
+test("already-closed case is not patched again", async () => {
+  const calls: string[] = [];
+  const closed = caseDetail({
+    review: {
+      reviewStatus: "closed",
+      reviewerUserId: ADMIN_ID,
+      reviewNotes: "done",
+      reviewedAt: "2026-09-19T13:00:00.000Z",
+    },
+  });
+  const result = await closeAfcDiagnosticAdminCase({
+    caseId: CASE_1,
+    fetchImpl: async (url, init) => {
+      calls.push(init?.method ?? "GET");
+      assert.equal(
+        String(url),
+        `/api/admin/afc-diagnostics/cases/${CASE_1}`,
+      );
+      assert.notEqual(init?.method, "PATCH");
+      return new Response(JSON.stringify(closed), { status: 200 });
+    },
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.alreadyClosed, true);
+  assert.deepEqual(calls, ["GET"]);
+});
+
+test("close case stays fail-closed when the detail read is forbidden", async () => {
+  let calls = 0;
+  const result = await closeAfcDiagnosticAdminCase({
+    caseId: CASE_1,
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response("{}", { status: 403 });
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.status, 403);
+  assert.equal(result.message, AFC_DIAGNOSTIC_ADMIN_REVIEW_COPY.error403);
 });

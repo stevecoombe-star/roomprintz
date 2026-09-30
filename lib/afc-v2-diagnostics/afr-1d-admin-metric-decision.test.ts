@@ -178,6 +178,17 @@ function detailStore(
     async listGenerationsByIds() {
       return [generation];
     },
+    async listCaseViewportArtifacts(generationIds) {
+      if (!generationIds.includes(generation.generationId)) return [];
+      return [
+        {
+          id: generation.generationId,
+          emptyPresent: generation.empty.present,
+          tiledPresent: generation.tiled.present,
+          frame: generation.frame,
+        },
+      ];
+    },
   };
 }
 

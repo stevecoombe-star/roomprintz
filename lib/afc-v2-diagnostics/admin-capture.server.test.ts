@@ -377,6 +377,9 @@ function world(options: WorldOptions = {}) {
     async listGenerationsByIds() {
       throw new Error("listGenerationsByIds should not run during capture POST");
     },
+    async listCaseViewportArtifacts() {
+      throw new Error("listCaseViewportArtifacts should not run during capture POST");
+    },
   };
 
   return {

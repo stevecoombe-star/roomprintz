@@ -6,6 +6,7 @@
  */
 
 import {
+  buildAfcDiagnosticInspectorCaseUrl,
   parseAfcDiagnosticInspectorCaseDetail,
   type AfcDiagnosticInspectorCaseDetail,
 } from "./admin-case-inspector.client";
@@ -62,6 +63,10 @@ export type AfcDiagnosticAdminReviewDraft = Readonly<{
 
 export type AfcDiagnosticAdminReviewPatchResult =
   | { ok: true; detail: AfcDiagnosticInspectorCaseDetail }
+  | { ok: false; status: number | "network"; message: string };
+
+export type AfcDiagnosticAdminCloseCaseResult =
+  | { ok: true; reviewStatus: "closed"; alreadyClosed: boolean }
   | { ok: false; status: number | "network"; message: string };
 
 export function afcDiagnosticAdminReviewStatusLabel(
@@ -203,5 +208,71 @@ export async function patchAfcDiagnosticAdminCaseReview(input: {
       status: "network",
       message: afcDiagnosticAdminReviewErrorMessage("network"),
     };
+  }
+}
+
+function closeCaseFailure(
+  status: number | "network",
+): AfcDiagnosticAdminCloseCaseResult {
+  return {
+    ok: false,
+    status,
+    message: afcDiagnosticAdminReviewErrorMessage(status),
+  };
+}
+
+/**
+ * Closes a case through the existing admin review PATCH.
+ * Reads the current review notes first so the status change does not
+ * replace them. Does not write tester notes or attempt evidence.
+ */
+export async function closeAfcDiagnosticAdminCase(input: {
+  caseId: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<AfcDiagnosticAdminCloseCaseResult> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  try {
+    const detailResponse = await fetchImpl(
+      buildAfcDiagnosticInspectorCaseUrl(input.caseId),
+      {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: input.signal,
+      },
+    );
+    if (!detailResponse.ok) return closeCaseFailure(detailResponse.status);
+
+    let payload: unknown = null;
+    try {
+      payload = await detailResponse.json();
+    } catch {
+      payload = null;
+    }
+    const detail = parseAfcDiagnosticInspectorCaseDetail(payload);
+    if (!detail || detail.caseId !== input.caseId) return closeCaseFailure(500);
+    const saved = parseAfcDiagnosticAdminReviewSaved(detail.review);
+    if (!saved) return closeCaseFailure(500);
+    if (saved.reviewStatus === "closed") {
+      return { ok: true, reviewStatus: "closed", alreadyClosed: true };
+    }
+
+    const patched = await patchAfcDiagnosticAdminCaseReview({
+      caseId: input.caseId,
+      draft: {
+        reviewStatus: "closed",
+        reviewNotes: saved.reviewNotes ?? "",
+      },
+      fetchImpl,
+      signal: input.signal,
+    });
+    if (!patched.ok) return closeCaseFailure(patched.status);
+    if (patched.detail.review.reviewStatus !== "closed") {
+      return closeCaseFailure(500);
+    }
+    return { ok: true, reviewStatus: "closed", alreadyClosed: false };
+  } catch {
+    return closeCaseFailure("network");
   }
 }

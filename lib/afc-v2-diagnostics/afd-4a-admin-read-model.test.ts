@@ -32,6 +32,7 @@ import {
 } from "./admin-read-model";
 import {
   AFC_DIAGNOSTIC_ADMIN_GENERATION_COLUMNS,
+  AFC_DIAGNOSTIC_ADMIN_VIEWPORT_ARTIFACT_COLUMNS,
   AFC_GENERATION_TABLE,
   createSupabaseAfcDiagnosticAdminReadStore,
   handleAfcDiagnosticsAdminCaseDetailGet,
@@ -67,6 +68,9 @@ const SUMMARY_KEYS = [
   "issueCodes",
   "taxonomyVersion",
   "hasNotes",
+  "notes",
+  "viewportArtifactKind",
+  "viewportFrame",
   "roomId",
   "sessionId",
   "sessionStatus",
@@ -956,21 +960,29 @@ test("44-55) case summary DTO shape, origin, hasNotes, and privacy of notes/emai
   assert.deepEqual(Object.keys(items[0]), [...SUMMARY_KEYS]);
   assert.equal(items[0].origin, "tester");
   assert.equal(items[0].hasNotes, true);
+  assert.equal(items[0].notes, "looks tilted");
   assert.equal(items[1].origin, "admin");
   assert.equal(items[1].hasNotes, false);
+  assert.equal(items[1].notes, null);
   assert.equal(items[2].hasNotes, false);
+  assert.equal(items[2].notes, null);
+  assert.equal(items[0].viewportArtifactKind, "empty");
+  assert.deepEqual(items[0].viewportFrame, { width: 1200, height: 800 });
   const serialized = JSON.stringify(body);
-  assert.doesNotMatch(serialized, /looks tilted|review_notes|reviewNotes/);
+  assert.match(serialized, /looks tilted/);
+  assert.doesNotMatch(serialized, /review_notes|reviewNotes/);
   assert.doesNotMatch(serialized, /@example\.com|reporterEmail|displayName/);
   assert.equal(items[0].sessionStatus, "open");
   assert.equal(items[0].sessionAttemptCount, 2);
   assert.equal(items[0].reporterUserId, USER_A);
   assert.doesNotMatch(serialized, /storage_path|provider_provenance|diagnostic_payload|production_authority/);
-  assert.equal("notes" in items[0], false);
+  assert.doesNotMatch(serialized, new RegExp(EMPTY_SHA));
+  assert.equal("notes" in items[0], true);
   assert.equal("review" in items[0], false);
+  assert.equal("sourceImageUrl" in items[0], false);
 });
 
-test("56-58) case list uses three constant queries and batches sessions/memberships", async () => {
+test("56-58) case list batches sessions, memberships, and viewport artifacts", async () => {
   const cases = Array.from({ length: 3 }, (_, index) =>
     caseRow({
       id: padCaseId(index + 1),
@@ -985,7 +997,7 @@ test("56-58) case list uses three constant queries and batches sessions/membersh
   const response = await listGet("http://test/api/admin/afc-diagnostics/cases", store);
   assert.equal(response.status, 200);
   const selects = db.ops.filter((op) => op.action === "select");
-  assert.equal(selects.length, 3);
+  assert.equal(selects.length, 4);
   assert.equal(selects[0].table, AFC_DIAGNOSTIC_CASE_TABLE);
   assert.equal(selects[0].limit, 26);
   assert.equal(selects[1].table, AFC_DIAGNOSTIC_SESSION_TABLE);
@@ -994,6 +1006,65 @@ test("56-58) case list uses three constant queries and batches sessions/membersh
   assert.equal(selects[2].table, AFC_DIAGNOSTIC_SESSION_GENERATION_TABLE);
   assert.equal(selects[2].columns, "session_id");
   assert.ok(selects[2].filters.some((filter) => filter.type === "in"));
+  assert.equal(selects[3].table, AFC_GENERATION_TABLE);
+  assert.equal(selects[3].columns, AFC_DIAGNOSTIC_ADMIN_VIEWPORT_ARTIFACT_COLUMNS);
+  assert.ok(selects[3].filters.some((filter) => filter.type === "in"));
+  assert.doesNotMatch(
+    selects[3].columns,
+    /diagnostic_payload|production_authority|storage_path|metric_decision|engine_fingerprint/,
+  );
+});
+
+test("viewport kind follows visual evidence and stays off artifact bytes", async () => {
+  const missingGenerationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa99";
+  const { store } = harness({
+    ...typicalSeed(),
+    generations: [
+      generationRow(),
+      generationRow({
+        id: GEN_2,
+        empty_sha256: null,
+        tiled_sha256: TILED_SHA,
+        frame_width: 640,
+        frame_height: 480,
+      }),
+    ],
+    cases: [
+      caseRow({ notes: "keep the walls" }),
+      caseRow({
+        id: CASE_2,
+        reported_generation_id: GEN_2,
+        notes: null,
+        submitted_at: "2026-09-18T12:00:00.000Z",
+      }),
+      caseRow({
+        id: CASE_3,
+        reported_generation_id: missingGenerationId,
+        notes: "   ",
+        submitted_at: "2026-09-17T12:00:00.000Z",
+      }),
+    ],
+  });
+  const response = await listGet("http://test/api/admin/afc-diagnostics/cases", store);
+  assert.equal(response.status, 200);
+  const body = await jsonBody(response);
+  const items = body.items as Array<Record<string, unknown>>;
+  assert.equal(items[0].viewportArtifactKind, "empty");
+  assert.deepEqual(items[0].viewportFrame, { width: 1200, height: 800 });
+  assert.equal(items[0].notes, "keep the walls");
+  assert.equal(items[1].viewportArtifactKind, "tiled");
+  assert.deepEqual(items[1].viewportFrame, { width: 640, height: 480 });
+  assert.equal(items[1].notes, null);
+  assert.equal(items[2].viewportArtifactKind, null);
+  assert.equal(items[2].viewportFrame, null);
+  assert.equal(items[2].notes, null);
+  const serialized = JSON.stringify(body);
+  assert.doesNotMatch(serialized, new RegExp(`${EMPTY_SHA}|${TILED_SHA}`));
+  assert.doesNotMatch(
+    serialized,
+    /storage_path|signedUrl|diagnostic_payload|production_authority|reviewNotes/,
+  );
+  assertAfcDiagnosticAdminPayloadPrivacy(body);
 });
 
 test("59-69) case detail happy path, validation, missing, integrity, and compact evidence", async () => {

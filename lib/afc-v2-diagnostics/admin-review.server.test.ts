@@ -291,6 +291,9 @@ function world(overrides: Partial<MutableCaseDetail> = {}) {
     async listGenerationsByIds() {
       throw new Error("listGenerationsByIds should not run during review PATCH");
     },
+    async listCaseViewportArtifacts() {
+      throw new Error("listCaseViewportArtifacts should not run during review PATCH");
+    },
   };
 
   return {
