@@ -273,7 +273,8 @@ test("2D and 3D share the same selected version state across mode switches", () 
   );
   assert.match(editor, /activeVersionId=\{selectedVersionId\}/);
   assert.match(editor, /imageUrl=\{canvasImageUrl\}/);
-  assert.match(editor, /onChange=\{setViewportMode\}/);
+  assert.match(editor, /onChange=\{selectEditorViewportMode\}/);
+  assert.match(editor, /setViewportMode\(mode\)/);
   assert.match(editor, /setWorkingImageUrl\(nextUrl\)/);
   assert.match(editor, /setActiveAssetId\(asset\.id\)/);
 

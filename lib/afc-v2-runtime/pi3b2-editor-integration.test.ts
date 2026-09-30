@@ -279,7 +279,10 @@ test("shared runtime interpreter is restore-only and reused by diagnostic and ed
 test("room change resets editor 3D presentation without carrying prior runtime identity", () => {
   const editor = source("app/editor/page.tsx");
   assert.match(editor, /previousEditorRoomIdRef/);
-  assert.match(editor, /setViewportMode\(createInitialEditorViewportMode\(\)\)/);
+  assert.match(
+    editor,
+    /resolvePersistedEditorViewportMode\(editorViewportModeStorage\(\), editorRoomId\)/,
+  );
   assert.match(editor, /usePrepare3dRoom\(editorRoomId\)/);
   assert.match(editor, /useAfcProductionRuntime\(editorRoomId/);
 

@@ -1,7 +1,7 @@
 // app/editor/page.tsx
 "use client";
 
-import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -88,6 +88,11 @@ import {
   shouldRestoreIntegratedAfcRuntime,
   type EditorViewportMode,
 } from "@/lib/afc-v2-runtime/editor-viewport-mode";
+import {
+  editorViewportModeStorage,
+  resolvePersistedEditorViewportMode,
+  writeEditorViewportModePreference,
+} from "@/lib/afc-v2-runtime/editor-viewport-mode-preference";
 import { resolveIntegratedEditorBackgroundImageUrl } from "@/lib/afc-v2-runtime/viewer-presentation";
 import { useAfcProductionRuntime } from "@/lib/afc-v2-runtime/use-afc-production-runtime";
 import { usePrepare3dRoom } from "@/lib/afc-v2-runtime/use-prepare-3d-room";
@@ -3092,11 +3097,28 @@ function EditorPageInner() {
   const previousEditorRoomIdRef = useRef(editorRoomId);
   if (previousEditorRoomIdRef.current !== editorRoomId) {
     previousEditorRoomIdRef.current = editorRoomId;
-    setViewportMode(createInitialEditorViewportMode());
+    setViewportMode(
+      resolvePersistedEditorViewportMode(editorViewportModeStorage(), editorRoomId),
+    );
     setRuntimeTransformMode("move");
     setAfcRuntimeReloadKey(0);
   }
   const prepare3d = usePrepare3dRoom(editorRoomId);
+  useLayoutEffect(() => {
+    const resolved = resolvePersistedEditorViewportMode(
+      editorViewportModeStorage(),
+      editorRoomId,
+    );
+    setViewportMode((current) => (current === resolved ? current : resolved));
+  }, [editorRoomId]);
+  const selectEditorViewportMode = useCallback((mode: EditorViewportMode) => {
+    setViewportMode(mode);
+    writeEditorViewportModePreference(
+      editorViewportModeStorage(),
+      editorRoomId,
+      mode,
+    );
+  }, [editorRoomId]);
   const restoreIntegratedAfcRuntime = shouldRestoreIntegratedAfcRuntime({
     viewportMode,
     preparePhase: prepare3d.state.phase,
@@ -11971,7 +11993,7 @@ function EditorPageInner() {
             mode={viewportMode}
             disabled={!editorRoomId}
             busy={integrated3dBusy}
-            onChange={setViewportMode}
+            onChange={selectEditorViewportMode}
           />
           <AfcQaTesterReport
             roomId={editorRoomId}
