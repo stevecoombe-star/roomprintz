@@ -8,6 +8,11 @@ import {
   getEmptyRoomAssistResultAllowedHosts,
   isAutoFloorVisionAllowLocalhostHttp,
 } from "@/lib/vibodeAutoFloorVisionConfig";
+import { readAfcImageModelSettings } from "@/lib/afc-image-model-settings.server";
+import {
+  resolveAfcImageModel,
+  type AfcImageModelChoice,
+} from "@/lib/afc-image-models";
 import {
   callCompositorAfcSr1TiledPerspectiveReader,
   type AfcSr1TiledPerspectiveReaderIdentity,
@@ -50,6 +55,7 @@ import {
   retainAfcSr1LiveAttemptTiledEvidence,
   type AfcSr1QualifiedOriginal,
   type AfcSr1ResolvedEmpty,
+  type ResolveAfcSr1LiveEmptyOptions,
 } from "./afc-sr1-live-product";
 import {
   AFC_SR1_LIVE_PRODUCT_VERSION,
@@ -190,9 +196,12 @@ export type AfcSr1TiledLiveProductDependencies = Readonly<{
     request: AfcSr1LiveAnalyzeRequest
   ) => Promise<AfcSr1QualifiedOriginal | null>;
   resolveEmpty?: (
-    original: AfcSr1QualifiedOriginal
+    original: AfcSr1QualifiedOriginal,
+    options?: ResolveAfcSr1LiveEmptyOptions,
   ) => Promise<AfcSr1ResolvedEmpty | null>;
   generateTiled?: typeof vibodeTileGridScaffoldAssist;
+  /** Explicit stage model. Omitted reads the persisted TILED selection. */
+  imageModel?: AfcImageModelChoice;
   /**
    * Injected generateTiled hooks bypass the process cache unless this is true.
    * Production omits generateTiled, so the default live wrapper always caches.
@@ -326,6 +335,8 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     return failed("original_empty_incompatible", "image_pair_incompatible");
   }
 
+  const imageModel = dependencies.imageModel
+    ?? (await readAfcImageModelSettings()).tiled;
   const tiledArgs = {
     empty: {
       base64: Buffer.from(empty.bytes).toString("base64"),
@@ -335,6 +346,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     maxOutputBytes: getAutoFloorVisionImageMaxBytes(),
     fetchTimeoutMs: getAutoFloorVisionImageFetchTimeoutMs(),
     allowLocalhostHttp: isAutoFloorVisionAllowLocalhostHttp(),
+    imageModel,
   };
   const generateTiled =
     dependencies.generateTiled ?? vibodeTileGridScaffoldAssist;
@@ -342,6 +354,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     dependencies.useTiledArtifactCache ?? dependencies.generateTiled == null;
   const tiledCacheKey = buildAfcSr1TiledArtifactCacheKey({
     emptySha256: empty.basis.sha256,
+    requestedModelId: resolveAfcImageModel(imageModel).modelId,
   });
   const previousCompleted = useTiledArtifactCache && forceTiledRegeneration
     ? peekAfcSr1CompletedTiledArtifact(tiledCacheKey)
@@ -349,6 +362,9 @@ export async function executeAfcSr1TiledLiveProductAttempt(
   const tiledResolve = useTiledArtifactCache
     ? await getOrGenerateCachedTiledArtifact(tiledArgs, generateTiled, {
         forceRefresh: forceTiledRegeneration,
+        keyParts: {
+          requestedModelId: resolveAfcImageModel(imageModel).modelId,
+        },
       })
     : {
         result: await generateTiled(tiledArgs),
@@ -358,7 +374,10 @@ export async function executeAfcSr1TiledLiveProductAttempt(
   counts.tiledGeneration = tiledResolve.source === "generated" ? 1 : 0;
   const tiled = tiledResolve.result;
   if (tiled.status !== "generated") {
-    return failed("tiled_generation_failed", tiled.code);
+    const detail = tiled.code === "sunburst_generation_failed"
+      ? (tiled.diagnostic?.message ?? tiled.code)
+      : tiled.code;
+    return failed("tiled_generation_failed", detail);
   }
   const tiledBytes = Buffer.from(tiled.tiled.base64, "base64");
   retainAfcSr1LiveAttemptTiledEvidence(

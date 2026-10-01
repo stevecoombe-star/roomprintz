@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { afcImageGenerationProvenance } from "@/lib/afc-image-models";
+
 import { mapAfcDiagnosticAdminMetricDecision } from "./admin-metric-decision";
 import type { AfcDiagnosticAdminMetricDecision } from "./admin-metric-decision-dto";
 import {
@@ -487,6 +489,38 @@ test("approved fallback reason codes remain after contamination", () => {
   assert.equal(text.includes("LIMITATIONS_SENTINEL"), false);
   assert.equal(text.includes("lab_trust_not_enabled"), true);
   assert.equal(text.includes("completeness_not_certified"), true);
+});
+
+test("Sunburst TILED provenance survives selected-attempt export", () => {
+  const imageGeneration = afcImageGenerationProvenance({
+    empty: "gpt-image-2.5-sunburst-high",
+    tiled: "gpt-image-2.5-sunburst-high",
+  });
+  const base = fingerprint();
+  const value = bundle(source({
+    generation: {
+      engineFingerprint: {
+        ...base,
+        tiled: {
+          ...base.tiled,
+          requestedModelId: imageGeneration.tiled.modelId,
+        },
+        imageGeneration,
+      },
+    },
+  }));
+  assert.equal(value.engineFingerprint?.imageGeneration?.tiled.provider, "openai");
+  assert.equal(
+    value.engineFingerprint?.imageGeneration?.tiled.modelId,
+    "gpt-image-2.5-sunburst-2026-09-08",
+  );
+  assert.equal(value.engineFingerprint?.imageGeneration?.tiled.quality, "high");
+  assert.equal(value.engineFingerprint?.imageGeneration?.tiled.stage, "tiled");
+  assert.equal(value.engineFingerprint?.tiled.requestedModelId, "gpt-image-2.5-sunburst-2026-09-08");
+  const text = serializeAfcDiagnosticSelectedAttemptExport(value);
+  assert.match(text, /gpt-image-2\.5-sunburst-2026-09-08/);
+  assert.equal(text.includes("NBP"), false);
+  assert.doesNotMatch(text, /OPENAI_API_KEY|Bearer |sk-/);
 });
 
 test("builder does not mutate the source DTO", () => {

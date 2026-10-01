@@ -32,6 +32,10 @@ import type { AfcDiagnosticAdminCameraRealizability } from "./admin-camera-reali
 import { mapAfcDiagnosticAdminSettleDecision } from "./admin-settle-decision";
 import type { AfcDiagnosticAdminSettleDecision } from "./admin-settle-decision-dto";
 import { isAfcQaIssueCode } from "./taxonomy";
+import {
+  parseAfcImageGenerationProvenance,
+  type AfcImageGenerationProvenance,
+} from "@/lib/afc-image-models";
 
 export const AFC_DIAGNOSTIC_ADMIN_CASE_LIST_DEFAULT_LIMIT = 25;
 export const AFC_DIAGNOSTIC_ADMIN_CASE_LIST_MAX_LIMIT = 50;
@@ -123,6 +127,7 @@ export type AfcDiagnosticAdminEngineFingerprint = Readonly<{
     requestedModelId: string;
     readerVersion: string | null;
   }>;
+  imageGeneration?: AfcImageGenerationProvenance;
 }>;
 
 export type AfcDiagnosticAdminArtifactSummary = Readonly<{
@@ -594,6 +599,7 @@ export function mapAfcDiagnosticAdminEngineFingerprint(
   ) {
     return null;
   }
+  const imageGeneration = parseAfcImageGenerationProvenance(value.imageGeneration);
   return Object.freeze({
     fingerprintSchemaVersion: value.fingerprintSchemaVersion,
     productionSchemaVersion: value.productionSchemaVersion,
@@ -618,6 +624,7 @@ export function mapAfcDiagnosticAdminEngineFingerprint(
           ? value.tiled.readerVersion
           : null,
     }),
+    ...(imageGeneration ? { imageGeneration } : {}),
   });
 }
 
@@ -1259,10 +1266,19 @@ const SETTLE_DECISION_KEY_EXCEPTIONS = new Set([
   "sourceNormalizedPolygon",
 ]);
 
+const IMAGE_GENERATION_LABEL_EXCEPTIONS = new Set(["displayName"]);
+
 function insideSettleDecision(path: string): boolean {
   return path === "settleDecision"
     || path.endsWith(".settleDecision")
     || path.includes(".settleDecision.");
+}
+
+function insideImageGenerationStage(path: string): boolean {
+  return path === "imageGeneration.empty"
+    || path === "imageGeneration.tiled"
+    || path.endsWith(".imageGeneration.empty")
+    || path.endsWith(".imageGeneration.tiled");
 }
 
 function walkForbiddenKeys(
@@ -1281,7 +1297,13 @@ function walkForbiddenKeys(
     const next = path ? `${path}.${key}` : key;
     const settleDiagnosticKey = SETTLE_DECISION_KEY_EXCEPTIONS.has(key)
       && insideSettleDecision(path);
-    if (FORBIDDEN_OBJECT_KEYS.has(key) && !settleDiagnosticKey) found.push(next);
+    const imageGenerationLabel = IMAGE_GENERATION_LABEL_EXCEPTIONS.has(key)
+      && insideImageGenerationStage(path);
+    if (
+      FORBIDDEN_OBJECT_KEYS.has(key)
+      && !settleDiagnosticKey
+      && !imageGenerationLabel
+    ) found.push(next);
     if (FREE_TEXT_KEYS.has(key)) continue;
     walkForbiddenKeys(child, next, found);
   }

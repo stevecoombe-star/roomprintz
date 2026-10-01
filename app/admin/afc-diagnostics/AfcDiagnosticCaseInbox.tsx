@@ -12,6 +12,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { closeAfcDiagnosticAdminCase } from "@/lib/afc-v2-diagnostics/admin-case-review.client";
+import AfcImageModelSettings from "./AfcImageModelSettings";
 import {
   AFC_DIAGNOSTIC_INBOX_COPY,
   AFC_DIAGNOSTIC_INBOX_ISSUE_OPTIONS,
@@ -593,6 +594,8 @@ export default function AfcDiagnosticCaseInbox() {
             </div>
           </div>
         </header>
+
+        <AfcImageModelSettings />
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
           <form className="flex flex-wrap items-end gap-3" onSubmit={applyDrafts}>

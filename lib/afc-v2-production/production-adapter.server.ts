@@ -55,9 +55,18 @@ import {
 } from "./production-authority-contract";
 import {
   buildAfcV2EngineFingerprint,
+  inheritAfcImageGenerationProvenance,
+  withAfcImageGenerationProvenance,
   withAfcV2EngineFingerprintReaderVersion,
   type AfcV2EngineFingerprintV1,
 } from "./engine-fingerprint";
+import { readAfcImageModelSettings } from "@/lib/afc-image-model-settings.server";
+import {
+  AFC_IMAGE_MODEL_DEFAULT,
+  parseAfcImageGenerationProvenance,
+  resolveAfcImageModel,
+  type AfcImageGenerationProvenance,
+} from "@/lib/afc-image-models";
 import { isProductionOriginalSourceUrl } from "./production-original";
 import { assertProductionPayloadPrivacy } from "./privacy";
 import {
@@ -339,8 +348,10 @@ export async function runProductionAfcAnalysis(
   const parent = parentId ? await input.store.getGeneration(parentId) : null;
   const parentAuthority = currentAuthorityFromGeneration(parent);
   const recovery = input.recovery ?? null;
+  let recoverySource: AfcGenerationRecord | null = null;
   if (recovery) {
     const source = await input.store.getGeneration(recovery.sourceGenerationId);
+    recoverySource = source;
     const emptyMatches = durableArtifactBytesMatch({
       bytes: recovery.empty.bytes,
       sha256: recovery.empty.basis.sha256,
@@ -390,7 +401,7 @@ export async function runProductionAfcAnalysis(
     width: originalIdentity.decodedWidth,
     height: originalIdentity.decodedHeight,
   });
-  const generation = await input.store.createGeneration({
+  const generationRecord = await input.store.createGeneration({
     roomId: input.roomId,
     userId: input.userId,
     parentGenerationId: recovery ? recovery.sourceGenerationId : parentId,
@@ -398,6 +409,28 @@ export async function runProductionAfcAnalysis(
     intent,
     tiledForceRegeneration: forceTiledRegeneration,
   });
+  const imageModels = recovery ? null : await readAfcImageModelSettings();
+  let generation = generationRecord;
+  if (imageModels && generation.engineFingerprint) {
+    const engineFingerprint = withAfcImageGenerationProvenance(
+      generation.engineFingerprint,
+      imageModels,
+    );
+    generation = { ...generation, engineFingerprint };
+    await input.store.updateGeneration(generation.id, { engineFingerprint });
+  } else if (recoverySource && generation.engineFingerprint) {
+    const engineFingerprint = inheritAfcImageGenerationProvenance(
+      generation.engineFingerprint,
+      recoverySource.engineFingerprint?.imageGeneration,
+    );
+    if (engineFingerprint) {
+      generation = { ...generation, engineFingerprint };
+      await input.store.updateGeneration(generation.id, { engineFingerprint });
+    }
+  }
+  const tiledRequestedModelId = resolveAfcImageModel(
+    imageModels?.tiled ?? AFC_IMAGE_MODEL_DEFAULT,
+  ).modelId;
   try {
     await input.onGenerationCreated?.(Object.freeze({
       userId: generation.userId,
@@ -477,10 +510,13 @@ export async function runProductionAfcAnalysis(
             });
             return capture.empty;
           }
-          const durable = await input.store.lookupDurableEmpty(
-            input.userId,
-            original.basis.sha256,
-          );
+          const useDurableEmpty = !imageModels || imageModels.empty === AFC_IMAGE_MODEL_DEFAULT;
+          const durable = useDurableEmpty
+            ? await input.store.lookupDurableEmpty(
+              input.userId,
+              original.basis.sha256,
+            )
+            : null;
           if (
             durable &&
             durableArtifactBytesMatch({
@@ -502,7 +538,10 @@ export async function runProductionAfcAnalysis(
             });
             return capture.empty;
           }
-          const resolved = await innerResolveEmpty(original);
+          const resolved = await innerResolveEmpty(
+            original,
+            imageModels ? { imageModel: imageModels.empty } : undefined,
+          );
           if (!resolved) return null;
           // The durable|generated column still records a durable miss as
           // "generated", including a process-local cache hit. Lineage splits
@@ -539,6 +578,7 @@ export async function runProductionAfcAnalysis(
           }
           const cacheKey = buildAfcSr1TiledArtifactCacheKey({
             emptySha256: args.empty.identity.sha256,
+            requestedModelId: tiledRequestedModelId,
           });
           capture.tiledCacheKey = cacheKey;
           if (!forceTiledRegeneration) {
@@ -567,7 +607,10 @@ export async function runProductionAfcAnalysis(
             }
           }
           try {
-            const result = await innerGenerateTiled(args);
+            const result = await innerGenerateTiled({
+              ...args,
+              ...(imageModels ? { imageModel: imageModels.tiled } : {}),
+            });
             if (result.status === "generated") {
               capture.tiledSource = "generated";
               capture.tiled = result;
@@ -580,7 +623,10 @@ export async function runProductionAfcAnalysis(
                 null,
               );
             } else {
-              capture.tiledLineage = tiledLineageFromStage2Failure(result);
+              capture.tiledLineage = tiledLineageFromStage2Failure(
+                result,
+                tiledRequestedModelId,
+              );
             }
             return result;
           } catch (error) {
@@ -590,7 +636,7 @@ export async function runProductionAfcAnalysis(
               generatorId: AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
               profileId: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
               researchPreset: AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
-              requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+              requestedModelId: tiledRequestedModelId,
             };
             throw error;
           }
@@ -724,7 +770,10 @@ export async function runProductionAfcAnalysis(
   });
   assertProductionPayloadPrivacy(authority);
 
-  if (capture.emptySource === "generated") {
+  if (
+    capture.emptySource === "generated" &&
+    (!imageModels || imageModels.empty === AFC_IMAGE_MODEL_DEFAULT)
+  ) {
     await input.store.publishDurableEmpty({
       userId: input.userId,
       originalSha256: originalIdentity.sha256,
@@ -792,6 +841,9 @@ export async function runProductionAfcAnalysis(
       tiledArtifactSource: capture.tiledSource,
       tiledForceRegeneration: forceTiledRegeneration,
       readerRerun: recovery == null,
+      ...(imageGenerationFromFingerprint(generation)
+        ? { imageGeneration: imageGenerationFromFingerprint(generation) }
+        : {}),
       ...(recovery
         ? { geometryAuthority: MANUAL_SOURCE_QUAD_GEOMETRY_AUTHORITY }
         : {}),
@@ -914,15 +966,26 @@ function tiledLineageFromGenerated(
   };
 }
 
-function tiledLineageFromStage2Failure(result: Readonly<{
-  runId: string;
-  tiled?: Readonly<{
-    sha256: string;
-    byteCount: number;
-    decodedWidth: number;
-    decodedHeight: number;
-  }>;
-}>): AfcV2ArtifactLineageTiled {
+function imageGenerationFromFingerprint(
+  generation: AfcGenerationRecord,
+): AfcImageGenerationProvenance | null {
+  return parseAfcImageGenerationProvenance(
+    generation.engineFingerprint?.imageGeneration,
+  );
+}
+
+function tiledLineageFromStage2Failure(
+  result: Readonly<{
+    runId: string;
+    tiled?: Readonly<{
+      sha256: string;
+      byteCount: number;
+      decodedWidth: number;
+      decodedHeight: number;
+    }>;
+  }>,
+  requestedModelId: string = AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+): AfcV2ArtifactLineageTiled {
   return {
     sha256: result.tiled?.sha256 ?? null,
     byteCount: result.tiled?.byteCount ?? null,
@@ -933,7 +996,7 @@ function tiledLineageFromStage2Failure(result: Readonly<{
     generatorId: AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
     profileId: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
     researchPreset: AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
-    requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+    requestedModelId,
     provenanceRunId: result.runId,
   };
 }
@@ -1090,6 +1153,9 @@ async function persistFailedGeneration(input: Readonly<{
       tiledArtifactSource: input.capture.tiledSource,
       tiledForceRegeneration: input.forceTiledRegeneration,
       readerRerun: input.readerInvoked !== false,
+      ...(imageGenerationFromFingerprint(input.generation)
+        ? { imageGeneration: imageGenerationFromFingerprint(input.generation) }
+        : {}),
       ...(input.readerInvoked === false
         ? { geometryAuthority: MANUAL_SOURCE_QUAD_GEOMETRY_AUTHORITY }
         : {}),

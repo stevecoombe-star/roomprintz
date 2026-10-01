@@ -235,7 +235,7 @@ function ArtifactRow({
   );
 }
 
-function EngineDetails({
+export function EngineDetails({
   fingerprint,
 }: {
   fingerprint: AfcDiagnosticInspectorEngineFingerprint | null;
@@ -294,6 +294,34 @@ function EngineDetails({
       <MetaRow label="TILED reader version">
         {fingerprint.tiled.readerVersion ?? "Not available"}
       </MetaRow>
+      {fingerprint.imageGeneration ? (
+        <>
+          <MetaRow label="EMPTY image model">
+            {fingerprint.imageGeneration.empty.displayName}
+          </MetaRow>
+          <MetaRow label="EMPTY image provider">
+            {fingerprint.imageGeneration.empty.provider}
+          </MetaRow>
+          <MetaRow label="EMPTY provider model">
+            {fingerprint.imageGeneration.empty.modelId}
+          </MetaRow>
+          <MetaRow label="EMPTY image quality">
+            {fingerprint.imageGeneration.empty.quality ?? "Not applicable"}
+          </MetaRow>
+          <MetaRow label="TILED image model">
+            {fingerprint.imageGeneration.tiled.displayName}
+          </MetaRow>
+          <MetaRow label="TILED image provider">
+            {fingerprint.imageGeneration.tiled.provider}
+          </MetaRow>
+          <MetaRow label="TILED provider model">
+            {fingerprint.imageGeneration.tiled.modelId}
+          </MetaRow>
+          <MetaRow label="TILED image quality">
+            {fingerprint.imageGeneration.tiled.quality ?? "Not applicable"}
+          </MetaRow>
+        </>
+      ) : null}
     </dl>
   );
 }

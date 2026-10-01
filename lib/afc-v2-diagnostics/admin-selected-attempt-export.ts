@@ -15,6 +15,7 @@ import {
   type AfcDiagnosticInspectorSessionDetail,
   type AfcDiagnosticInspectorSourceSummary,
 } from "./admin-case-inspector.client";
+import type { AfcImageGenerationProvenance } from "@/lib/afc-image-models";
 import {
   parseAfcDiagnosticAdminLegacyMetricConclusion,
   parseAfcDiagnosticAdminMetricDecisionDto,
@@ -133,6 +134,7 @@ export type AfcDiagnosticSelectedAttemptExport = Readonly<{
       requestedModelId: string;
       readerVersion: string | null;
     }>;
+    imageGeneration?: AfcImageGenerationProvenance;
   }> | null;
   productionAuthority: Readonly<{
     metricStatus: string | null;
@@ -287,6 +289,7 @@ function projectFingerprint(
       requestedModelId,
       readerVersion,
     },
+    ...(value.imageGeneration ? { imageGeneration: value.imageGeneration } : {}),
   };
 }
 

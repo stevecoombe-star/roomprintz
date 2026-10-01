@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { isAdminEmail } from "@/lib/adminAccess";
+import { afcImageGenerationProvenance } from "@/lib/afc-image-models";
 
 import {
   AFC_DIAGNOSTIC_CASE_TABLE,
@@ -30,6 +31,11 @@ import {
   parseAfcDiagnosticAdminGenerationRecord,
   parseAfcDiagnosticAdminUuid,
 } from "./admin-read-model";
+import { parseAfcDiagnosticInspectorCaseDetail } from "./admin-case-inspector.client";
+import {
+  buildAfcDiagnosticSelectedAttemptExport,
+  serializeAfcDiagnosticSelectedAttemptExport,
+} from "./admin-selected-attempt-export";
 import {
   AFC_DIAGNOSTIC_ADMIN_GENERATION_COLUMNS,
   AFC_DIAGNOSTIC_ADMIN_VIEWPORT_ARTIFACT_COLUMNS,
@@ -1445,4 +1451,154 @@ test("cookie client missing is a generic 500 and does not leak admin email", asy
     assert.deepEqual(body, { error: "Server error." });
     assert.doesNotMatch(JSON.stringify(body), /secret-admin/);
   }
+});
+
+test("failed Sunburst case loads and historical cases without imageGeneration still load", async () => {
+  const provenance = afcImageGenerationProvenance({
+    empty: "gpt-image-2.5-sunburst-high",
+    tiled: "nano-banana-pro",
+  });
+  const nbp = afcImageGenerationProvenance({
+    empty: "nano-banana-pro",
+    tiled: "nano-banana-pro",
+  });
+  const sunburstFingerprint = validFingerprint({
+    imageGeneration: provenance,
+    providerProvenance: {
+      imageGeneration: provenance,
+      emptyArtifactSource: "generated",
+    },
+    tiled: {
+      generatorId: "gen",
+      profileId: "prof",
+      researchPreset: "preset",
+      requestedModelId: "NBP",
+      readerVersion: null,
+    },
+  });
+  const { store } = harness({
+    sessions: [sessionRow()],
+    memberships: [membershipRow()],
+    generations: [
+      generationRow({
+        status: "failed",
+        failure_reason: "tiled_lineage_not_exact_grid",
+        diagnostic_payload: {
+          analysisStatus: "failed",
+          reason: "tiled_lineage_not_exact_grid",
+          executionCounts: { tiledReader: 1 },
+        },
+        engine_fingerprint: sunburstFingerprint,
+        original_decoded_width: 2048,
+        original_decoded_height: 1536,
+      }),
+    ],
+    cases: [
+      caseRow({
+        machine_status_snapshot: "failed",
+        issue_codes: ["other"],
+      }),
+    ],
+  });
+
+  const response = await caseGet(CASE_1, store);
+  assert.equal(response.status, 200);
+  const body = await jsonBody(response);
+  assert.doesNotThrow(() => assertAfcDiagnosticAdminPayloadPrivacy(body));
+  const parsed = parseAfcDiagnosticInspectorCaseDetail(body);
+  assert.ok(parsed);
+  const empty = parsed.reportedGeneration.engineFingerprint?.imageGeneration?.empty;
+  const tiled = parsed.reportedGeneration.engineFingerprint?.imageGeneration?.tiled;
+  assert.equal(empty?.provider, "openai");
+  assert.equal(empty?.modelId, "gpt-image-2.5-sunburst-2026-09-08");
+  assert.equal(empty?.quality, "high");
+  assert.equal(empty?.stage, "empty");
+  assert.equal(empty?.displayName, "GPT Image 2.5 Sunburst High");
+  assert.equal(tiled?.provider, "nanobanana-pro");
+  assert.equal(tiled?.modelId, "NBP");
+  assert.equal(tiled?.displayName, "Nano Banana Pro");
+  assert.equal(parsed.reportedGeneration.status, "failed");
+  assert.equal(parsed.reportedGeneration.failureReason, "tiled_lineage_not_exact_grid");
+  const serialized = JSON.stringify(body);
+  assert.doesNotMatch(
+    serialized,
+    /OPENAI_API_KEY|Bearer |sk-|providerProvenance|provider_provenance|authorization/i,
+  );
+  assert.equal("providerProvenance" in (body as object), false);
+
+  const exported = buildAfcDiagnosticSelectedAttemptExport({
+    caseDetail: parsed,
+    session: null,
+    attempt: null,
+    generation: parsed.reportedGeneration,
+    associatedAt: null,
+    attemptOrdinal: parsed.reportedAttemptOrdinal,
+  }, "2026-10-01T04:07:35.000Z");
+  const exportText = serializeAfcDiagnosticSelectedAttemptExport(exported);
+  assert.equal(
+    exported.engineFingerprint?.imageGeneration?.empty.modelId,
+    "gpt-image-2.5-sunburst-2026-09-08",
+  );
+  assert.equal(exported.engineFingerprint?.imageGeneration?.empty.quality, "high");
+  assert.match(exportText, /gpt-image-2\.5-sunburst-2026-09-08/);
+  assert.doesNotMatch(
+    exportText,
+    /OPENAI_API_KEY|Bearer |sk-|providerProvenance|provider_provenance/i,
+  );
+
+  const nbpStore = harness({
+    sessions: [sessionRow()],
+    memberships: [membershipRow()],
+    generations: [
+      generationRow({
+        engine_fingerprint: validFingerprint({ imageGeneration: nbp }),
+      }),
+    ],
+    cases: [caseRow()],
+  }).store;
+  const nbpResponse = await caseGet(CASE_1, nbpStore);
+  assert.equal(nbpResponse.status, 200);
+  const nbpBody = await jsonBody(nbpResponse);
+  const nbpParsed = parseAfcDiagnosticInspectorCaseDetail(nbpBody);
+  assert.equal(
+    nbpParsed?.reportedGeneration.engineFingerprint?.imageGeneration?.empty.provider,
+    "nanobanana-pro",
+  );
+  assert.equal(
+    nbpParsed?.reportedGeneration.engineFingerprint?.imageGeneration?.empty.modelId,
+    "NBP",
+  );
+
+  const historical = harness(typicalSeed());
+  const historicalResponse = await caseGet(CASE_1, historical.store);
+  assert.equal(historicalResponse.status, 200);
+  const historicalBody = await jsonBody(historicalResponse);
+  const historicalParsed = parseAfcDiagnosticInspectorCaseDetail(historicalBody);
+  assert.ok(historicalParsed);
+  assert.equal(
+    historicalParsed.reportedGeneration.engineFingerprint?.imageGeneration,
+    undefined,
+  );
+
+  assert.ok(
+    collectAfcDiagnosticAdminPayloadPrivacyViolations({
+      displayName: "Reporter Name",
+    }).some((entry) => entry === "displayName"),
+  );
+  assert.deepEqual(
+    collectAfcDiagnosticAdminPayloadPrivacyViolations({
+      engineFingerprint: {
+        imageGeneration: provenance,
+      },
+    }),
+    [],
+  );
+  assert.ok(
+    collectAfcDiagnosticAdminPayloadPrivacyViolations({
+      engineFingerprint: {
+        imageGeneration: provenance,
+        providerProvenance: { imageGeneration: provenance },
+      },
+    }).some((entry) => entry.includes("providerProvenance")),
+  );
 });

@@ -22,6 +22,12 @@ import {
   AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
 } from "@/app/admin/3d-room-lab/research/afc-sr1-tile-grid-scaffold";
 import { validateAfcSr1TiledPerspectiveExactGridLineage } from "@/app/admin/3d-room-lab/research/afc-sr1-tiled-perspective-exact-grid-lineage";
+import {
+  afcTiledCertificationFromStoredEvidence,
+  certifyAfcTiledModelIdentity,
+  type AfcStoredTiledCertification,
+} from "@/lib/afc-image-models";
+import { isAfcV2ArtifactLineageRecorded } from "@/lib/afc-v2-production/artifact-lineage-diagnostic";
 import type { AfcV2AnalysisDependencies } from "@/app/admin/3d-room-lab-v2/afc-v2-analysis.server";
 import {
   runProductionAfcAnalysis,
@@ -44,7 +50,6 @@ import {
 } from "./manual-perspective";
 import {
   createSupabaseManualPerspectiveStore,
-  type ManualPerspectiveGenerationRow,
   type ManualPerspectiveRouteDependencies,
   type ManualPerspectiveStore,
 } from "./manual-perspective.server";
@@ -244,13 +249,23 @@ export async function handleManualPerspectiveRecoveryPost(input: {
     if (!bytesMatch(loaded.value.tiledBytes, generation.tiled)) {
       return refusalResponse("artifact_identity_mismatch");
     }
-    const tiled = reusedTiledArtifact({
-      empty: generation.empty!,
-      tiled: generation.tiled!,
-      tiledBytes: loaded.value.tiledBytes,
-      runId: generation.id,
-      generatedAt: isoOrNow(generation.createdAt, input.dependencies?.now),
+    const modelIdentity = afcTiledCertificationFromStoredEvidence({
+      imageGeneration: generation.engineFingerprint?.imageGeneration,
+      lineageRequestedModelId: isAfcV2ArtifactLineageRecorded(generation.artifactLineage)
+        ? generation.artifactLineage.tiled.requestedModelId
+        : null,
+      fingerprintRequestedModelId: generation.engineFingerprint?.tiled.requestedModelId ?? null,
     });
+    const tiled = modelIdentity
+      ? reusedTiledArtifact({
+        empty: generation.empty!,
+        tiled: generation.tiled!,
+        tiledBytes: loaded.value.tiledBytes,
+        runId: generation.id,
+        generatedAt: isoOrNow(generation.createdAt, input.dependencies?.now),
+        modelIdentity,
+      })
+      : null;
     if (!tiled) return refusalResponse("tiled_lineage_invalid");
     const validateLineage = input.dependencies?.validateTiledLineage ??
       validateAfcSr1TiledPerspectiveExactGridLineage;
@@ -426,10 +441,33 @@ export function reusedTiledArtifact(input: Readonly<{
   tiledBytes: Uint8Array;
   runId: string;
   generatedAt: string;
+  modelIdentity?: AfcStoredTiledCertification;
 }>): AfcSr1GeneratedTiledArtifact | null {
   if (input.tiled.mimeType !== "image/png") return null;
   const empty = identityRecord(input.empty);
   const tiled = identityRecord(input.tiled);
+  const modelIdentity: AfcStoredTiledCertification = input.modelIdentity ?? Object.freeze({
+    requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+  });
+  const provenance = {
+    generatorId: AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
+    profileId: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
+    researchPreset: AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
+    requestedModelId: modelIdentity.requestedModelId,
+    runId: input.runId,
+    generatedAt: input.generatedAt,
+    appliedAspectRatio: null,
+    imageTransport: "data_url" as const,
+    generationStatus: "generated" as const,
+    ...(modelIdentity.imageChoice === undefined
+      ? {}
+      : {
+        imageChoice: modelIdentity.imageChoice,
+        imageProvider: modelIdentity.imageProvider,
+        imageQuality: modelIdentity.imageQuality,
+      }),
+  };
+  if (!certifyAfcTiledModelIdentity(provenance)) return null;
   return Object.freeze({
     status: "generated" as const,
     input: empty,
@@ -440,17 +478,7 @@ export function reusedTiledArtifact(input: Readonly<{
         mimeType: "image/png" as const,
       }),
     }),
-    provenance: Object.freeze({
-      generatorId: AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
-      profileId: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
-      researchPreset: AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
-      requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
-      runId: input.runId,
-      generatedAt: input.generatedAt,
-      appliedAspectRatio: null,
-      imageTransport: "data_url" as const,
-      generationStatus: "generated" as const,
-    }),
+    provenance: Object.freeze(provenance),
     compatibility: classifyAfcR3cImagePairCompatibility(
       {
         fingerprint: empty.sha256,

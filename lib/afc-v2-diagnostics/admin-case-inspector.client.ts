@@ -46,6 +46,10 @@ import {
   isAfcDiagnosticReviewStatus,
   isAfcDiagnosticSessionStatus,
 } from "./contracts";
+import {
+  parseAfcImageGenerationProvenance,
+  type AfcImageGenerationProvenance,
+} from "@/lib/afc-image-models";
 
 export const AFC_DIAGNOSTIC_INSPECTOR_CASE_API_PATH =
   "/api/admin/afc-diagnostics/cases" as const;
@@ -114,6 +118,7 @@ export type AfcDiagnosticInspectorEngineFingerprint = Readonly<{
     requestedModelId: string;
     readerVersion: string | null;
   }>;
+  imageGeneration?: AfcImageGenerationProvenance;
 }>;
 
 export type AfcDiagnosticInspectorArtifactSummary = Readonly<{
@@ -381,6 +386,7 @@ function parseEngineFingerprint(
   ) {
     return undefined;
   }
+  const imageGeneration = parseAfcImageGenerationProvenance(value.imageGeneration);
   return Object.freeze({
     fingerprintSchemaVersion: value.fingerprintSchemaVersion,
     productionSchemaVersion: value.productionSchemaVersion,
@@ -405,6 +411,7 @@ function parseEngineFingerprint(
           ? value.tiled.readerVersion
           : null,
     }),
+    ...(imageGeneration ? { imageGeneration } : {}),
   });
 }
 
