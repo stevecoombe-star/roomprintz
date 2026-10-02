@@ -10,6 +10,7 @@ import type { StageAsset, StageCatalogSnapshot, StageProduct, StageVariant } fro
 
 export type PartnerCatalogStatusFilter = "all" | "active" | "inactive";
 export type PartnerCatalogReadinessFilter = "all" | "ready" | "no_model" | "needs_attention";
+export type PartnerCatalogSort = "manual" | "name_asc" | "name_desc";
 export type PartnerCatalogReadinessKind = "ready" | "no_model" | "needs_attention";
 export type PartnerCatalogEditorIntent = "manage" | "add-product";
 
@@ -174,6 +175,29 @@ export function buildPartnerCatalogRows(
       searchText: searchTextFor(product, variants, names),
     };
   });
+}
+
+const PRODUCT_NAME_COLLATOR = new Intl.Collator("en", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+export function comparePartnerCatalogProductNames(
+  left: Readonly<{ name: string; productKey: string }>,
+  right: Readonly<{ name: string; productKey: string }>,
+): number {
+  const byName = PRODUCT_NAME_COLLATOR.compare(left.name, right.name);
+  if (byName !== 0) return byName;
+  return left.productKey.localeCompare(right.productKey, "en");
+}
+
+export function sortPartnerCatalogRows(
+  rows: readonly PartnerCatalogProductRow[],
+  sort: PartnerCatalogSort,
+): readonly PartnerCatalogProductRow[] {
+  if (sort === "manual") return rows;
+  const direction = sort === "name_asc" ? 1 : -1;
+  return [...rows].sort((left, right) => comparePartnerCatalogProductNames(left, right) * direction);
 }
 
 export function filterPartnerCatalogRows(

@@ -7,8 +7,10 @@ import {
   partnerAddProductPath,
   partnerCatalogEditorPath,
   partnerProductEditorPath,
+  sortPartnerCatalogRows,
   type PartnerCatalogProductRow,
   type PartnerCatalogReadinessFilter,
+  type PartnerCatalogSort,
   type PartnerCatalogStatusFilter,
 } from "@/lib/vibode-stage/partner-catalog-workspace";
 
@@ -29,12 +31,16 @@ export function PartnerCatalogWorkspace(props: Readonly<{
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<PartnerCatalogStatusFilter>("all");
   const [readiness, setReadiness] = useState<PartnerCatalogReadinessFilter>("all");
+  const [sort, setSort] = useState<PartnerCatalogSort>("manual");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const filtersActive = query.trim().length > 0 || status !== "all" || readiness !== "all";
   const visible = useMemo(
-    () => filterPartnerCatalogRows(props.rows, { query, status, readiness }),
-    [props.rows, query, readiness, status],
+    () => sortPartnerCatalogRows(
+      filterPartnerCatalogRows(props.rows, { query, status, readiness }),
+      sort,
+    ),
+    [props.rows, query, readiness, sort, status],
   );
 
   async function openEditor() {
@@ -82,8 +88,8 @@ export function PartnerCatalogWorkspace(props: Readonly<{
       ) : null}
 
       {props.rows.length > 0 ? (
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="grid flex-1 gap-3 sm:grid-cols-[minmax(0,1.4fr)_minmax(8rem,0.7fr)_minmax(9rem,0.8fr)]">
+        <div className="flex flex-col gap-4 lg:flex-row lg:flex-wrap lg:items-end lg:justify-between">
+          <div className="grid min-w-0 flex-1 gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.4fr)_minmax(8rem,0.7fr)_minmax(9rem,0.8fr)_minmax(8.5rem,0.7fr)]">
             <label className="block text-xs text-slate-400">
               Search
               <input
@@ -117,6 +123,18 @@ export function PartnerCatalogWorkspace(props: Readonly<{
                 <option value="ready">Ready</option>
                 <option value="no_model">No model</option>
                 <option value="needs_attention">Needs attention</option>
+              </select>
+            </label>
+            <label className="block text-xs text-slate-400">
+              Sort
+              <select
+                value={sort}
+                onChange={(event) => setSort(event.target.value as PartnerCatalogSort)}
+                className={FIELD}
+              >
+                <option value="manual">Manual</option>
+                <option value="name_asc">Name A–Z</option>
+                <option value="name_desc">Name Z–A</option>
               </select>
             </label>
           </div>

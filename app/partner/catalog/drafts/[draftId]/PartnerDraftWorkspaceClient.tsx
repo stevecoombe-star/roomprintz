@@ -14,6 +14,7 @@ import {
   type PartnerCommercialAssetOption,
 } from "@/lib/vibode-stage/partner-commercial-assets";
 import type { StageCategory, StageCollection, StageProduct, StageVariant } from "@/lib/vibode-stage/types";
+import { PartnerCatalogOrderEditor } from "../../PartnerCatalogOrderEditor";
 
 type DraftDocument = {
   products: {
@@ -951,6 +952,11 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
           <DraftPreviewResult preview={preview} raw={previewRaw} />
         ) : null}
       </section>
+
+      <PartnerCatalogOrderEditor
+        products={props.products}
+        refreshCatalog={() => router.refresh()}
+      />
 
       {/* Superseded for Partner navigation by /partner/catalog/new. Retained for fallback and source-lock tests. */}
       <section id="partner-add-product" className="space-y-3 rounded-xl border border-slate-800 p-4">

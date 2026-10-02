@@ -38,6 +38,7 @@ import {
   validatePartnerCollection,
   type PartnerCatalogDocument,
 } from "./partner-catalog";
+import { nextPartnerProductSortOrder } from "./partner-catalog-order";
 import {
   parsePartnerCatalogSnapshotJson,
   planPartnerCatalogSnapshotSync,
@@ -2026,7 +2027,7 @@ export function planPartnerCatalogSync(input: Readonly<{
       if (next.partnerId === partner.partnerId) {
         productCreates.push({
           product: next,
-          sortOrder: input.current.products.length + productCreates.length,
+          sortOrder: nextPartnerProductSortOrder(input.current.products, productCreates.length),
         });
       }
       continue;

@@ -841,7 +841,7 @@ export function PartnerProductEditor(props: Readonly<{
         ) : null}
         {adding ? (
           <form
-            className="space-y-4 rounded-xl border border-slate-800 p-4"
+            className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4"
             onSubmit={(event) => {
               event.preventDefault();
               if (uploads.busy("create") || uploadLocks.current.has("create")) return;

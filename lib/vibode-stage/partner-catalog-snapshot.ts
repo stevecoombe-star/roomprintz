@@ -37,6 +37,7 @@ import {
   partnerCatalogSqlSlug,
   validatePartnerCollection,
 } from "./partner-catalog";
+import { nextPartnerProductSortOrder } from "./partner-catalog-order";
 import type {
   FoldedPartnerCatalogState,
   PartnerCatalogSyncPlan,
@@ -1613,7 +1614,7 @@ export function planPartnerCatalogSnapshotSync(input: Readonly<{
     if (!previous) {
       productCreates.push({
         product: next,
-        sortOrder: input.current.products.length + productCreates.length,
+        sortOrder: nextPartnerProductSortOrder(input.current.products, productCreates.length),
       });
       continue;
     }

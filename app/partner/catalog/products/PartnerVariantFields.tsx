@@ -29,7 +29,7 @@ export function PartnerVariantFields(props: Readonly<{
   onRemove?: () => void;
 }>) {
   return (
-    <article className="min-w-0 space-y-3 rounded-xl border border-slate-800 p-4">
+    <article className="min-w-0 space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-slate-50">{props.heading}</h3>

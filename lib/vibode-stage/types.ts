@@ -82,6 +82,8 @@ export type StageProduct = Readonly<{
   source: StageProductSource;
   partnerId: string | null;
   status?: StageCommercialStatus;
+  /** Durable manual catalog position. Absent on in-memory fixtures that have no row order. */
+  sortOrder?: number;
 }>;
 
 export type StageCollection = Readonly<{

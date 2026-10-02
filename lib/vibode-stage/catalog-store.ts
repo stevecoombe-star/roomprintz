@@ -234,6 +234,7 @@ function mapProduct(
     source,
     partnerId,
     status,
+    sortOrder: asInteger(row.sort_order),
   };
 }
 
@@ -463,7 +464,7 @@ export function stageCatalogRowsFromSnapshot(
       authored_depth_m: asset.authoredDepthM,
       status: asset.status,
     })),
-    products: catalog.products.map((product, sortOrder) => ({
+    products: catalog.products.map((product, index) => ({
       product_id: product.productId,
       name: product.name,
       brand: product.brand,
@@ -478,7 +479,7 @@ export function stageCatalogRowsFromSnapshot(
       partner_id: product.partnerId,
       default_variant_id: product.defaultVariantId,
       status: product.status ?? "active",
-      sort_order: sortOrder,
+      sort_order: product.sortOrder ?? index,
     })),
     variants: catalog.variants.map((variant) => ({
       variant_id: variant.variantId,
