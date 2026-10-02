@@ -26,6 +26,14 @@ import {
   variantIdForCreate,
 } from "./partner-catalog-ids";
 import type { PartnerDraftMutation } from "./partner-draft-mutations";
+import {
+  explicitModelDimensions,
+  PARTNER_MODEL_DIMENSIONS_INVALID,
+  sameModelDimensions,
+  stageVariantModelFields,
+  type ModelDimensions,
+  type ModelSizingMode,
+} from "./model-dimensions";
 import type { PartnerCatalogSyncDocument } from "./partner-catalog-sync";
 import type { StageCategory, StageCollection, StageProduct, StageVariant } from "./types";
 
@@ -69,6 +77,13 @@ export type PartnerAddProductFields = Readonly<{
   variantShortName: string;
   assetId: string;
   assetFileName: string | null;
+  nativeWidthM: number | null;
+  nativeHeightM: number | null;
+  nativeDepthM: number | null;
+  modelWidthM: number | null;
+  modelHeightM: number | null;
+  modelDepthM: number | null;
+  modelSizingMode: ModelSizingMode;
 }>;
 
 export type PartnerAddProductSummary = Readonly<{
@@ -132,6 +147,13 @@ export function emptyPartnerAddProductFields(currency = ""): PartnerAddProductFi
     variantShortName: "",
     assetId: "",
     assetFileName: null,
+    nativeWidthM: null,
+    nativeHeightM: null,
+    nativeDepthM: null,
+    modelWidthM: null,
+    modelHeightM: null,
+    modelDepthM: null,
+    modelSizingMode: "uniform",
   };
 }
 
@@ -153,7 +175,7 @@ export function partnerAddProductPublishLabel(otherChangeCount: number): "Publis
 
 export function partnerAddProductIssueStep(message: string): "product" | "variant" | "model" | null {
   const text = message.toLowerCase();
-  if (/model|glb/.test(text)) return "model";
+  if (/model|glb|dimension/.test(text)) return "model";
   if (/finish|sku|variant/.test(text)) return "variant";
   if (/name|price|currency|image|url|category|collection|identified/.test(text)) return "product";
   return null;
@@ -191,6 +213,20 @@ function parsePrice(value: string): number | null {
   const amount = Number(trimmed);
   if (!Number.isFinite(amount) || amount < 0) return null;
   return amount;
+}
+
+function addProductModelDimensions(
+  fields: PartnerAddProductFields,
+): ModelDimensions | null | "invalid" {
+  if (fields.modelWidthM == null && fields.modelHeightM == null && fields.modelDepthM == null) {
+    return null;
+  }
+  return explicitModelDimensions({
+    modelWidthM: fields.modelWidthM,
+    modelHeightM: fields.modelHeightM,
+    modelDepthM: fields.modelDepthM,
+    modelSizingMode: fields.modelSizingMode,
+  }) ?? "invalid";
 }
 
 function sortedIds(values: readonly string[]): string[] {
@@ -258,7 +294,10 @@ export function validatePartnerAddProductStep(input: Readonly<{
 }>): readonly string[] {
   if (input.step === "product") return validateProductStep(input);
   if (input.step === "variant") return validateVariantStep(input);
-  return input.assetReady ? [] : [MODEL_REQUIRED];
+  const issues = input.assetReady ? [] : [MODEL_REQUIRED];
+  const dimensions = addProductModelDimensions(input.fields);
+  if (dimensions === "invalid") issues.push(PARTNER_MODEL_DIMENSIONS_INVALID);
+  return issues;
 }
 
 function validateProductStep(input: Readonly<{
@@ -403,6 +442,8 @@ export function buildPartnerProductCreate(input: Readonly<{
   const fromFinish = variantCreationSlugFor({ finishLabel });
   const creationSlug = fromFinish ? null : commercialSlugFromLabel(input.fields.variantShortName);
   const currency = input.fields.currency.trim().toUpperCase();
+  const dimensions = addProductModelDimensions(input.fields);
+  if (dimensions === "invalid") return { ok: false, issues: [PARTNER_MODEL_DIMENSIONS_INVALID] };
   return {
     ok: true,
     mutation: {
@@ -421,6 +462,7 @@ export function buildPartnerProductCreate(input: Readonly<{
         productUrl: blank(input.fields.variantProductUrl),
         currentAssetId: input.fields.assetId.trim(),
         ...(creationSlug ? { creationSlug } : {}),
+        ...(dimensions ? stageVariantModelFields(dimensions) : {}),
       },
       ...(input.fields.collectionIds.length > 0 ? { collectionIds: sortedIds(input.fields.collectionIds) } : {}),
     },
@@ -487,6 +529,10 @@ export function diffPartnerAddProductMutations(input: Readonly<{
     sku?: string | null;
     productUrl?: string | null;
     currentAssetId?: string;
+    modelWidthM?: number;
+    modelHeightM?: number;
+    modelDepthM?: number;
+    modelSizingMode?: ModelSizingMode;
   } = { type: "variant.create_edit", variantId: input.variantId };
   let variantChanged = false;
   if (input.next.finish.trim() !== input.saved.finish.trim()) {
@@ -503,6 +549,20 @@ export function diffPartnerAddProductMutations(input: Readonly<{
   }
   if (input.next.assetId.trim() !== input.saved.assetId.trim()) {
     variant.currentAssetId = input.next.assetId.trim();
+    variantChanged = true;
+  }
+  const nextDimensions = addProductModelDimensions(input.next);
+  const savedDimensions = addProductModelDimensions(input.saved);
+  if (
+    nextDimensions !== "invalid"
+    && savedDimensions !== "invalid"
+    && nextDimensions
+    && !sameModelDimensions(nextDimensions, savedDimensions)
+  ) {
+    variant.modelWidthM = nextDimensions.widthM;
+    variant.modelHeightM = nextDimensions.heightM;
+    variant.modelDepthM = nextDimensions.depthM;
+    variant.modelSizingMode = nextDimensions.sizingMode;
     variantChanged = true;
   }
   if (variantChanged) mutations.push(variant);
@@ -551,6 +611,13 @@ export function readPartnerAddProductFields(
       variantShortName: "",
       assetId: variant.currentAssetId,
       assetFileName: null,
+      nativeWidthM: null,
+      nativeHeightM: null,
+      nativeDepthM: null,
+      modelWidthM: variant.modelWidthM ?? null,
+      modelHeightM: variant.modelHeightM ?? null,
+      modelDepthM: variant.modelDepthM ?? null,
+      modelSizingMode: variant.modelSizingMode ?? "uniform",
     },
   };
 }
@@ -632,7 +699,14 @@ export function partnerAddProductFieldsMatch(
     && left.finish.trim() === right.finish.trim()
     && left.sku.trim() === right.sku.trim()
     && left.variantProductUrl.trim() === right.variantProductUrl.trim()
-    && left.assetId.trim() === right.assetId.trim();
+    && left.assetId.trim() === right.assetId.trim()
+    && left.nativeWidthM === right.nativeWidthM
+    && left.nativeHeightM === right.nativeHeightM
+    && left.nativeDepthM === right.nativeDepthM
+    && left.modelWidthM === right.modelWidthM
+    && left.modelHeightM === right.modelHeightM
+    && left.modelDepthM === right.modelDepthM
+    && left.modelSizingMode === right.modelSizingMode;
 }
 
 export function partnerAddProductOtherSkus(input: Readonly<{

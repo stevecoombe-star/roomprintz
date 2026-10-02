@@ -47,10 +47,20 @@ import {
   type PartnerEditorDraft,
   type PartnerProductReview,
 } from "@/lib/vibode-stage/partner-product-editor";
+import {
+  explicitModelDimensions,
+  formatModelDimensionList,
+  modelDimensionsAfterAssetReplacement,
+  modelSizeFromMeasured,
+  nativeModelDimensions,
+  type ModelDimensions,
+  type ModelSize,
+} from "@/lib/vibode-stage/model-dimensions";
 import type { StageAsset, StageCategory, StageCollection, StageProduct, StageVariant } from "@/lib/vibode-stage/types";
 
 import { FIELD, PRIMARY, SECONDARY } from "../products/editor-ui";
 import { PartnerInlineModelPanel } from "../products/PartnerInlineModelPanel";
+import { PartnerModelDimensions } from "../products/PartnerModelDimensions";
 import { PartnerSaveState, type PartnerSaveStateValue } from "../products/PartnerSaveState";
 import { usePartnerInlineGlbUploads } from "../products/usePartnerInlineGlbUploads";
 
@@ -79,12 +89,50 @@ function fileNameFor(
   return options.find((option) => option.assetId === assetId)?.originalFileName?.trim() || null;
 }
 
+function explicitFromFields(fields: PartnerAddProductFields): ModelDimensions | null {
+  return explicitModelDimensions({
+    modelWidthM: fields.modelWidthM,
+    modelHeightM: fields.modelHeightM,
+    modelDepthM: fields.modelDepthM,
+    modelSizingMode: fields.modelSizingMode,
+  });
+}
+
+function withNative(
+  fields: PartnerAddProductFields,
+  options: readonly PartnerCommercialAssetOption[],
+): PartnerAddProductFields {
+  if (fields.nativeWidthM != null || !fields.assetId) return fields;
+  const native = nativeModelDimensions(options.find((option) => option.assetId === fields.assetId) ?? null);
+  if (!native) return fields;
+  const explicit = explicitFromFields(fields);
+  const associated = explicit
+    ? null
+    : modelDimensionsAfterAssetReplacement({ previousExplicit: null, nextNative: native });
+  return {
+    ...fields,
+    nativeWidthM: native.widthM,
+    nativeHeightM: native.heightM,
+    nativeDepthM: native.depthM,
+    ...(associated
+      ? {
+        modelWidthM: associated.dimensions.widthM,
+        modelHeightM: associated.dimensions.heightM,
+        modelDepthM: associated.dimensions.depthM,
+        modelSizingMode: associated.dimensions.sizingMode,
+      }
+      : {}),
+  };
+}
+
 function withFileName(
   fields: PartnerAddProductFields,
   options: readonly PartnerCommercialAssetOption[],
 ): PartnerAddProductFields {
-  if (fields.assetFileName) return fields;
-  return { ...fields, assetFileName: fileNameFor(fields.assetId, options) };
+  const named = fields.assetFileName
+    ? fields
+    : { ...fields, assetFileName: fileNameFor(fields.assetId, options) };
+  return withNative(named, options);
 }
 
 function formStarted(fields: PartnerAddProductFields, inheritedCurrency: string): boolean {
@@ -243,10 +291,10 @@ export function PartnerAddProductFlow(props: Readonly<{
   function adoptSaved(nextDraft: PartnerEditorDraft, productId: string, fileName: string | null) {
     const read = readPartnerAddProductFields(nextDraft.document, productId);
     if (!read) return;
-    const nextFields = {
+    const nextFields = withNative({
       ...read.fields,
       assetFileName: fileName ?? fileNameFor(read.fields.assetId, props.commercialAssetOptions),
-    };
+    }, props.commercialAssetOptions);
     const savedProduct = { productId, variantId: read.variantId, fields: nextFields };
     savedRef.current = savedProduct;
     fieldsRef.current = nextFields;
@@ -366,8 +414,27 @@ export function PartnerAddProductFlow(props: Readonly<{
     return persistFields(fieldsRef.current);
   }
 
-  function rememberModel(assetId: string, fileName: string | null) {
-    const next = { ...fieldsRef.current, assetId, assetFileName: fileName };
+  function rememberModel(assetId: string, fileName: string | null, native: ModelSize | null) {
+    const previous = explicitFromFields(fieldsRef.current);
+    const associated = native
+      ? modelDimensionsAfterAssetReplacement({ previousExplicit: previous, nextNative: native })
+      : null;
+    const next = {
+      ...fieldsRef.current,
+      assetId,
+      assetFileName: fileName,
+      nativeWidthM: native?.widthM ?? null,
+      nativeHeightM: native?.heightM ?? null,
+      nativeDepthM: native?.depthM ?? null,
+      ...(associated
+        ? {
+          modelWidthM: associated.dimensions.widthM,
+          modelHeightM: associated.dimensions.heightM,
+          modelDepthM: associated.dimensions.depthM,
+          modelSizingMode: associated.dimensions.sizingMode,
+        }
+        : {}),
+    };
     fieldsRef.current = next;
     setFields(next);
     setIssues([]);
@@ -389,14 +456,22 @@ export function PartnerAddProductFlow(props: Readonly<{
     if (outcome.status !== "ready" || !uploads.isCurrent("create", outcome.token)) return;
     uploads.remember(outcome.assetId, outcome.fileName);
     uploads.settle("create");
-    rememberModel(outcome.assetId, outcome.fileName);
+    rememberModel(
+      outcome.assetId,
+      outcome.fileName,
+      modelSizeFromMeasured({
+        widthM: outcome.measuredWidthM,
+        heightM: outcome.measuredHeightM,
+        depthM: outcome.measuredDepthM,
+      }),
+    );
   }
 
   function chooseModel(assetId: string) {
     const option = props.commercialAssetOptions.find((item) => item.assetId === assetId);
     if (!option) return;
     uploads.settle("create");
-    rememberModel(option.assetId, option.originalFileName);
+    rememberModel(option.assetId, option.originalFileName, nativeModelDimensions(option));
   }
 
   async function continueStep() {
@@ -874,6 +949,30 @@ export function PartnerAddProductFlow(props: Readonly<{
             onFile={(file) => void uploadModel(file)}
             onChoose={chooseModel}
           />
+          {fields.nativeWidthM != null && fields.nativeHeightM != null && fields.nativeDepthM != null ? (
+            <PartnerModelDimensions
+              key={`${fields.assetId}:${fields.modelWidthM ?? "native"}:${fields.modelHeightM ?? ""}:${fields.modelDepthM ?? ""}:${fields.modelSizingMode}`}
+              native={{
+                widthM: fields.nativeWidthM,
+                heightM: fields.nativeHeightM,
+                depthM: fields.nativeDepthM,
+              }}
+              dimensions={explicitFromFields(fields)}
+              disabled={locked}
+              onCommit={(next) => {
+                const updated = {
+                  ...fieldsRef.current,
+                  modelWidthM: next.widthM,
+                  modelHeightM: next.heightM,
+                  modelDepthM: next.depthM,
+                  modelSizingMode: next.sizingMode,
+                };
+                fieldsRef.current = updated;
+                setFields(updated);
+                if (savedRef.current) void persistFields(updated);
+              }}
+            />
+          ) : null}
         </section>
       ) : null}
 
@@ -907,6 +1006,9 @@ export function PartnerAddProductFlow(props: Readonly<{
               <h3 className="text-xs uppercase tracking-wide text-slate-500">3D Model</h3>
               <p className="mt-1 text-sm text-slate-100">{summary.modelLabel}</p>
               {summary.modelFileName ? <p className="text-sm text-slate-300">{summary.modelFileName}</p> : null}
+              {explicitFromFields(fields) ? (
+                <p className="text-sm text-slate-300">{formatModelDimensionList(explicitFromFields(fields)!)}</p>
+              ) : null}
             </div>
           </div>
           {otherLines.length > 0 ? (

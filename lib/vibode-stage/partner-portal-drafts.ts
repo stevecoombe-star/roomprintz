@@ -11,6 +11,8 @@
 
 import { createHash, randomUUID } from "node:crypto";
 
+import { explicitModelDimensions } from "./model-dimensions";
+
 import {
   previewPartnerCatalogFromDurable,
   type PartnerCatalogPreviewResult,
@@ -147,17 +149,28 @@ export function partnerCatalogCommercialFingerprint(catalog: StageCatalogSnapsho
       status: product.status ?? "active",
       collectionIds: [...product.collectionIds].sort((left, right) => left.localeCompare(right)),
     })),
-    variants: sortIds(catalog.variants, (item) => item.variantId).map((variant) => ({
-      variantId: variant.variantId,
-      productId: variant.productId,
-      finishLabel: variant.finishLabel,
-      sku: variant.sku,
-      priceAmount: variant.priceAmount,
-      priceCurrency: variant.priceCurrency,
-      productUrl: variant.productUrl,
-      status: variant.status ?? "active",
-      currentAssetId: variant.assetId,
-    })),
+    variants: sortIds(catalog.variants, (item) => item.variantId).map((variant) => {
+      const dimensions = explicitModelDimensions(variant);
+      return {
+        variantId: variant.variantId,
+        productId: variant.productId,
+        finishLabel: variant.finishLabel,
+        sku: variant.sku,
+        priceAmount: variant.priceAmount,
+        priceCurrency: variant.priceCurrency,
+        productUrl: variant.productUrl,
+        status: variant.status ?? "active",
+        currentAssetId: variant.assetId,
+        ...(dimensions
+          ? {
+            modelWidthM: dimensions.widthM,
+            modelHeightM: dimensions.heightM,
+            modelDepthM: dimensions.depthM,
+            modelSizingMode: dimensions.sizingMode,
+          }
+          : {}),
+      };
+    }),
     collections: sortIds(catalog.collections, (item) => item.collectionId).map((collection) => ({
       collectionId: collection.collectionId,
       name: collection.name,

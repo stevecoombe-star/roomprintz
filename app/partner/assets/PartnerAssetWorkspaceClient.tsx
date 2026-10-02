@@ -418,8 +418,8 @@ export function PartnerAssetWorkspaceClient() {
               Enter the actual product dimensions in metres, or use the GLB measurement shortcut.
               A validated intake is not a runtime-ready Asset. Register Asset creates an
               immutable technical Asset whose runtime activation is still pending.
-              The GLB should already be modeled at real-world scale. Vibode does not
-              automatically resize uploaded furniture.
+              Product placement size is set on the product variant. This technical
+              upload measures the GLB and does not automatically resize the file.
             </p>
       <section className="rounded-xl border border-slate-800 p-4 space-y-4">
         <h3 className="font-medium">Upload GLB</h3>
@@ -447,8 +447,8 @@ export function PartnerAssetWorkspaceClient() {
             those product dimensions.
           </p>
           <p className="text-xs text-slate-500">
-            The GLB should already be modeled at real-world scale. Vibode does not automatically
-            resize uploaded furniture.
+            This check compares the GLB measurement with the dimensions entered here.
+            Vibode does not automatically resize the file. Placement size is set on the product variant.
           </p>
           <label className="flex items-start gap-2 text-sm text-slate-300">
             <input

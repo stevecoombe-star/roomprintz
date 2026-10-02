@@ -16,6 +16,18 @@ import { useAfcSceneObjectCrudSession } from "@/components/afc-3d/AfcSceneObject
 import { Prepare3dRoomControl } from "@/components/afc-3d/Prepare3dRoomControl";
 import { StageFurnitureToolbar } from "@/components/stage/StageFurnitureToolbar";
 import { useOptionalStageEditor } from "@/components/stage/StageEditorContext";
+import {
+  MODEL_AXIS_SCALE_IDENTITY,
+  registerModelAxisScaleLookup,
+  replaceScenePlacementFootprints,
+  type ModelAxisScale,
+} from "@/lib/afc-v2-runtime/model-axis-scale";
+import {
+  deriveModelAxisScale,
+  nativeModelDimensions,
+  resolveEffectiveModelDimensions,
+} from "@/lib/vibode-stage/model-dimensions";
+import type { StageCatalogSnapshot, StageVariant } from "@/lib/vibode-stage/types";
 
 type Props = Readonly<{
   roomId: string;
@@ -29,6 +41,24 @@ type Props = Readonly<{
   transformMode: RuntimeTransformMode;
   onTransformModeChange: (mode: RuntimeTransformMode) => void;
 }>;
+
+function stagePlacementScale(input: Readonly<{
+  assetId: string;
+  variantId?: string;
+  catalog: StageCatalogSnapshot;
+  extraVariants?: readonly StageVariant[];
+}>): ModelAxisScale {
+  const variant = input.variantId
+    ? [...input.extraVariants ?? [], ...input.catalog.variants].find((item) => item.variantId === input.variantId) ?? null
+    : null;
+  if (variant?.assetId && variant.assetId !== input.assetId) return MODEL_AXIS_SCALE_IDENTITY;
+  const asset = input.catalog.assets.find((item) => item.assetId === input.assetId) ?? null;
+  const derived = deriveModelAxisScale({
+    native: nativeModelDimensions(asset),
+    effective: resolveEffectiveModelDimensions(variant, asset),
+  });
+  return derived.ok ? derived.scale : MODEL_AXIS_SCALE_IDENTITY;
+}
 
 function ViewportMessage({
   children,
@@ -79,6 +109,34 @@ export function AfcIntegratedEditorViewport({
   const sceneCrud = useAfcSceneObjectCrudSession();
   const stage = useOptionalStageEditor();
   const bindScene = stage?.bindScene;
+  const stageCatalog = stage?.catalog;
+  const stageExtraVariants = stage?.extraVariants;
+
+  useEffect(() => {
+    if (!stageCatalog) return registerModelAxisScaleLookup(null);
+    return registerModelAxisScaleLookup(({ assetId, variantId }) => (
+      stagePlacementScale({
+        assetId,
+        variantId,
+        catalog: stageCatalog,
+        extraVariants: stageExtraVariants,
+      })
+    ));
+  }, [stageCatalog, stageExtraVariants]);
+
+  useEffect(() => {
+    if (!stageCatalog) return replaceScenePlacementFootprints([]);
+    return replaceScenePlacementFootprints(persistedScene.objects.map((object) => ({
+      objectId: object.objectId,
+      assetId: object.assetId,
+      scale: stagePlacementScale({
+        assetId: object.assetId,
+        variantId: object.variantId,
+        catalog: stageCatalog,
+        extraVariants: stageExtraVariants,
+      }),
+    })));
+  }, [persistedScene.objects, stageCatalog, stageExtraVariants]);
   const setSelection = stage?.setSelection;
   const noteFurnitureBaseline = stage?.noteFurnitureBaseline;
 

@@ -41,6 +41,14 @@ import {
   normalizeCurrency,
   validateBrowseTaxonomy,
 } from "./product-variant-register";
+import {
+  explicitModelDimensions,
+  parseModelDimensionFields,
+  sameModelDimensions,
+  stageVariantModelFields,
+  type ModelDimensions,
+  type ModelSizingMode,
+} from "./model-dimensions";
 import type { StageCatalogSnapshot, StageCollection, StageProduct, StageVariant } from "./types";
 
 export const PARTNER_DRAFT_MAX_JSON_BYTES = 256 * 1024;
@@ -60,6 +68,7 @@ export const PARTNER_DRAFT_MUTATION_TYPES = Object.freeze([
   "variant.set_sku",
   "variant.set_price",
   "variant.set_product_url",
+  "variant.set_model_dimensions",
   "variant.deactivate",
   "variant.reactivate",
   "variant.create",
@@ -97,6 +106,10 @@ export type PartnerDraftMutation =
         productUrl?: string | null;
         currentAssetId: string;
         creationSlug?: string | null;
+        modelWidthM?: number;
+        modelHeightM?: number;
+        modelDepthM?: number;
+        modelSizingMode?: ModelSizingMode;
       }>;
       collectionIds?: readonly string[];
     }>
@@ -116,6 +129,14 @@ export type PartnerDraftMutation =
   | Readonly<{ type: "variant.set_sku"; variantId: string; sku: string | null }>
   | Readonly<{ type: "variant.set_price"; variantId: string; priceAmount: number }>
   | Readonly<{ type: "variant.set_product_url"; variantId: string; productUrl: string | null }>
+  | Readonly<{
+      type: "variant.set_model_dimensions";
+      variantId: string;
+      modelWidthM: number;
+      modelHeightM: number;
+      modelDepthM: number;
+      modelSizingMode: ModelSizingMode;
+    }>
   | Readonly<{ type: "variant.deactivate"; variantId: string }>
   | Readonly<{ type: "variant.reactivate"; variantId: string }>
   | Readonly<{
@@ -127,6 +148,10 @@ export type PartnerDraftMutation =
       productUrl: string | null;
       currentAssetId: string;
       creationSlug?: string | null;
+      modelWidthM?: number;
+      modelHeightM?: number;
+      modelDepthM?: number;
+      modelSizingMode?: ModelSizingMode;
     }>
   | Readonly<{
       type: "variant.create_edit";
@@ -136,6 +161,10 @@ export type PartnerDraftMutation =
       priceAmount?: number;
       productUrl?: string | null;
       currentAssetId?: string;
+      modelWidthM?: number;
+      modelHeightM?: number;
+      modelDepthM?: number;
+      modelSizingMode?: ModelSizingMode;
     }>
   | Readonly<{ type: "variant.create_remove"; variantId: string }>
   | Readonly<{ type: "collection.set_name"; collectionId: string; name: string }>
@@ -204,6 +233,10 @@ type WritableVariantPatch = {
   priceCurrency?: string;
   productUrl?: string | null;
   currentAssetId?: string;
+  modelWidthM?: number;
+  modelHeightM?: number;
+  modelDepthM?: number;
+  modelSizingMode?: ModelSizingMode;
 };
 
 type WritableCollectionPatch = {
@@ -346,6 +379,15 @@ export function parsePartnerDraftMutations(
   return { ok: true, mutations };
 }
 
+function mutationModelDimensions(
+  value: Record<string, unknown>,
+): Readonly<{ ok: true; dimensions: ModelDimensions | null } | { ok: false }> {
+  const parsed = parseModelDimensionFields(value);
+  if (parsed.state === "invalid") return { ok: false };
+  if (parsed.state === "absent") return { ok: true, dimensions: null };
+  return { ok: true, dimensions: parsed.dimensions };
+}
+
 export function parsePartnerDraftMutation(
   value: unknown,
 ): Readonly<{ ok: true; mutation: PartnerDraftMutation }> | PartnerDraftMutationFailure {
@@ -466,6 +508,10 @@ export function parsePartnerDraftMutation(
         "productUrl",
         "currentAssetId",
         "creationSlug",
+        "modelWidthM",
+        "modelHeightM",
+        "modelDepthM",
+        "modelSizingMode",
       ]).length > 0) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -491,6 +537,8 @@ export function parsePartnerDraftMutation(
       ) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
+      const defaultDimensions = mutationModelDimensions(value.defaultVariant);
+      if (!defaultDimensions.ok) return fail("invalid_mutation", "Invalid draft mutation.");
       let collectionIds: string[] | undefined;
       if ("collectionIds" in value) {
         if (!Array.isArray(value.collectionIds)) return fail("invalid_mutation", "Invalid draft mutation.");
@@ -519,6 +567,7 @@ export function parsePartnerDraftMutation(
             ...(variantProductUrl !== undefined ? { productUrl: variantProductUrl } : {}),
             currentAssetId,
             ...(creationSlug !== undefined ? { creationSlug } : {}),
+            ...(defaultDimensions.dimensions ? stageVariantModelFields(defaultDimensions.dimensions) : {}),
           },
           ...(collectionIds ? { collectionIds } : {}),
         },
@@ -648,6 +697,34 @@ export function parsePartnerDraftMutation(
       if (!variantId || productUrl === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
       return { ok: true, mutation: { type, variantId, productUrl } };
     }
+    case "variant.set_model_dimensions": {
+      if (extraKeys(value, [
+        "type",
+        "variantId",
+        "modelWidthM",
+        "modelHeightM",
+        "modelDepthM",
+        "modelSizingMode",
+      ]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const variantId = asNonEmptyString(value.variantId);
+      const dimensions = mutationModelDimensions(value);
+      if (!variantId || !dimensions.ok || !dimensions.dimensions) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      return {
+        ok: true,
+        mutation: {
+          type,
+          variantId,
+          modelWidthM: dimensions.dimensions.widthM,
+          modelHeightM: dimensions.dimensions.heightM,
+          modelDepthM: dimensions.dimensions.depthM,
+          modelSizingMode: dimensions.dimensions.sizingMode,
+        },
+      };
+    }
     case "variant.create": {
       if (extraKeys(value, [
         "type",
@@ -658,6 +735,10 @@ export function parsePartnerDraftMutation(
         "productUrl",
         "currentAssetId",
         "creationSlug",
+        "modelWidthM",
+        "modelHeightM",
+        "modelDepthM",
+        "modelSizingMode",
       ]).length > 0) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -682,6 +763,8 @@ export function parsePartnerDraftMutation(
       ) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
+      const createDimensions = mutationModelDimensions(value);
+      if (!createDimensions.ok) return fail("invalid_mutation", "Invalid draft mutation.");
       return {
         ok: true,
         mutation: {
@@ -693,6 +776,7 @@ export function parsePartnerDraftMutation(
           productUrl,
           currentAssetId,
           ...(creationSlug !== undefined ? { creationSlug } : {}),
+          ...(createDimensions.dimensions ? stageVariantModelFields(createDimensions.dimensions) : {}),
         },
       };
     }
@@ -705,6 +789,10 @@ export function parsePartnerDraftMutation(
         "priceAmount",
         "productUrl",
         "currentAssetId",
+        "modelWidthM",
+        "modelHeightM",
+        "modelDepthM",
+        "modelSizingMode",
       ]).length > 0) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -718,6 +806,10 @@ export function parsePartnerDraftMutation(
         priceAmount?: number;
         productUrl?: string | null;
         currentAssetId?: string;
+        modelWidthM?: number;
+        modelHeightM?: number;
+        modelDepthM?: number;
+        modelSizingMode?: ModelSizingMode;
       } = { type, variantId };
       if ("finishLabel" in value) {
         const finishLabel = nullableTrimmedString(value.finishLabel);
@@ -744,12 +836,21 @@ export function parsePartnerDraftMutation(
         if (!currentAssetId) return fail("invalid_mutation", "Invalid draft mutation.");
         next.currentAssetId = currentAssetId;
       }
+      const editDimensions = mutationModelDimensions(value);
+      if (!editDimensions.ok) return fail("invalid_mutation", "Invalid draft mutation.");
+      if (editDimensions.dimensions) {
+        next.modelWidthM = editDimensions.dimensions.widthM;
+        next.modelHeightM = editDimensions.dimensions.heightM;
+        next.modelDepthM = editDimensions.dimensions.depthM;
+        next.modelSizingMode = editDimensions.dimensions.sizingMode;
+      }
       if (
         next.finishLabel === undefined
         && next.sku === undefined
         && next.priceAmount === undefined
         && next.productUrl === undefined
         && next.currentAssetId === undefined
+        && next.modelWidthM === undefined
       ) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -1348,6 +1449,7 @@ function applyOne(
         priceCurrency: currency,
         productUrl: mutation.defaultVariant.productUrl ?? null,
         currentAssetId: mutation.defaultVariant.currentAssetId,
+        ...stageVariantModelFields(explicitModelDimensions(mutation.defaultVariant)),
       });
       working.variants.create = sortVariantCreates(working.variants.create);
       setPendingProductMemberships(working, derived.productId, collectionIds);
@@ -1451,6 +1553,17 @@ function applyOne(
       });
       return null;
     }
+    case "variant.set_model_dimensions": {
+      const variant = findVariant(catalog, mutation.variantId);
+      if (!variant) return fail("unknown_id", "Unknown Variant.");
+      upsertById(working.variants.update, "variantId", mutation.variantId, {
+        modelWidthM: mutation.modelWidthM,
+        modelHeightM: mutation.modelHeightM,
+        modelDepthM: mutation.modelDepthM,
+        modelSizingMode: mutation.modelSizingMode,
+      });
+      return null;
+    }
     case "variant.create": {
       if (findPendingProduct(working, mutation.productId)) {
         return fail("invalid_mutation", "Additional variants cannot target a pending Product.");
@@ -1482,6 +1595,7 @@ function applyOne(
         priceCurrency: product.priceCurrency,
         productUrl: mutation.productUrl,
         currentAssetId: mutation.currentAssetId,
+        ...stageVariantModelFields(explicitModelDimensions(mutation)),
       });
       working.variants.create = sortVariantCreates(working.variants.create);
       return null;
@@ -1502,6 +1616,9 @@ function applyOne(
         priceAmount: mutation.priceAmount !== undefined ? mutation.priceAmount : pending.priceAmount,
         productUrl: mutation.productUrl !== undefined ? mutation.productUrl : pending.productUrl,
         currentAssetId: mutation.currentAssetId ?? pending.currentAssetId,
+        ...(mutation.modelWidthM !== undefined
+          ? stageVariantModelFields(explicitModelDimensions(mutation))
+          : {}),
       };
       working.variants.create = sortVariantCreates(
         working.variants.create.map((item) => (item.variantId === mutation.variantId ? next : item)),
@@ -1688,6 +1805,20 @@ function normalizeVariantPatch(
   }
   if (patch.currentAssetId !== undefined && !sameValue(patch.currentAssetId, live.assetId)) {
     next.currentAssetId = patch.currentAssetId;
+  }
+  if (
+    patch.modelWidthM !== undefined
+    || patch.modelHeightM !== undefined
+    || patch.modelDepthM !== undefined
+    || patch.modelSizingMode !== undefined
+  ) {
+    const nextDimensions = explicitModelDimensions(patch);
+    if (nextDimensions && !sameModelDimensions(nextDimensions, explicitModelDimensions(live))) {
+      next.modelWidthM = nextDimensions.widthM;
+      next.modelHeightM = nextDimensions.heightM;
+      next.modelDepthM = nextDimensions.depthM;
+      next.modelSizingMode = nextDimensions.sizingMode;
+    }
   }
   return Object.keys(next).length === 1 ? null : next;
 }

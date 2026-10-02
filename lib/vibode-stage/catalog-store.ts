@@ -9,6 +9,7 @@ import {
   createStageCatalogSnapshot,
   seedFixtureStageCatalog,
 } from "./catalog";
+import { explicitModelDimensions, stageVariantModelFields } from "./model-dimensions";
 import type {
   StageAsset,
   StageAssetStatus,
@@ -184,6 +185,12 @@ function mapVariant(row: Record<string, unknown>): StageVariant | null {
   const status = asCommercialStatus(row.status);
   if (!variantId || !productId || !status) return null;
   const sortOrder = asOptionalInteger(row.sort_order);
+  const modelDimensions = explicitModelDimensions({
+    modelWidthM: asNumber(row.model_width_m),
+    modelHeightM: asNumber(row.model_height_m),
+    modelDepthM: asNumber(row.model_depth_m),
+    modelSizingMode: typeof row.model_sizing_mode === "string" ? row.model_sizing_mode : null,
+  });
   return {
     variantId,
     productId,
@@ -195,6 +202,7 @@ function mapVariant(row: Record<string, unknown>): StageVariant | null {
     productUrl: asNullableString(row.product_url),
     status,
     ...(sortOrder !== undefined ? { sortOrder } : {}),
+    ...stageVariantModelFields(modelDimensions),
   };
 }
 
@@ -521,6 +529,16 @@ export function stageCatalogRowsFromSnapshot(
       product_url: variant.productUrl,
       status: variant.status ?? "active",
       ...(typeof variant.sortOrder === "number" ? { sort_order: variant.sortOrder } : {}),
+      ...(() => {
+        const dimensions = explicitModelDimensions(variant);
+        if (!dimensions) return {};
+        return {
+          model_width_m: dimensions.widthM,
+          model_height_m: dimensions.heightM,
+          model_depth_m: dimensions.depthM,
+          model_sizing_mode: dimensions.sizingMode,
+        };
+      })(),
     })),
     collections: catalog.collections.map((collection, sortOrder) => ({
       collection_id: collection.collectionId,

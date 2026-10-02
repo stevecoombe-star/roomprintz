@@ -75,6 +75,15 @@ export function usePartnerInlineGlbUploads() {
         token,
         assetId: result.asset.assetId,
         fileName: result.asset.originalFileName,
+        ...(typeof result.asset.measuredWidthM === "number"
+          && typeof result.asset.measuredHeightM === "number"
+          && typeof result.asset.measuredDepthM === "number"
+          ? {
+            measuredWidthM: result.asset.measuredWidthM,
+            measuredHeightM: result.asset.measuredHeightM,
+            measuredDepthM: result.asset.measuredDepthM,
+          }
+          : {}),
       };
     } finally {
       session.finish(token);

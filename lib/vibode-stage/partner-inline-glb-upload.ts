@@ -8,6 +8,7 @@
  * This module does not delete assets or retarget published Variants.
  */
 
+import { modelSizeFromMeasured } from "./model-dimensions";
 import { putPartnerGlbToSignedUrl } from "./partner-glb-signed-upload";
 
 export const PARTNER_INLINE_GLB_EMPTY_TITLE = "No 3D model yet.";
@@ -61,6 +62,9 @@ export type PartnerInlineGlbReadyAsset = Readonly<{
   assetId: string;
   originalFileName: string;
   status: "ready";
+  measuredWidthM?: number;
+  measuredHeightM?: number;
+  measuredDepthM?: number;
 }>;
 
 export type PartnerInlineGlbFailureStage =
@@ -98,6 +102,9 @@ export type PartnerInlineGlbJson = Readonly<{
     assetId?: string;
     status?: string;
     originalFileName?: string | null;
+    measuredWidthM?: number;
+    measuredHeightM?: number;
+    measuredDepthM?: number;
   }>;
 }>;
 
@@ -285,6 +292,13 @@ export async function runPartnerInlineGlbUpload(input: Readonly<{
     return failure("register", registered.body.errorCode ?? null, registered.body.error ?? null);
   }
   const registeredName = registered.body.asset?.originalFileName?.trim() || fileName;
+  const measured = modelSizeFromMeasured(registered.body.asset
+    ? {
+      widthM: registered.body.asset.measuredWidthM,
+      heightM: registered.body.asset.measuredHeightM,
+      depthM: registered.body.asset.measuredDepthM,
+    }
+    : null);
 
   let activated: Readonly<{ status: number; body: PartnerInlineGlbJson }>;
   try {
@@ -304,6 +318,13 @@ export async function runPartnerInlineGlbUpload(input: Readonly<{
       assetId: readyId,
       originalFileName: registeredName,
       status: "ready",
+      ...(measured
+        ? {
+          measuredWidthM: measured.widthM,
+          measuredHeightM: measured.heightM,
+          measuredDepthM: measured.depthM,
+        }
+        : {}),
     },
   };
 }

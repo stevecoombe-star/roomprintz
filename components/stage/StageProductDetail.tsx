@@ -12,6 +12,7 @@ import {
   stageVariantById,
   stageVariantsForProduct,
 } from "@/lib/vibode-stage/catalog";
+import { resolveEffectiveModelDimensions } from "@/lib/vibode-stage/model-dimensions";
 import { stageAddLockKey } from "@/lib/vibode-stage/stage-runtime-placement";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
 import type {
@@ -151,7 +152,14 @@ export function StageProductDetail() {
       ) : null}
       {asset ? (
         <div className="mt-2 text-xs text-neutral-500">
-          {asset.authoredWidthM.toFixed(1)}m × {asset.authoredDepthM.toFixed(1)}m × {asset.authoredHeightM.toFixed(1)}m
+          {(() => {
+            const size = resolveEffectiveModelDimensions(variant, asset) ?? {
+              widthM: asset.authoredWidthM,
+              depthM: asset.authoredDepthM,
+              heightM: asset.authoredHeightM,
+            };
+            return `${size.widthM.toFixed(1)}m × ${size.depthM.toFixed(1)}m × ${size.heightM.toFixed(1)}m`;
+          })()}
         </div>
       ) : (
         <div className="mt-2 text-xs text-neutral-500">

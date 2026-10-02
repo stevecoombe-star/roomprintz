@@ -13,6 +13,7 @@ import {
 } from "react";
 
 import { useAfcSceneObjectCrudSession } from "@/components/afc-3d/AfcSceneObjectCrudSession";
+import { beginPlacementFootprint } from "@/lib/afc-v2-runtime/model-axis-scale";
 import type { SceneObjectDefinition } from "@/lib/afc-v2-runtime/types";
 import type { RuntimeTransformMode } from "@/lib/afc-v2-runtime/types";
 import type { SceneSelectionPresentation } from "@/lib/afc-v2-runtime/viewport-interaction";
@@ -35,6 +36,11 @@ import {
   STAGE_SEED_CATALOG,
 } from "@/lib/vibode-stage/catalog";
 import { parseStageCatalogPayload } from "@/lib/vibode-stage/catalog-store";
+import {
+  modelAxisScaleOrIdentity,
+  nativeModelDimensions,
+  resolveEffectiveModelDimensions,
+} from "@/lib/vibode-stage/model-dimensions";
 import {
   readCatalogDrawerPreference,
   resolveCatalogDrawerOpen,
@@ -354,6 +360,15 @@ export function StageEditorProvider({
     setAddPendingKey(key);
     setAddError(null);
     setAddErrorKey(null);
+    const placedCatalog = catalog ?? STAGE_SEED_CATALOG;
+    const asset = placedCatalog.assets.find((item) => item.assetId === placement.assetId) ?? null;
+    const endPlacementFootprint = beginPlacementFootprint({
+      assetId: placement.assetId,
+      scale: modelAxisScaleOrIdentity({
+        native: nativeModelDimensions(asset),
+        effective: resolveEffectiveModelDimensions(placement.variant, asset),
+      }),
+    });
     void (async () => {
       try {
         const result = await session.addFurnitureWithIdentity(placement.assetId, {
@@ -370,6 +385,7 @@ export function StageEditorProvider({
         onTransformModeChange("move");
         setToolbarSlider(null);
       } finally {
+        endPlacementFootprint();
         releaseStageAddLock(addLocksRef.current, key);
         setAddPendingKey((current) => (current === key ? null : current));
       }

@@ -66,6 +66,14 @@ export type StageVariant = Readonly<{
   status?: StageCommercialStatus;
   /** Durable manual position within the product. Absent on fixtures with no stored variant order. */
   sortOrder?: number;
+  /**
+   * Partner physical size for this Variant. Absent means STAGE uses the
+   * Asset's authored GLB measurement. Width is X, height is Y, depth is Z.
+   */
+  modelWidthM?: number;
+  modelHeightM?: number;
+  modelDepthM?: number;
+  modelSizingMode?: "uniform" | "exact";
 }>;
 
 export type StageProduct = Readonly<{

@@ -15,6 +15,15 @@
 
 import { variantCreationSlugFor } from "./partner-catalog-ids";
 import {
+  explicitModelDimensions,
+  formatModelDimensionList,
+  PARTNER_MODEL_DIMENSIONS_INVALID,
+  sameModelDimensions,
+  stageVariantModelFields,
+  type ModelDimensions,
+  type ModelSizingMode,
+} from "./model-dimensions";
+import {
   shortenPartnerCommercialAssetId,
   type PartnerCommercialAssetOption,
 } from "./partner-commercial-assets";
@@ -60,6 +69,14 @@ export type PartnerEditorMutation =
   | Readonly<{ type: "variant.set_sku"; variantId: string; sku: string | null }>
   | Readonly<{ type: "variant.set_price"; variantId: string; priceAmount: number }>
   | Readonly<{ type: "variant.set_product_url"; variantId: string; productUrl: string | null }>
+  | Readonly<{
+    type: "variant.set_model_dimensions";
+    variantId: string;
+    modelWidthM: number;
+    modelHeightM: number;
+    modelDepthM: number;
+    modelSizingMode: ModelSizingMode;
+  }>
   | Readonly<{ type: "variant.deactivate"; variantId: string }>
   | Readonly<{ type: "variant.reactivate"; variantId: string }>
   | Readonly<{
@@ -71,6 +88,10 @@ export type PartnerEditorMutation =
     productUrl: string | null;
     currentAssetId: string;
     creationSlug?: string;
+    modelWidthM?: number;
+    modelHeightM?: number;
+    modelDepthM?: number;
+    modelSizingMode?: ModelSizingMode;
   }>
   | Readonly<{
     type: "variant.create_edit";
@@ -80,6 +101,10 @@ export type PartnerEditorMutation =
     priceAmount?: number;
     productUrl?: string | null;
     currentAssetId?: string;
+    modelWidthM?: number;
+    modelHeightM?: number;
+    modelDepthM?: number;
+    modelSizingMode?: ModelSizingMode;
   }>
   | Readonly<{ type: "variant.create_remove"; variantId: string }>
   | Readonly<{ type: "collection.set_membership"; collectionId: string; productIds: readonly string[] }>
@@ -443,6 +468,54 @@ export function commitPendingVariantModel(variantId: string, nextAssetId: string
   return { state: "mutation", mutation: { type: "variant.create_edit", variantId, currentAssetId: next } };
 }
 
+function variantModelDimensions(dimensions: ModelDimensions): ModelDimensions | null {
+  return explicitModelDimensions({
+    modelWidthM: dimensions.widthM,
+    modelHeightM: dimensions.heightM,
+    modelDepthM: dimensions.depthM,
+    modelSizingMode: dimensions.sizingMode,
+  });
+}
+
+export function commitPartnerVariantModelDimensions(
+  variantId: string,
+  next: ModelDimensions,
+  saved: ModelDimensions | null,
+): PartnerEditorCommit {
+  const explicit = variantModelDimensions(next);
+  if (!explicit) return { state: "invalid", message: PARTNER_MODEL_DIMENSIONS_INVALID };
+  if (sameModelDimensions(next, saved)) return { state: "unchanged" };
+  return {
+    state: "mutation",
+    mutation: {
+      type: "variant.set_model_dimensions",
+      variantId,
+      modelWidthM: explicit.widthM,
+      modelHeightM: explicit.heightM,
+      modelDepthM: explicit.depthM,
+      modelSizingMode: explicit.sizingMode,
+    },
+  };
+}
+
+export function commitPendingVariantModelDimensions(
+  variantId: string,
+  next: ModelDimensions,
+  saved: ModelDimensions | null,
+): PartnerEditorCommit {
+  const explicit = variantModelDimensions(next);
+  if (!explicit) return { state: "invalid", message: PARTNER_MODEL_DIMENSIONS_INVALID };
+  if (sameModelDimensions(next, saved)) return { state: "unchanged" };
+  return {
+    state: "mutation",
+    mutation: {
+      type: "variant.create_edit",
+      variantId,
+      ...stageVariantModelFields(explicit),
+    },
+  };
+}
+
 export function removePendingVariantMutation(variantId: string): PartnerEditorMutation {
   return { type: "variant.create_remove", variantId };
 }
@@ -461,6 +534,7 @@ export function buildPartnerVariantCreate(input: Readonly<{
   productUrl: string;
   assetId: string;
   hasReadyModel: boolean;
+  modelDimensions?: ModelDimensions | null;
 }>): PartnerEditorCommit {
   if (!input.currency.trim()) {
     return { state: "invalid", message: "A catalog currency is needed before this variant can be added." };
@@ -490,6 +564,7 @@ export function buildPartnerVariantCreate(input: Readonly<{
       productUrl: blankToNull(input.productUrl),
       currentAssetId: input.assetId.trim(),
       ...(creationSlug ? { creationSlug } : {}),
+      ...(input.modelDimensions ? stageVariantModelFields(input.modelDimensions) : {}),
     },
   };
 }
@@ -775,6 +850,16 @@ export function describeSavedPartnerProductChanges(input: Readonly<{
     }
     if (variantUpdate.productUrl !== undefined) {
       pushChange(lines, `${heading} · Product URL`, display(variant.productUrl), display(variantUpdate.productUrl));
+    }
+    const nextDimensions = explicitModelDimensions(variantUpdate);
+    if (nextDimensions) {
+      const previousDimensions = explicitModelDimensions(variant);
+      pushChange(
+        lines,
+        `${heading} · Product dimensions`,
+        previousDimensions ? formatModelDimensionList(previousDimensions) : "Detected model size",
+        formatModelDimensionList(nextDimensions),
+      );
     }
   }
 

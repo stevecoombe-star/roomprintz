@@ -24,11 +24,13 @@ import {
   commitPartnerProductPrice,
   commitPartnerProductUrl,
   commitPartnerVariantFinish,
+  commitPartnerVariantModelDimensions,
   commitPartnerVariantPrice,
   commitPartnerVariantSku,
   commitPartnerVariantUrl,
   commitPendingVariantFinish,
   commitPendingVariantModel,
+  commitPendingVariantModelDimensions,
   commitPendingVariantPrice,
   commitPendingVariantSku,
   commitPendingVariantUrl,
@@ -66,6 +68,15 @@ import {
 } from "@/lib/vibode-stage/partner-product-editor";
 import type { PartnerCatalogSyncDocument } from "@/lib/vibode-stage/partner-catalog-sync";
 import {
+  canonicalModelDimensions,
+  explicitModelDimensions,
+  modelDimensionsAfterAssetReplacement,
+  modelSizeFromMeasured,
+  nativeModelDimensions,
+  type ModelDimensions,
+  type ModelSize,
+} from "@/lib/vibode-stage/model-dimensions";
+import {
   PARTNER_VARIANT_ORDER_SAVED_EVENT,
   movePartnerVariant,
   orderPartnerVariantCards,
@@ -78,6 +89,7 @@ import type { StageAsset, StageCategory, StageCollection, StageProduct, StageVar
 
 import { FOCUS, safeHttpUrl, SECONDARY } from "./editor-ui";
 import { PartnerInlineModelPanel } from "./PartnerInlineModelPanel";
+import { PartnerModelDimensions } from "./PartnerModelDimensions";
 import { PartnerVariantModelSummary, partnerVariantModelCardDetail } from "./PartnerModelSection";
 import { PartnerProductFields } from "./PartnerProductFields";
 import { PartnerPublishSection } from "./PartnerPublishSection";
@@ -92,7 +104,53 @@ type AddModelSelection = Readonly<{
   assetId: string;
   fileName: string | null;
   source: "upload" | "existing";
+  native: ModelSize;
+  dimensions: ModelDimensions;
 }>;
+
+function nativeForAsset(
+  assetId: string | null,
+  assets: readonly StageAsset[],
+  options: readonly PartnerCommercialAssetOption[],
+): ModelSize | null {
+  if (!assetId) return null;
+  const asset = assets.find((item) => item.assetId === assetId);
+  if (asset) return nativeModelDimensions(asset);
+  return nativeModelDimensions(options.find((item) => item.assetId === assetId) ?? null);
+}
+
+function savedVariantDimensions(
+  variant: StageVariant,
+  document: PartnerCatalogSyncDocument | null,
+): ModelDimensions | null {
+  const patch = document?.variants.update.find((item) => item.variantId === variant.variantId);
+  return explicitModelDimensions({
+    modelWidthM: patch?.modelWidthM ?? variant.modelWidthM,
+    modelHeightM: patch?.modelHeightM ?? variant.modelHeightM,
+    modelDepthM: patch?.modelDepthM ?? variant.modelDepthM,
+    modelSizingMode: patch?.modelSizingMode ?? variant.modelSizingMode,
+  });
+}
+
+function addModelSelection(
+  assetId: string,
+  fileName: string | null,
+  source: AddModelSelection["source"],
+  native: ModelSize,
+  previous: AddModelSelection | null,
+): AddModelSelection {
+  const associated = modelDimensionsAfterAssetReplacement({
+    previousExplicit: previous?.dimensions ?? null,
+    nextNative: native,
+  });
+  return {
+    assetId,
+    fileName,
+    source,
+    native,
+    dimensions: associated?.dimensions ?? { ...native, sizingMode: "uniform" },
+  };
+}
 
 function variantFieldMap(
   productId: string,
@@ -163,10 +221,23 @@ export function PartnerProductEditor(props: Readonly<{
   const [addModel, setAddModel] = useState<AddModelSelection | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
   const uploads = usePartnerInlineGlbUploads();
+  const [measuredByAsset, setMeasuredByAsset] = useState<Readonly<Record<string, ModelSize>>>({});
   const uploadLocks = useRef(new Set<string>());
   draftRef.current = draft;
 
   const draftDocument = draft?.document ?? null;
+
+  function nativeFor(assetId: string | null): ModelSize | null {
+    if (assetId && measuredByAsset[assetId]) return measuredByAsset[assetId];
+    return nativeForAsset(assetId, props.assets, props.commercialAssetOptions);
+  }
+
+  function rememberMeasured(assetId: string, size: ModelSize | null) {
+    if (!size) return;
+    setMeasuredByAsset((current) => (
+      current[assetId] ? current : { ...current, [assetId]: size }
+    ));
+  }
   const productVariants = props.variants.filter((variant) => variant.productId === props.product.productId);
   const pendingVariants = (draftDocument?.variants.create ?? []).filter((create) => create.productId === props.product.productId);
   const manualSignature = partnerVariantManualIds(productVariants).join("\n");
@@ -362,7 +433,21 @@ export function PartnerProductEditor(props: Readonly<{
       const outcome = await uploads.run("create", file);
       if (outcome.status !== "ready" || !uploads.isCurrent("create", outcome.token)) return;
       uploads.remember(outcome.assetId, outcome.fileName);
-      setAddModel({ assetId: outcome.assetId, fileName: outcome.fileName, source: "upload" });
+      const measured = modelSizeFromMeasured({
+        widthM: outcome.measuredWidthM,
+        heightM: outcome.measuredHeightM,
+        depthM: outcome.measuredDepthM,
+      });
+      rememberMeasured(outcome.assetId, measured);
+      if (measured) {
+        setAddModel((current) => addModelSelection(
+          outcome.assetId,
+          outcome.fileName,
+          "upload",
+          measured,
+          current,
+        ));
+      }
       uploads.settle("create");
     } finally {
       uploadLocks.current.delete("create");
@@ -398,6 +483,11 @@ export function PartnerProductEditor(props: Readonly<{
         return;
       }
       uploads.remember(outcome.assetId, outcome.fileName);
+      rememberMeasured(outcome.assetId, modelSizeFromMeasured({
+        widthM: outcome.measuredWidthM,
+        heightM: outcome.measuredHeightM,
+        depthM: outcome.measuredDepthM,
+      }));
       uploads.settle(variantId);
     } finally {
       uploadLocks.current.delete(variantId);
@@ -407,12 +497,16 @@ export function PartnerProductEditor(props: Readonly<{
   function chooseExistingModel(assetId: string) {
     const option = props.commercialAssetOptions.find((item) => item.assetId === assetId);
     if (!option) return;
+    const native = nativeModelDimensions(option);
+    if (!native) return;
     uploads.settle("create");
-    setAddModel({
-      assetId: option.assetId,
-      fileName: option.originalFileName,
-      source: "existing",
-    });
+    setAddModel((current) => addModelSelection(
+      option.assetId,
+      option.originalFileName,
+      "existing",
+      native,
+      current,
+    ));
   }
 
   function reviewContext(current: PartnerCatalogSyncDocument | null) {
@@ -1002,11 +1096,26 @@ export function PartnerProductEditor(props: Readonly<{
                         publishedSaved.productUrl,
                       ))}
                       model={(
-                        <PartnerVariantModelSummary
-                          presentation={publishedModel}
-                          productName={productFields.name || props.product.name}
-                          finish={publishedFields.finish}
-                        />
+                        <div className="space-y-4">
+                          <PartnerVariantModelSummary
+                            presentation={publishedModel}
+                            productName={productFields.name || props.product.name}
+                            finish={publishedFields.finish}
+                          />
+                          {nativeFor(variant.assetId) ? (
+                            <PartnerModelDimensions
+                              key={`${variant.variantId}:${variant.assetId ?? ""}:${canonicalModelDimensions(savedVariantDimensions(variant, draftDocument)) ?? "native"}`}
+                              native={nativeFor(variant.assetId)!}
+                              dimensions={savedVariantDimensions(variant, draftDocument)}
+                              disabled={disabled}
+                              onCommit={(next) => applyCommit(commitPartnerVariantModelDimensions(
+                                variant.variantId,
+                                next,
+                                savedVariantDimensions(variant, draftDocument),
+                              ))}
+                            />
+                          ) : null}
+                        </div>
                       )}
                     />
                   ) : null}
@@ -1076,26 +1185,41 @@ export function PartnerProductEditor(props: Readonly<{
                         void persist([removePendingVariantMutation(create.variantId)]);
                       }}
                       model={(
-                        <PartnerInlineModelPanel
-                          saved={{
-                            ...pendingModel,
-                            detail: partnerVariantModelCardDetail(
-                              pendingModel.detail,
-                              productFields.name || props.product.name,
-                              pendingFields.finish,
-                            ),
-                          }}
-                          upload={uploadView}
-                          options={modelOptions}
-                          selectedAssetId={create.currentAssetId}
-                          disabled={disabled || uploads.busy(create.variantId)}
-                          invalid={!pendingKnown}
-                          onFile={(file) => void uploadPendingModel(create.variantId, file)}
-                          onChoose={(next) => {
-                            uploads.settle(create.variantId);
-                            applyCommit(commitPendingVariantModel(create.variantId, next, create.currentAssetId));
-                          }}
-                        />
+                        <div className="space-y-4">
+                          <PartnerInlineModelPanel
+                            saved={{
+                              ...pendingModel,
+                              detail: partnerVariantModelCardDetail(
+                                pendingModel.detail,
+                                productFields.name || props.product.name,
+                                pendingFields.finish,
+                              ),
+                            }}
+                            upload={uploadView}
+                            options={modelOptions}
+                            selectedAssetId={create.currentAssetId}
+                            disabled={disabled || uploads.busy(create.variantId)}
+                            invalid={!pendingKnown}
+                            onFile={(file) => void uploadPendingModel(create.variantId, file)}
+                            onChoose={(next) => {
+                              uploads.settle(create.variantId);
+                              applyCommit(commitPendingVariantModel(create.variantId, next, create.currentAssetId));
+                            }}
+                          />
+                          {nativeFor(create.currentAssetId) ? (
+                            <PartnerModelDimensions
+                              key={`${create.variantId}:${create.currentAssetId}:${canonicalModelDimensions(explicitModelDimensions(create)) ?? "native"}`}
+                              native={nativeFor(create.currentAssetId)!}
+                              dimensions={explicitModelDimensions(create)}
+                              disabled={disabled || uploads.busy(create.variantId)}
+                              onCommit={(next) => applyCommit(commitPendingVariantModelDimensions(
+                                create.variantId,
+                                next,
+                                explicitModelDimensions(create),
+                              ))}
+                            />
+                          ) : null}
+                        </div>
                       )}
                     />
                   ) : null}
@@ -1123,6 +1247,7 @@ export function PartnerProductEditor(props: Readonly<{
                 productUrl: addUrl,
                 assetId: addModel?.assetId ?? "",
                 hasReadyModel: Boolean(addModel?.assetId),
+                modelDimensions: addModel?.dimensions ?? null,
               });
               if (commit.state === "invalid") {
                 if (variantNeedsShortName(addFinish)) setShowShortName(true);
@@ -1223,6 +1348,17 @@ export function PartnerProductEditor(props: Readonly<{
                   onFile={(file) => void uploadNewModel(file)}
                   onChoose={chooseExistingModel}
                 />
+                {addModel ? (
+                  <PartnerModelDimensions
+                    key={`${addModel.assetId}:${canonicalModelDimensions(addModel.dimensions)}`}
+                    native={addModel.native}
+                    dimensions={addModel.dimensions}
+                    disabled={disabled || uploads.busy("create")}
+                    onCommit={(next) => setAddModel((current) => (
+                      current ? { ...current, dimensions: next } : current
+                    ))}
+                  />
+                ) : null}
               </div>
             </div>
             {addError ? <p role="alert" className="text-sm text-rose-200">{addError}</p> : null}

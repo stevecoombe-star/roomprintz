@@ -52,7 +52,7 @@ export async function loadDurableStageCatalogRows(
   const variants = await selectRows(
     supabase,
     STAGE_CATALOG_TABLES.variants,
-    "variant_id, product_id, current_asset_id, finish_label, sku, price_amount, price_currency, product_url, status, sort_order",
+    "variant_id, product_id, current_asset_id, finish_label, sku, price_amount, price_currency, product_url, status, sort_order, model_width_m, model_height_m, model_depth_m, model_sizing_mode",
     "sort_order",
     "variant_id",
   );
