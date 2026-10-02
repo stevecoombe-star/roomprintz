@@ -60,6 +60,8 @@ export type PartnerEditorMutation =
   | Readonly<{ type: "variant.set_sku"; variantId: string; sku: string | null }>
   | Readonly<{ type: "variant.set_price"; variantId: string; priceAmount: number }>
   | Readonly<{ type: "variant.set_product_url"; variantId: string; productUrl: string | null }>
+  | Readonly<{ type: "variant.deactivate"; variantId: string }>
+  | Readonly<{ type: "variant.reactivate"; variantId: string }>
   | Readonly<{
     type: "variant.create";
     productId: string;
@@ -346,6 +348,31 @@ export function partnerProductStatusMutation(
     : { type: "product.reactivate", productId };
 }
 
+export function partnerEditorPendingVariantStatus(
+  document: PartnerCatalogSyncDocument | null,
+  variantId: string,
+): "active" | "inactive" | null {
+  if (!document) return null;
+  if ((document.variants.deactivate ?? []).some((item) => item.variantId === variantId)) return "inactive";
+  if ((document.variants.reactivate ?? []).some((item) => item.variantId === variantId)) return "active";
+  return null;
+}
+
+export function partnerVariantStatusMutation(
+  variantId: string,
+  next: "active" | "inactive",
+): PartnerEditorMutation {
+  return next === "inactive"
+    ? { type: "variant.deactivate", variantId }
+    : { type: "variant.reactivate", variantId };
+}
+
+export function partnerVariantStatusChangeLabel(identity: string): string {
+  const name = identity.trim();
+  if (!name || name === "Variant") return "Variant status";
+  return `Variant "${name}" status`;
+}
+
 export function commitPartnerProductPrice(productId: string, next: string, saved: string): PartnerEditorCommit {
   const parsed = commitPrice(next, saved);
   if (parsed.state !== "value") return parsed;
@@ -629,6 +656,19 @@ function pushProductStatusChange(
   if (pending === "active") lines.push({ label: "Product status", previous: "Inactive", next: "Active" });
 }
 
+function pushVariantStatusChange(
+  lines: PartnerProductChangeLine[],
+  identity: string,
+  pending: "active" | "inactive" | null,
+) {
+  if (pending === "inactive") {
+    lines.push({ label: partnerVariantStatusChangeLabel(identity), previous: "Active", next: "Inactive" });
+  }
+  if (pending === "active") {
+    lines.push({ label: partnerVariantStatusChangeLabel(identity), previous: "Inactive", next: "Active" });
+  }
+}
+
 export function describeSavedPartnerProductChanges(input: Readonly<{
   product: StageProduct;
   variants: readonly StageVariant[];
@@ -655,8 +695,13 @@ export function describeSavedPartnerProductChanges(input: Readonly<{
   for (const variant of input.variants) {
     if (variant.productId !== input.product.productId) continue;
     const variantUpdate = variantPatch(input.document, variant.variantId);
-    if (!variantUpdate) continue;
     const heading = variantHeading(variant, variantUpdate);
+    pushVariantStatusChange(
+      lines,
+      heading,
+      partnerEditorPendingVariantStatus(input.document, variant.variantId),
+    );
+    if (!variantUpdate) continue;
     if (variantUpdate.finishLabel !== undefined) {
       pushChange(lines, `${heading} · Finish`, display(variant.finishLabel), display(variantUpdate.finishLabel));
     }
@@ -798,6 +843,12 @@ export function describePartnerPublishInclusions(input: Readonly<{
 }
 
 function reviewIssueText(code: string, message: string): string {
+  if (code === "DEFAULT_VARIANT_INACTIVE") {
+    return "The default Variant stays active while this Product is active.";
+  }
+  if (code === "LAST_ACTIVE_VARIANT") {
+    return "An active Product needs at least one active Variant.";
+  }
   const text = message.trim();
   if (!text || text === code) return "This change needs attention before it can be published.";
   if (/planVersion|sqlPlan|patch|PI-5|current_asset/i.test(text)) {
@@ -874,6 +925,22 @@ export function describePartnerProductReview(
       changes.push({ label: "New product", previous: "—", next: create.name });
     } else {
       add(create.productId, 1, create.name);
+    }
+  }
+  for (const variantId of preview.variantDeactivations) {
+    const owner = input.variantProductIds[variantId] || "";
+    if (owner === input.productId) {
+      pushVariantStatusChange(changes, input.variantLabels[variantId] || "Variant", "inactive");
+    } else {
+      add(owner || "__unknown_variant__", 1);
+    }
+  }
+  for (const variantId of preview.variantReactivations) {
+    const owner = input.variantProductIds[variantId] || "";
+    if (owner === input.productId) {
+      pushVariantStatusChange(changes, input.variantLabels[variantId] || "Variant", "active");
+    } else {
+      add(owner || "__unknown_variant__", 1);
     }
   }
   for (const update of preview.variantUpdates) {

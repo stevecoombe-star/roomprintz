@@ -42,6 +42,8 @@ import {
   partnerEditorDocumentHasChanges,
   partnerEditorErrorMessage,
   partnerEditorPendingProductStatus,
+  partnerEditorPendingVariantStatus,
+  partnerVariantStatusMutation,
   partnerProductStatusMutation,
   partnerPublishConfirmation,
   partnerVariantHeading,
@@ -688,11 +690,24 @@ export function PartnerProductEditor(props: Readonly<{
               options: props.commercialAssetOptions,
               published: true,
             });
+            const pendingVariantStatus = partnerEditorPendingVariantStatus(draftDocument, variant.variantId);
             return (
               <PartnerVariantFields
                 key={variant.variantId}
                 heading={partnerVariantHeading(fields.finish || null, fields.sku || null)}
                 statusLabel={statusLabel(variant.status)}
+                statusAction={variant.status === "inactive" ? "Set active" : "Set inactive"}
+                pendingStatus={pendingVariantStatus === "inactive"
+                  ? "Inactive"
+                  : pendingVariantStatus === "active"
+                    ? "Active"
+                    : null}
+                onStatusAction={() => {
+                  void persist([partnerVariantStatusMutation(
+                    variant.variantId,
+                    variant.status === "inactive" ? "active" : "inactive",
+                  )]);
+                }}
                 isDefault={variant.variantId === props.product.defaultVariantId}
                 modelState={model.stateLabel}
                 finish={fields.finish}

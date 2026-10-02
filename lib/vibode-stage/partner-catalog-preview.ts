@@ -44,7 +44,7 @@ export type PartnerCatalogPreviewDto = Readonly<{
   ok: boolean;
   noOp: boolean;
   partnerId: string | null;
-  planVersion: 1 | 4 | 5 | 6 | null;
+  planVersion: 1 | 4 | 5 | 6 | 7 | null;
   issues: readonly ProductVariantIssue[];
   partnerStatusTransition: PlannedPartnerStatusTransition | null;
   productCreates: readonly PlannedProductCreate[];

@@ -5,6 +5,9 @@ import { FIELD, SECONDARY } from "./editor-ui";
 export function PartnerVariantFields(props: Readonly<{
   heading: string;
   statusLabel: "Active" | "Inactive";
+  statusAction?: string;
+  pendingStatus?: "Active" | "Inactive" | null;
+  onStatusAction?: () => void;
   isDefault: boolean;
   modelState: string;
   finish: string;
@@ -30,13 +33,26 @@ export function PartnerVariantFields(props: Readonly<{
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-slate-50">{props.heading}</h3>
-          <p className="mt-1 flex flex-wrap gap-2 text-xs">
+          <p className="mt-1 flex flex-wrap items-center gap-2 text-xs">
             <span className={props.statusLabel === "Inactive"
               ? "rounded-full border border-slate-600 px-2 py-0.5 text-slate-300"
               : "rounded-full border border-emerald-900 bg-emerald-950/50 px-2 py-0.5 text-emerald-200"}
             >
               {props.statusLabel}
             </span>
+            {props.onStatusAction && props.statusAction ? (
+              <button
+                type="button"
+                className="rounded-md border border-slate-600 px-2 py-0.5 text-xs font-medium text-slate-100 hover:border-slate-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={props.disabled}
+                onClick={props.onStatusAction}
+              >
+                {props.statusAction}
+              </button>
+            ) : null}
+            {props.pendingStatus ? (
+              <span className="text-amber-200">Pending: {props.pendingStatus}</span>
+            ) : null}
             {props.isDefault ? <span className="text-slate-400">Default</span> : null}
             {props.pending ? <span className="text-slate-400">Not published yet</span> : null}
             <span className="text-slate-400">

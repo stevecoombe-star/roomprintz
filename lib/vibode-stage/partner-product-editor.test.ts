@@ -550,8 +550,7 @@ test("N product status stays on the published badge until publish and reviews as
   assert.doesNotMatch(pendingHeader, />Inactive</);
   assert.match(pendingHtml, /Product status/);
   assert.match(pendingHtml, /Active → Inactive/);
-  assert.doesNotMatch(source("app/partner/catalog/products/PartnerVariantFields.tsx"), /Set inactive|Set active/);
-  assert.doesNotMatch(source("app/partner/catalog/products/PartnerProductEditor.tsx"), /product\.set_status/);
+  assert.doesNotMatch(source("app/partner/catalog/products/PartnerProductEditor.tsx"), /product\.set_status|variant\.set_status/);
 
   const saved = describeSavedPartnerProductChanges({
     product: product({ productId: "prod-coffee", name: "Coffee Table" }),
@@ -612,4 +611,132 @@ test("N product status stays on the published badge until publish and reviews as
     productReactivations: [{ productId: "prod-coffee", from: "inactive", to: "active" }],
   }), reviewInput);
   assert.deepEqual(activeReview.changes, [{ label: "Product status", previous: "Inactive", next: "Active" }]);
+});
+
+test("O variant status stays on the published badge until publish and reviews by variant identity", () => {
+  const activeHtml = renderEditor();
+  const variantsHtml = activeHtml.slice(activeHtml.indexOf("product-variants-heading"));
+  assert.match(variantsHtml, />Active</);
+  assert.match(variantsHtml, /Set inactive/);
+  assert.doesNotMatch(variantsHtml, /Set active/);
+  assert.doesNotMatch(variantsHtml, /Pending:/);
+  assert.match(variantsHtml, />3D Model</);
+
+  const inactiveHtml = renderEditor({
+    variants: [variant({
+      variantId: "var-coffee",
+      productId: "prod-coffee",
+      assetId: ASSET_ID,
+      status: "inactive",
+    })],
+  });
+  const inactiveVariants = inactiveHtml.slice(inactiveHtml.indexOf("product-variants-heading"));
+  assert.match(inactiveVariants, />Inactive</);
+  assert.match(inactiveVariants, /Set active/);
+  assert.doesNotMatch(inactiveVariants, /Set inactive/);
+  assert.match(inactiveHtml.slice(0, inactiveHtml.indexOf("product-details-heading")), /Set inactive/);
+
+  const pendingDocument: PartnerCatalogSyncDocument = {
+    ...emptyDocument(),
+    variants: {
+      update: [{ variantId: "var-coffee", sku: "DFC-CT-WAL-2" }],
+      create: [{
+        variantId: "var-new-linen",
+        productId: "prod-coffee",
+        finishLabel: "New linen",
+        sku: "NEW-1",
+        priceAmount: 20,
+        priceCurrency: "USD",
+        productUrl: null,
+        currentAssetId: ASSET_ID,
+      }],
+      deactivate: [{ variantId: "var-coffee" }],
+      reactivate: [],
+    },
+  };
+  const pendingHtml = renderEditor({
+    draft: { draftId: DRAFT_ID, revision: 2, document: pendingDocument },
+  });
+  const pendingVariants = pendingHtml.slice(pendingHtml.indexOf("product-variants-heading"));
+  assert.match(pendingVariants, />Active</);
+  assert.match(pendingVariants, /Pending: Inactive/);
+  assert.match(pendingVariants, /Set inactive/);
+  assert.match(pendingVariants, /Not published yet/);
+  assert.equal((pendingVariants.match(/Set inactive/g) ?? []).length, 1);
+  assert.match(pendingHtml, /Variant (&quot;|")Walnut · DFC-CT-WAL-2(&quot;|") status/);
+  assert.match(pendingHtml, /Active → Inactive/);
+  assert.match(pendingHtml, /Walnut · DFC-CT-WAL-2 · SKU/);
+
+  const saved = describeSavedPartnerProductChanges({
+    product: product({ productId: "prod-coffee", name: "Coffee Table" }),
+    variants: [variant({ variantId: "var-coffee", productId: "prod-coffee" })],
+    collections: [],
+    document: pendingDocument,
+  });
+  assert.deepEqual(
+    saved.filter((line) => line.label.includes("status")),
+    [{ label: "Variant \"Walnut · DFC-CT-WAL-2\" status", previous: "Active", next: "Inactive" }],
+  );
+  assert.equal(saved.some((line) => line.label === "Product status"), false);
+  assert.equal(saved.some((line) => line.label.endsWith("SKU")), true);
+
+  const reviewInput = {
+    productId: "prod-coffee",
+    productNames: { "prod-coffee": "Coffee Table" },
+    variantLabels: { "var-coffee": "Walnut · DFC-CT-WAL" },
+    collectionNames: {},
+    variantProductIds: { "var-coffee": "prod-coffee", "var-other": "prod-other" },
+    assetLabel: () => "Ready",
+  };
+  const inactiveReview = describePartnerProductReview(presentPartnerDraftPreview({
+    ok: true,
+    noOp: false,
+    planVersion: 6,
+    partnerId: PARTNER_ID,
+    issues: [],
+    productUpdates: [],
+    variantUpdates: [{
+      variantId: "var-coffee",
+      productId: "prod-coffee",
+      changes: [{ column: "sku", previous: "DFC-CT-WAL", next: "DFC-CT-WAL-2" }],
+    }],
+    productCreates: [],
+    variantCreates: [],
+    collectionCreates: [],
+    collectionUpdates: [],
+    membershipAdds: [],
+    membershipRemoves: [],
+    productDeactivations: [],
+    productReactivations: [],
+    variantDeactivations: [{ variantId: "var-coffee", productId: "prod-coffee", from: "active", to: "inactive" }],
+    variantReactivations: [],
+  }), reviewInput);
+  assert.equal(inactiveReview.publishable, true);
+  assert.deepEqual(inactiveReview.changes, [
+    { label: "Variant \"Walnut · DFC-CT-WAL\" status", previous: "Active", next: "Inactive" },
+    { label: "Walnut · DFC-CT-WAL · SKU", previous: "DFC-CT-WAL", next: "DFC-CT-WAL-2" },
+  ]);
+
+  const activeReview = describePartnerProductReview(presentPartnerDraftPreview({
+    ok: true,
+    noOp: false,
+    planVersion: 6,
+    partnerId: PARTNER_ID,
+    issues: [],
+    productUpdates: [],
+    variantUpdates: [],
+    productCreates: [],
+    variantCreates: [],
+    collectionCreates: [],
+    collectionUpdates: [],
+    membershipAdds: [],
+    membershipRemoves: [],
+    productDeactivations: [],
+    productReactivations: [],
+    variantDeactivations: [],
+    variantReactivations: [{ variantId: "var-coffee", productId: "prod-coffee", from: "inactive", to: "active" }],
+  }), reviewInput);
+  assert.deepEqual(activeReview.changes, [
+    { label: "Variant \"Walnut · DFC-CT-WAL\" status", previous: "Inactive", next: "Active" },
+  ]);
 });
