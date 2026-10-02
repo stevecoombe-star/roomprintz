@@ -356,7 +356,10 @@ test("H catalog and model library empty states use the final copy", () => {
 test("I a published variant does not offer replace model", () => {
   const html = editorHtml();
   assert.doesNotMatch(html, /Replace model/);
-  assert.match(html, /This published Variant keeps its current 3D model\./);
+  assert.match(html, /studio-settee\.glb/);
+  assert.match(html, />3D Model</);
+  assert.doesNotMatch(html, />3D Models</);
+  assert.doesNotMatch(html, /This published Variant keeps its current 3D model\./);
   assert.doesNotMatch(source("app/partner/catalog/products/PartnerModelSection.tsx"), /Replace model|Upload GLB/);
 });
 

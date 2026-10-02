@@ -150,6 +150,7 @@ test("A a partner-owned product resolves and the editor renders its commercial f
   assert.match(html, /Back to Catalog/);
   assert.match(html, /Coffee Table/);
   assert.match(html, />Active</);
+  assert.match(html.slice(0, html.indexOf("product-details-heading")), /Set inactive/);
   assert.match(html, /Product name/);
   assert.match(html, /Product price \(USD\)/);
   assert.match(html, /Product image URL/);
@@ -158,7 +159,9 @@ test("A a partner-owned product resolves and the editor renders its commercial f
   assert.match(html, /Coffee Tables/);
   assert.match(html, />Product</);
   assert.match(html, />Variants</);
-  assert.match(html, />3D Models</);
+  assert.match(html, />3D Model</);
+  assert.doesNotMatch(html, />3D Models</);
+  assert.doesNotMatch(html, /product-models-heading/);
   assert.match(html, />Publishing</);
   assert.match(source("app/partner/catalog/products/[productId]/page.tsx"), /resolvePartnerPortalContext/);
   assert.match(source("app/partner/catalog/products/[productId]/page.tsx"), /loadAuthorizedPartnerPortalCatalog/);
@@ -321,9 +324,19 @@ test("G a variant with a ready model shows Ready and the filename without an ass
   const html = renderEditor();
   assert.match(html, /Ready/);
   assert.match(html, /coffee-table\.glb/);
-  assert.match(html, /This published Variant keeps its current 3D model\./);
+  assert.equal(html.split("coffee-table.glb").length - 1, 1);
+  assert.doesNotMatch(html, /Coffee Table · Walnut/);
+  assert.doesNotMatch(html, /This published Variant keeps its current 3D model\./);
   assert.doesNotMatch(html, new RegExp(ASSET_ID));
-  assert.doesNotMatch(html, /Replace Model/);
+  assert.doesNotMatch(html, /Replace Model|Replace model/);
+  assert.doesNotMatch(html, /product-models-heading/);
+
+  const foreign = renderEditor({
+    commercialAssetOptions: [modelOption(ASSET_ID, "coffee-table.glb", "Demo Coffee Table · Black")],
+  });
+  assert.match(foreign, /coffee-table\.glb/);
+  assert.match(foreign, /Demo Coffee Table · Black/);
+  assert.equal(foreign.split("Demo Coffee Table · Black").length - 1, 1);
 });
 
 test("H a variant without a model shows No 3D model", () => {
@@ -341,8 +354,9 @@ test("H a variant without a model shows No 3D model", () => {
     commercialAssetOptions: [],
   });
   assert.match(html, /No 3D model/);
+  assert.match(html, /No model uploaded/);
   assert.match(html, /A 3D model cannot be added to this published Variant\./);
-  assert.doesNotMatch(html, /Replace Model/);
+  assert.doesNotMatch(html, /Replace Model|Upload GLB/);
 });
 
 test("I a published variant does not expose Replace Model or a current-asset mutation", () => {
@@ -499,4 +513,103 @@ test("M the product editor does not render internal authoring terminology", () =
   assert.match(source("lib/vibode-stage/partner-product-editor.ts"), /partnerCatalogCurrencyForCreate/);
   assert.match(source("lib/vibode-stage/partner-product-editor.ts"), /empty/);
   assert.equal(source("app/partner/catalog/drafts/[draftId]/page.tsx").includes("PartnerDraftWorkspaceClient"), true);
+});
+
+test("N product status stays on the published badge until publish and reviews as Product status", () => {
+  const activeHtml = renderEditor();
+  const activeHeader = activeHtml.slice(0, activeHtml.indexOf("product-details-heading"));
+  assert.match(activeHeader, />Active</);
+  assert.match(activeHeader, /Set inactive/);
+  assert.doesNotMatch(activeHeader, /Set active/);
+  assert.doesNotMatch(activeHeader, /Pending:/);
+
+  const inactiveHtml = renderEditor({
+    product: product({ productId: "prod-coffee", name: "Coffee Table", status: "inactive" }),
+  });
+  const inactiveHeader = inactiveHtml.slice(0, inactiveHtml.indexOf("product-details-heading"));
+  assert.match(inactiveHeader, />Inactive</);
+  assert.match(inactiveHeader, /Set active/);
+  assert.doesNotMatch(inactiveHeader, /Set inactive/);
+
+  const pendingDocument: PartnerCatalogSyncDocument = {
+    ...emptyDocument(),
+    products: {
+      update: [],
+      create: [],
+      deactivate: [{ productId: "prod-coffee" }],
+      reactivate: [],
+    },
+  };
+  const pendingHtml = renderEditor({
+    draft: { draftId: DRAFT_ID, revision: 2, document: pendingDocument },
+  });
+  const pendingHeader = pendingHtml.slice(0, pendingHtml.indexOf("product-details-heading"));
+  assert.match(pendingHeader, />Active</);
+  assert.match(pendingHeader, /Pending: Inactive/);
+  assert.match(pendingHeader, /Set inactive/);
+  assert.doesNotMatch(pendingHeader, />Inactive</);
+  assert.match(pendingHtml, /Product status/);
+  assert.match(pendingHtml, /Active → Inactive/);
+  assert.doesNotMatch(source("app/partner/catalog/products/PartnerVariantFields.tsx"), /Set inactive|Set active/);
+  assert.doesNotMatch(source("app/partner/catalog/products/PartnerProductEditor.tsx"), /product\.set_status/);
+
+  const saved = describeSavedPartnerProductChanges({
+    product: product({ productId: "prod-coffee", name: "Coffee Table" }),
+    variants: [variant({ variantId: "var-coffee", productId: "prod-coffee" })],
+    collections: [],
+    document: pendingDocument,
+  });
+  assert.deepEqual(
+    saved.filter((line) => line.label === "Product status"),
+    [{ label: "Product status", previous: "Active", next: "Inactive" }],
+  );
+
+  const reviewInput = {
+    productId: "prod-coffee",
+    productNames: { "prod-coffee": "Coffee Table" },
+    variantLabels: {},
+    collectionNames: {},
+    variantProductIds: { "var-coffee": "prod-coffee" },
+    assetLabel: () => "Ready",
+  };
+  const inactiveReview = describePartnerProductReview(presentPartnerDraftPreview({
+    ok: true,
+    noOp: false,
+    planVersion: 6,
+    partnerId: PARTNER_ID,
+    issues: [],
+    productUpdates: [],
+    variantUpdates: [],
+    productCreates: [],
+    variantCreates: [],
+    collectionCreates: [],
+    collectionUpdates: [],
+    membershipAdds: [],
+    membershipRemoves: [],
+    productDeactivations: [{ productId: "prod-coffee", from: "active", to: "inactive" }],
+    productReactivations: [],
+    variantDeactivations: [],
+    variantReactivations: [],
+  }), reviewInput);
+  assert.equal(inactiveReview.publishable, true);
+  assert.deepEqual(inactiveReview.changes, [{ label: "Product status", previous: "Active", next: "Inactive" }]);
+
+  const activeReview = describePartnerProductReview(presentPartnerDraftPreview({
+    ok: true,
+    noOp: false,
+    planVersion: 6,
+    partnerId: PARTNER_ID,
+    issues: [],
+    productUpdates: [],
+    variantUpdates: [],
+    productCreates: [],
+    variantCreates: [],
+    collectionCreates: [],
+    collectionUpdates: [],
+    membershipAdds: [],
+    membershipRemoves: [],
+    productDeactivations: [],
+    productReactivations: [{ productId: "prod-coffee", from: "inactive", to: "active" }],
+  }), reviewInput);
+  assert.deepEqual(activeReview.changes, [{ label: "Product status", previous: "Inactive", next: "Active" }]);
 });

@@ -388,7 +388,9 @@ test("G replacing a pending model does not mutate or delete the previous asset",
 test("H a published variant has no inline upload or replace control", () => {
   const html = renderEditor();
   assert.match(html, /coffee-table\.glb/);
-  assert.match(html, new RegExp(PARTNER_PUBLISHED_MODEL_NOTE.replace(/[.]/g, "\\.")));
+  assert.match(html, />3D Model</);
+  assert.doesNotMatch(html, />3D Models</);
+  assert.doesNotMatch(html, new RegExp(PARTNER_PUBLISHED_MODEL_NOTE.replace(/[.]/g, "\\.")));
   assert.doesNotMatch(html, new RegExp(PARTNER_INLINE_GLB_UPLOAD));
   assert.doesNotMatch(html, new RegExp(PARTNER_INLINE_GLB_REPLACE));
   assert.doesNotMatch(html, /<select/);

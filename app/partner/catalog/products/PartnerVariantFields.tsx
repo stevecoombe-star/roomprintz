@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { FIELD, SECONDARY } from "./editor-ui";
 
 export function PartnerVariantFields(props: Readonly<{
@@ -12,6 +14,7 @@ export function PartnerVariantFields(props: Readonly<{
   productUrl: string;
   disabled: boolean;
   pending: boolean;
+  model: ReactNode;
   onFinishChange: (value: string) => void;
   onFinishCommit: () => void;
   onSkuChange: (value: string) => void;
@@ -23,7 +26,7 @@ export function PartnerVariantFields(props: Readonly<{
   onRemove?: () => void;
 }>) {
   return (
-    <article className="space-y-3 rounded-xl border border-slate-800 p-4">
+    <article className="min-w-0 space-y-3 rounded-xl border border-slate-800 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-slate-50">{props.heading}</h3>
@@ -90,6 +93,9 @@ export function PartnerVariantFields(props: Readonly<{
             onBlur={props.onProductUrlCommit}
           />
         </label>
+      </div>
+      <div className="min-w-0 border-t border-slate-800 pt-3">
+        {props.model}
       </div>
     </article>
   );

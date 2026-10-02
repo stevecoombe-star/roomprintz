@@ -51,6 +51,8 @@ export const PARTNER_DRAFT_MUTATION_TYPES = Object.freeze([
   "product.set_image_url",
   "product.set_product_url",
   "product.set_price",
+  "product.deactivate",
+  "product.reactivate",
   "product.create",
   "product.create_edit",
   "product.create_remove",
@@ -75,6 +77,8 @@ export type PartnerDraftMutation =
   | Readonly<{ type: "product.set_image_url"; productId: string; imageUrl: string }>
   | Readonly<{ type: "product.set_product_url"; productId: string; productUrl: string | null }>
   | Readonly<{ type: "product.set_price"; productId: string; priceAmount: number }>
+  | Readonly<{ type: "product.deactivate"; productId: string }>
+  | Readonly<{ type: "product.reactivate"; productId: string }>
   | Readonly<{
       type: "product.create";
       name: string;
@@ -387,6 +391,15 @@ export function parsePartnerDraftMutation(
       const priceAmount = asFiniteNumber(value.priceAmount);
       if (!productId || priceAmount == null) return fail("invalid_mutation", "Invalid draft mutation.");
       return { ok: true, mutation: { type, productId, priceAmount } };
+    }
+    case "product.deactivate":
+    case "product.reactivate": {
+      if (extraKeys(value, ["type", "productId"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const productId = asNonEmptyString(value.productId);
+      if (!productId) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, productId } };
     }
     case "product.create": {
       if (extraKeys(value, [
@@ -842,6 +855,56 @@ function findProduct(catalog: StageCatalogSnapshot, productId: string): StagePro
   return catalog.products.find((item) => item.productId === productId) ?? null;
 }
 
+function liveCommercialStatus(product: StageProduct | null): "active" | "inactive" | null {
+  if (!product) return null;
+  return product.status === "inactive" ? "inactive" : "active";
+}
+
+function sortStatusTargets<T extends { productId: string }>(items: readonly T[]): T[] {
+  return [...items].sort((left, right) => left.productId.localeCompare(right.productId));
+}
+
+function stageExistingProductStatus(
+  working: MutablePatchDocument,
+  catalog: StageCatalogSnapshot,
+  productId: string,
+  target: "active" | "inactive",
+): PartnerDraftMutationFailure | null {
+  if (findPendingProduct(working, productId)) {
+    return fail("invalid_mutation", "Pending Product edits use create-edit semantics.");
+  }
+  const product = findProduct(catalog, productId);
+  if (!product || product.partnerId !== working.partnerId || product.source !== "partner_catalog") {
+    return fail("unknown_id", "Unknown Product.");
+  }
+  working.products.deactivate = working.products.deactivate.filter((item) => item.productId !== productId);
+  working.products.reactivate = working.products.reactivate.filter((item) => item.productId !== productId);
+  const live = liveCommercialStatus(product);
+  if (live === target) return null;
+  const list = target === "inactive" ? working.products.deactivate : working.products.reactivate;
+  list.push({ productId });
+  if (target === "inactive") working.products.deactivate = sortStatusTargets(working.products.deactivate);
+  else working.products.reactivate = sortStatusTargets(working.products.reactivate);
+  return null;
+}
+
+function normalizeProductStatusTargets(
+  targets: readonly { productId: string }[],
+  catalog: StageCatalogSnapshot,
+  liveStatus: "active" | "inactive",
+): { productId: string }[] {
+  const seen = new Set<string>();
+  const next: { productId: string }[] = [];
+  for (const item of sortStatusTargets(targets)) {
+    if (seen.has(item.productId)) continue;
+    seen.add(item.productId);
+    if (liveCommercialStatus(findProduct(catalog, item.productId)) === liveStatus) {
+      next.push({ productId: item.productId });
+    }
+  }
+  return next;
+}
+
 function findVariant(catalog: StageCatalogSnapshot, variantId: string): StageVariant | null {
   return catalog.variants.find((item) => item.variantId === variantId) ?? null;
 }
@@ -1159,6 +1222,10 @@ function applyOne(
       applyPriceCoupling(working, product, mutation.priceAmount);
       return null;
     }
+    case "product.deactivate":
+      return stageExistingProductStatus(working, catalog, mutation.productId, "inactive");
+    case "product.reactivate":
+      return stageExistingProductStatus(working, catalog, mutation.productId, "active");
     case "product.create": {
       const currency = resolveProductCreateCurrency(
         catalog,
@@ -1593,6 +1660,14 @@ export function normalizePartnerDraftDocument(
     .map((patch) => normalizeCollectionPatch(patch, findCollection(catalog, patch.collectionId)))
     .filter((item): item is WritableCollectionPatch => item != null)
     .sort((left, right) => left.collectionId.localeCompare(right.collectionId));
+  working.products.deactivate = normalizeProductStatusTargets(working.products.deactivate, catalog, "active");
+  working.products.reactivate = normalizeProductStatusTargets(
+    working.products.reactivate.filter((item) => (
+      !working.products.deactivate.some((deactivate) => deactivate.productId === item.productId)
+    )),
+    catalog,
+    "inactive",
+  );
 
   const liveMembership = new Set(
     catalog.collections.flatMap((collection) => (
@@ -1625,6 +1700,8 @@ function canonicalize(
   working.partnerId = partnerId;
   working.products.create = sortProductCreates(working.products.create);
   working.products.update.sort((left, right) => left.productId.localeCompare(right.productId));
+  working.products.deactivate = sortStatusTargets(working.products.deactivate);
+  working.products.reactivate = sortStatusTargets(working.products.reactivate);
   working.variants.create = sortVariantCreates(working.variants.create);
   working.variants.update.sort((left, right) => left.variantId.localeCompare(right.variantId));
   working.collections.create = sortCollectionCreates(working.collections.create);

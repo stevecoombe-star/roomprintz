@@ -2,25 +2,46 @@ import type { PartnerVariantModelPresentation } from "@/lib/vibode-stage/partner
 
 import { FIELD } from "./editor-ui";
 
-export function PartnerModelBlock(props: Readonly<{
-  heading: string;
+function modelStatusLabel(stateLabel: PartnerVariantModelPresentation["stateLabel"]): string {
+  return stateLabel === "No 3D model" ? "No model uploaded" : stateLabel;
+}
+
+export function partnerVariantModelCardDetail(
+  detail: string | null,
+  productName: string,
+  finish: string,
+): string | null {
+  const text = detail?.trim() ?? "";
+  if (!text) return null;
+  const product = productName.trim();
+  const variant = finish.trim();
+  if (product && variant && text === `${product} · ${variant}`) return null;
+  if (product && text === product) return null;
+  if (variant && text === variant) return null;
+  return text;
+}
+
+export function PartnerVariantModelSummary(props: Readonly<{
   presentation: PartnerVariantModelPresentation;
+  productName: string;
+  finish: string;
 }>) {
+  const detail = partnerVariantModelCardDetail(
+    props.presentation.detail,
+    props.productName,
+    props.finish,
+  );
+  const note = props.presentation.stateLabel === "No 3D model" ? props.presentation.note : null;
   return (
-    <article className="rounded-xl border border-slate-800 p-4">
-      <h3 className="text-sm font-medium text-slate-50">{props.heading}</h3>
-      <p className="mt-2 text-xs uppercase tracking-wide text-slate-500">3D Model</p>
-      <p className="mt-1 text-sm text-slate-100">{props.presentation.stateLabel}</p>
+    <div className="min-w-0">
+      <p className="text-xs uppercase tracking-wide text-slate-500">3D Model</p>
+      <p className="mt-1 text-sm text-slate-100">{modelStatusLabel(props.presentation.stateLabel)}</p>
       {props.presentation.filename ? (
-        <p className="mt-1 text-sm text-slate-300">{props.presentation.filename}</p>
+        <p className="mt-0.5 break-all text-sm text-slate-300">{props.presentation.filename}</p>
       ) : null}
-      {props.presentation.detail ? (
-        <p className="mt-1 text-sm text-slate-400">{props.presentation.detail}</p>
-      ) : null}
-      {props.presentation.note ? (
-        <p className="mt-3 text-sm text-slate-400">{props.presentation.note}</p>
-      ) : null}
-    </article>
+      {detail ? <p className="mt-0.5 break-words text-sm text-slate-400">{detail}</p> : null}
+      {note ? <p className="mt-1 text-xs text-slate-500">{note}</p> : null}
+    </div>
   );
 }
 

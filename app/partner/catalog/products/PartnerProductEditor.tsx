@@ -41,6 +41,8 @@ import {
   partnerEditorCollectionChoices,
   partnerEditorDocumentHasChanges,
   partnerEditorErrorMessage,
+  partnerEditorPendingProductStatus,
+  partnerProductStatusMutation,
   partnerPublishConfirmation,
   partnerVariantHeading,
   presentPartnerVariantModel,
@@ -64,7 +66,7 @@ import type { StageAsset, StageCategory, StageCollection, StageProduct, StageVar
 
 import { safeHttpUrl, SECONDARY } from "./editor-ui";
 import { PartnerInlineModelPanel } from "./PartnerInlineModelPanel";
-import { PartnerModelBlock } from "./PartnerModelSection";
+import { PartnerVariantModelSummary, partnerVariantModelCardDetail } from "./PartnerModelSection";
 import { PartnerProductFields } from "./PartnerProductFields";
 import { PartnerPublishSection } from "./PartnerPublishSection";
 import { PartnerSaveState, type PartnerSaveStateValue } from "./PartnerSaveState";
@@ -526,6 +528,7 @@ export function PartnerProductEditor(props: Readonly<{
   }
 
   const savedProduct = readPartnerProductFields(props.product, draftDocument);
+  const pendingProductStatus = partnerEditorPendingProductStatus(draftDocument, props.product.productId);
 
   return (
     <div className="space-y-8">
@@ -545,14 +548,32 @@ export function PartnerProductEditor(props: Readonly<{
             </div>
             <div className="min-w-0">
               <h1 className="break-words text-2xl font-semibold tracking-tight">{productFields.name || props.product.name}</h1>
-              <p className="mt-2">
+              <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span className={props.product.status === "inactive"
                   ? "rounded-full border border-slate-600 px-2 py-0.5 text-xs text-slate-300"
                   : "rounded-full border border-emerald-900 bg-emerald-950/50 px-2 py-0.5 text-xs text-emerald-200"}
                 >
                   {statusLabel(props.product.status)}
                 </span>
-              </p>
+                {pendingProductStatus ? (
+                  <span className="text-xs text-amber-200">
+                    Pending: {pendingProductStatus === "inactive" ? "Inactive" : "Active"}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  className="rounded-md border border-slate-600 px-2 py-0.5 text-xs font-medium text-slate-100 hover:border-slate-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={disabled}
+                  onClick={() => {
+                    void persist([partnerProductStatusMutation(
+                      props.product.productId,
+                      props.product.status === "inactive" ? "active" : "inactive",
+                    )]);
+                  }}
+                >
+                  {props.product.status === "inactive" ? "Set active" : "Set inactive"}
+                </button>
+              </div>
             </div>
           </div>
           <div className="flex flex-col items-start gap-2 sm:items-end">
@@ -701,6 +722,13 @@ export function PartnerProductEditor(props: Readonly<{
                   setVariantFields((current) => ({ ...current, [variant.variantId]: { ...fields, productUrl: value } }));
                 }}
                 onProductUrlCommit={() => applyCommit(commitPartnerVariantUrl(variant.variantId, fields.productUrl, saved.productUrl))}
+                model={(
+                  <PartnerVariantModelSummary
+                    presentation={model}
+                    productName={productFields.name || props.product.name}
+                    finish={fields.finish}
+                  />
+                )}
               />
             );
           })}
@@ -715,6 +743,8 @@ export function PartnerProductEditor(props: Readonly<{
               uploadedFileName: uploads.fileName(create.currentAssetId),
             });
             const uploadView = uploads.view(create.variantId);
+            const known = props.commercialAssetOptions.some((option) => option.assetId === create.currentAssetId)
+              || uploads.fileName(create.currentAssetId) != null;
             return (
               <PartnerVariantFields
                 key={create.variantId}
@@ -753,6 +783,28 @@ export function PartnerProductEditor(props: Readonly<{
                   uploads.invalidate(create.variantId);
                   void persist([removePendingVariantMutation(create.variantId)]);
                 }}
+                model={(
+                  <PartnerInlineModelPanel
+                    saved={{
+                      ...model,
+                      detail: partnerVariantModelCardDetail(
+                        model.detail,
+                        productFields.name || props.product.name,
+                        fields.finish,
+                      ),
+                    }}
+                    upload={uploadView}
+                    options={modelOptions}
+                    selectedAssetId={create.currentAssetId}
+                    disabled={disabled || uploads.busy(create.variantId)}
+                    invalid={!known}
+                    onFile={(file) => void uploadPendingModel(create.variantId, file)}
+                    onChoose={(next) => {
+                      uploads.settle(create.variantId);
+                      applyCommit(commitPendingVariantModel(create.variantId, next, create.currentAssetId));
+                    }}
+                  />
+                )}
               />
             );
           })}
@@ -899,65 +951,6 @@ export function PartnerProductEditor(props: Readonly<{
             </div>
           </form>
         ) : null}
-      </section>
-
-      <section aria-labelledby="product-models-heading" className="space-y-4">
-        <h2 id="product-models-heading" className="text-lg font-medium">3D Models</h2>
-        {productVariants.length === 0 && pendingVariants.length === 0 ? (
-          <p className="text-sm text-slate-400">No 3D model</p>
-        ) : (
-          <div className="space-y-3">
-            {productVariants.map((variant) => {
-              const fields = variantFields[variant.variantId] ?? readPartnerVariantFields(variant, draftDocument);
-              return (
-                <PartnerModelBlock
-                  key={variant.variantId}
-                  heading={partnerVariantHeading(fields.finish || null, fields.sku || null)}
-                  presentation={presentPartnerVariantModel({
-                    assetId: variant.assetId,
-                    assets: props.assets,
-                    options: props.commercialAssetOptions,
-                    published: true,
-                  })}
-                />
-              );
-            })}
-            {pendingVariants.map((create) => {
-              const fields = variantFields[create.variantId] ?? readPendingVariantFields(create);
-              const presentation = presentPartnerVariantModel({
-                assetId: create.currentAssetId,
-                assets: props.assets,
-                options: props.commercialAssetOptions,
-                published: false,
-                uploadedFileName: uploads.fileName(create.currentAssetId),
-              });
-              const known = props.commercialAssetOptions.some((option) => option.assetId === create.currentAssetId)
-                || uploads.fileName(create.currentAssetId) != null;
-              return (
-                <article key={create.variantId} className="rounded-xl border border-slate-800 p-4">
-                  <h3 className="text-sm font-medium text-slate-50">
-                    {partnerVariantHeading(fields.finish || null, fields.sku || null)}
-                  </h3>
-                  <div className="mt-3">
-                    <PartnerInlineModelPanel
-                      saved={presentation}
-                      upload={uploads.view(create.variantId)}
-                      options={modelOptions}
-                      selectedAssetId={create.currentAssetId}
-                      disabled={disabled || uploads.busy(create.variantId)}
-                      invalid={!known}
-                      onFile={(file) => void uploadPendingModel(create.variantId, file)}
-                      onChoose={(next) => {
-                        uploads.settle(create.variantId);
-                        applyCommit(commitPendingVariantModel(create.variantId, next, create.currentAssetId));
-                      }}
-                    />
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
       </section>
 
       <PartnerPublishSection

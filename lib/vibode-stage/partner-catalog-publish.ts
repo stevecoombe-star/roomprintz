@@ -34,6 +34,11 @@ import {
   partnerRuntimePlanNeedsV5,
   toRuntimeApplyPayloadV5,
 } from "./partner-catalog-runtime-executor-v5";
+import {
+  g6UnsupportedPublishOperations,
+  partnerRuntimePlanNeedsV6,
+  toRuntimeApplyPayloadV6,
+} from "./partner-catalog-runtime-executor-v6";
 import { persistablePartnerPatchDocument } from "./partner-draft-mutations";
 import {
   parsePartnerDraftTouchedBase,
@@ -63,6 +68,7 @@ export const STAGE_PARTNER_APPLY_RPC_V2 = "vibode_stage_apply_partner_patch_v2";
 export const STAGE_PARTNER_APPLY_RPC_V3 = "vibode_stage_apply_partner_patch_v3";
 export const STAGE_PARTNER_APPLY_RPC_V4 = "vibode_stage_apply_partner_patch_v4";
 export const STAGE_PARTNER_APPLY_RPC_V5 = "vibode_stage_apply_partner_patch_v5";
+export const STAGE_PARTNER_APPLY_RPC_V6 = "vibode_stage_apply_partner_patch_v6";
 
 export const PARTNER_PUBLISH_REJECT_BODY_KEYS = Object.freeze([
   "partnerId",
@@ -525,6 +531,9 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
     const collectionUpdates = Array.isArray(payload.collectionUpdates) ? payload.collectionUpdates : [];
     const membershipAdds = Array.isArray(payload.membershipAdds) ? payload.membershipAdds : [];
     const membershipRemoves = Array.isArray(payload.membershipRemoves) ? payload.membershipRemoves : [];
+    const productStatusTransitions = Array.isArray(payload.productStatusTransitions)
+      ? payload.productStatusTransitions
+      : [];
     const isNoop = (
       productUpdates.length
       + variantUpdates.length
@@ -534,6 +543,7 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
       + collectionUpdates.length
       + membershipAdds.length
       + membershipRemoves.length
+      + productStatusTransitions.length
     ) === 0;
     const status = isNoop ? "noop" : "accepted";
     const plan: Record<string, unknown> = {
@@ -545,7 +555,12 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
       membershipAdds,
       membershipRemoves,
     };
-    if (payload.planVersion === 5 || payload.planVersion === 4 || collectionCreates.length > 0) {
+    if (payload.planVersion === 6) {
+      plan.productCreates = productCreates;
+      plan.variantCreates = variantCreates;
+      plan.collectionCreates = collectionCreates;
+      plan.productStatusTransitions = productStatusTransitions;
+    } else if (payload.planVersion === 5 || payload.planVersion === 4 || collectionCreates.length > 0) {
       plan.productCreates = productCreates;
       plan.variantCreates = variantCreates;
       plan.collectionCreates = collectionCreates;
@@ -692,11 +707,13 @@ export async function publishPartnerPatchDraft(input: Readonly<{
     return plannerRejectBody(plan, merchantMessageForPublishErrorCode("PLANNER_ISSUE"), "PLANNER_ISSUE");
   }
 
-  const unsupported = partnerRuntimePlanNeedsV5(plan)
-    ? g5c1UnsupportedPublishOperations(plan)
-    : partnerRuntimePlanNeedsV4(plan)
-      ? g4cUnsupportedPublishOperations(plan)
-      : g3UnsupportedPublishOperations(plan);
+  const unsupported = partnerRuntimePlanNeedsV6(plan)
+    ? g6UnsupportedPublishOperations(plan)
+    : partnerRuntimePlanNeedsV5(plan)
+      ? g5c1UnsupportedPublishOperations(plan)
+      : partnerRuntimePlanNeedsV4(plan)
+        ? g4cUnsupportedPublishOperations(plan)
+        : g3UnsupportedPublishOperations(plan);
   if (unsupported.length > 0) {
     await recordRejected({
       audit: input.audit,
@@ -768,13 +785,15 @@ export async function publishPartnerPatchDraft(input: Readonly<{
     });
   }
 
-  const serialized = plan.noOp
-    ? { ok: true as const, payload: emptyRuntimeApplyPayload(partnerId) }
-    : partnerRuntimePlanNeedsV5(plan)
-      ? toRuntimeApplyPayloadV5(plan)
-      : partnerRuntimePlanNeedsV4(plan)
-        ? toRuntimeApplyPayloadV4(plan)
-        : toRuntimeApplyPayload(plan);
+  const serialized = partnerRuntimePlanNeedsV6(plan)
+    ? toRuntimeApplyPayloadV6(plan)
+    : plan.noOp
+      ? { ok: true as const, payload: emptyRuntimeApplyPayload(partnerId) }
+      : partnerRuntimePlanNeedsV5(plan)
+        ? toRuntimeApplyPayloadV5(plan)
+        : partnerRuntimePlanNeedsV4(plan)
+          ? toRuntimeApplyPayloadV4(plan)
+          : toRuntimeApplyPayload(plan);
   if (!serialized.ok) {
     await recordRejected({
       audit: input.audit,

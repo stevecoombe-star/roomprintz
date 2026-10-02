@@ -54,6 +54,8 @@ export type PartnerEditorMutation =
   | Readonly<{ type: "product.set_image_url"; productId: string; imageUrl: string }>
   | Readonly<{ type: "product.set_product_url"; productId: string; productUrl: string | null }>
   | Readonly<{ type: "product.set_price"; productId: string; priceAmount: number }>
+  | Readonly<{ type: "product.deactivate"; productId: string }>
+  | Readonly<{ type: "product.reactivate"; productId: string }>
   | Readonly<{ type: "variant.set_finish_label"; variantId: string; finishLabel: string | null }>
   | Readonly<{ type: "variant.set_sku"; variantId: string; sku: string | null }>
   | Readonly<{ type: "variant.set_price"; variantId: string; priceAmount: number }>
@@ -323,6 +325,25 @@ export function commitPartnerProductUrl(productId: string, next: string, saved: 
   const parsed = commitText(next, saved, "null", "");
   if (parsed.state !== "value") return parsed;
   return { state: "mutation", mutation: { type: "product.set_product_url", productId, productUrl: parsed.value } };
+}
+
+export function partnerEditorPendingProductStatus(
+  document: PartnerCatalogSyncDocument | null,
+  productId: string,
+): "active" | "inactive" | null {
+  if (!document) return null;
+  if ((document.products.deactivate ?? []).some((item) => item.productId === productId)) return "inactive";
+  if ((document.products.reactivate ?? []).some((item) => item.productId === productId)) return "active";
+  return null;
+}
+
+export function partnerProductStatusMutation(
+  productId: string,
+  next: "active" | "inactive",
+): PartnerEditorMutation {
+  return next === "inactive"
+    ? { type: "product.deactivate", productId }
+    : { type: "product.reactivate", productId };
 }
 
 export function commitPartnerProductPrice(productId: string, next: string, saved: string): PartnerEditorCommit {
@@ -600,6 +621,14 @@ function pushChange(
   lines.push({ label, previous, next });
 }
 
+function pushProductStatusChange(
+  lines: PartnerProductChangeLine[],
+  pending: "active" | "inactive" | null,
+) {
+  if (pending === "inactive") lines.push({ label: "Product status", previous: "Active", next: "Inactive" });
+  if (pending === "active") lines.push({ label: "Product status", previous: "Inactive", next: "Active" });
+}
+
 export function describeSavedPartnerProductChanges(input: Readonly<{
   product: StageProduct;
   variants: readonly StageVariant[];
@@ -618,6 +647,10 @@ export function describeSavedPartnerProductChanges(input: Readonly<{
   if (patch?.priceAmount !== undefined) {
     pushChange(lines, "Price", display(input.product.priceAmount), display(patch.priceAmount));
   }
+  pushProductStatusChange(
+    lines,
+    partnerEditorPendingProductStatus(input.document, input.product.productId),
+  );
 
   for (const variant of input.variants) {
     if (variant.productId !== input.product.productId) continue;
@@ -820,6 +853,20 @@ export function describePartnerProductReview(
       }
     } else {
       add(update.productId, update.changes.length);
+    }
+  }
+  for (const productId of preview.productDeactivations) {
+    if (productId === input.productId) {
+      pushProductStatusChange(changes, "inactive");
+    } else {
+      add(productId, 1);
+    }
+  }
+  for (const productId of preview.productReactivations) {
+    if (productId === input.productId) {
+      pushProductStatusChange(changes, "active");
+    } else {
+      add(productId, 1);
     }
   }
   for (const create of preview.productCreates) {

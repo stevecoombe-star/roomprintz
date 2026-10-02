@@ -1280,8 +1280,8 @@ test("PI-5G3 unsupported operations and planner issues do not execute", async ()
     document: {
       partnerId: DEMO_FURNITURE_PARTNER_ID,
       mode: "patch",
-      products: { update: [], deactivate: [{ productId: DEMO_SOFA_PRODUCT_ID }], reactivate: [] },
-      variants: { create: [], update: [], deactivate: [], reactivate: [] },
+      products: { update: [], deactivate: [], reactivate: [] },
+      variants: { create: [], update: [], deactivate: [{ variantId: DEMO_SOFA_STONE_VARIANT_ID }], reactivate: [] },
       collections: { update: [], membershipAdd: [], membershipRemove: [] },
     },
   };
