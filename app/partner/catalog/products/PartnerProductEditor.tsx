@@ -46,6 +46,7 @@ import {
   partnerVariantStatusMutation,
   partnerProductStatusMutation,
   partnerPublishConfirmation,
+  partnerVariantAssignedThumbnailUrl,
   partnerVariantHeading,
   presentPartnerVariantModel,
   readPartnerEditorDraftResponse,
@@ -119,6 +120,7 @@ export function PartnerProductEditor(props: Readonly<{
   draft: PartnerEditorDraft | null;
   productNames: Readonly<Record<string, string>>;
   variantProductIds: Readonly<Record<string, string>>;
+  modelThumbnailUrls?: Readonly<Record<string, string | null>>;
 }>) {
   const draftRef = useRef(props.draft);
   const [draft, setDraft] = useState(props.draft);
@@ -206,8 +208,16 @@ export function PartnerProductEditor(props: Readonly<{
     if (!addModel) {
       return { stateLabel: "No 3D model", filename: null, detail: null, note: null };
     }
-    return { stateLabel: "Ready", filename: addModel.fileName, detail: null, note: null };
+    const thumbnailUrl = partnerVariantAssignedThumbnailUrl(addModel.assetId, props.modelThumbnailUrls);
+    return {
+      stateLabel: "Ready",
+      filename: addModel.fileName,
+      detail: null,
+      note: null,
+      ...(thumbnailUrl !== undefined ? { thumbnailUrl } : {}),
+    };
   }
+
   const imageUrl = safeHttpUrl(productFields.imageUrl);
   const hasReadyModel = props.commercialAssetOptions.length > 0;
 
@@ -689,6 +699,7 @@ export function PartnerProductEditor(props: Readonly<{
               assets: props.assets,
               options: props.commercialAssetOptions,
               published: true,
+              thumbnailUrls: props.modelThumbnailUrls,
             });
             const pendingVariantStatus = partnerEditorPendingVariantStatus(draftDocument, variant.variantId);
             return (
@@ -756,6 +767,7 @@ export function PartnerProductEditor(props: Readonly<{
               options: props.commercialAssetOptions,
               published: false,
               uploadedFileName: uploads.fileName(create.currentAssetId),
+              thumbnailUrls: props.modelThumbnailUrls,
             });
             const uploadView = uploads.view(create.variantId);
             const known = props.commercialAssetOptions.some((option) => option.assetId === create.currentAssetId)

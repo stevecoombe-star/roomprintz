@@ -1,5 +1,9 @@
-import type { PartnerVariantModelPresentation } from "@/lib/vibode-stage/partner-product-editor";
+import {
+  partnerDisplayedModelThumbnail,
+  type PartnerVariantModelPresentation,
+} from "@/lib/vibode-stage/partner-product-editor";
 
+import { PartnerModelThumbnail } from "../../PartnerModelThumbnail";
 import { FIELD } from "./editor-ui";
 
 function modelStatusLabel(stateLabel: PartnerVariantModelPresentation["stateLabel"]): string {
@@ -32,15 +36,25 @@ export function PartnerVariantModelSummary(props: Readonly<{
     props.finish,
   );
   const note = props.presentation.stateLabel === "No 3D model" ? props.presentation.note : null;
+  const thumbnail = partnerDisplayedModelThumbnail({
+    stateLabel: props.presentation.stateLabel,
+    filename: props.presentation.filename,
+    thumbnailUrl: props.presentation.thumbnailUrl,
+  });
   return (
-    <div className="min-w-0">
-      <p className="text-xs uppercase tracking-wide text-slate-500">3D Model</p>
-      <p className="mt-1 text-sm text-slate-100">{modelStatusLabel(props.presentation.stateLabel)}</p>
-      {props.presentation.filename ? (
-        <p className="mt-0.5 break-all text-sm text-slate-300">{props.presentation.filename}</p>
+    <div className={thumbnail ? "flex min-w-0 items-start gap-3" : "min-w-0"}>
+      {thumbnail ? (
+        <PartnerModelThumbnail key={thumbnail.url ?? thumbnail.label} url={thumbnail.url} label={thumbnail.label} />
       ) : null}
-      {detail ? <p className="mt-0.5 break-words text-sm text-slate-400">{detail}</p> : null}
-      {note ? <p className="mt-1 text-xs text-slate-500">{note}</p> : null}
+      <div className="min-w-0">
+        <p className="text-xs uppercase tracking-wide text-slate-500">3D Model</p>
+        <p className="mt-1 text-sm text-slate-100">{modelStatusLabel(props.presentation.stateLabel)}</p>
+        {props.presentation.filename ? (
+          <p className="mt-0.5 break-all text-sm text-slate-300">{props.presentation.filename}</p>
+        ) : null}
+        {detail ? <p className="mt-0.5 break-words text-sm text-slate-400">{detail}</p> : null}
+        {note ? <p className="mt-1 text-xs text-slate-500">{note}</p> : null}
+      </div>
     </div>
   );
 }

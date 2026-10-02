@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 
+import { attachModelThumbnailUrls } from "@/lib/vibode-model-thumbnail/persist.server";
 import { STAGE_BROWSE_CATEGORIES } from "@/lib/vibode-stage/catalog";
 import { loadPartnerCommercialAssetsForPortal } from "@/lib/vibode-stage/partner-commercial-assets.server";
 import { extraCommercialAssetIdsForDraft } from "@/lib/vibode-stage/partner-draft-mutations";
@@ -8,6 +9,7 @@ import { resolvePartnerPortalContext } from "@/lib/vibode-stage/partner-portal-a
 import { loadOpenPartnerPortalDraft } from "@/lib/vibode-stage/partner-portal-drafts.server";
 import {
   partnerEditorDraftFromPortal,
+  partnerEditorModelAssetIds,
   resolvePartnerProductEditor,
 } from "@/lib/vibode-stage/partner-product-editor";
 import { PartnerProductEditor } from "../PartnerProductEditor";
@@ -63,11 +65,25 @@ export default async function PartnerProductEditorPage({
     );
   }
 
+  const productVariants = loaded.catalog.variants.filter((variant) => variant.productId === resolved.product.productId);
+  const modelAssetIds = partnerEditorModelAssetIds({
+    optionAssetIds: commercial.options.map((option) => option.assetId),
+    variantAssetIds: productVariants.map((variant) => variant.assetId),
+    pendingAssetIds: (draft?.document.variants.create ?? [])
+      .filter((create) => create.productId === resolved.product.productId)
+      .map((create) => create.currentAssetId),
+  });
+  const thumbnailRows = await attachModelThumbnailUrls(modelAssetIds.map((assetId) => ({ assetId })));
+  const modelThumbnailUrls = Object.fromEntries(
+    thumbnailRows.map((row) => [row.assetId, row.thumbnailUrl]),
+  );
+
   return (
     <main>
       <PartnerProductEditor
         product={resolved.product}
-        variants={loaded.catalog.variants.filter((variant) => variant.productId === resolved.product.productId)}
+        variants={productVariants}
+        modelThumbnailUrls={modelThumbnailUrls}
         collections={loaded.catalog.collections}
         assets={loaded.catalog.assets}
         commercialAssetOptions={commercial.options}

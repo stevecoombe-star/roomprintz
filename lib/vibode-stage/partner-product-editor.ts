@@ -108,6 +108,13 @@ export type PartnerVariantModelPresentation = Readonly<{
   filename: string | null;
   detail: string | null;
   note: string | null;
+  /** Set only when thumbnail metadata was loaded. Null means show the placeholder. */
+  thumbnailUrl?: string | null;
+}>;
+
+export type PartnerModelThumbnailSlot = Readonly<{
+  url: string | null;
+  label: string;
 }>;
 
 export type PartnerEditorCollectionChoice = Readonly<{
@@ -598,14 +605,68 @@ export function partnerEditorAssetLabel(
   return partnerEditorAssetOptionLabel(option);
 }
 
+export function partnerEditorModelAssetIds(input: Readonly<{
+  optionAssetIds: readonly string[];
+  variantAssetIds: readonly (string | null | undefined)[];
+  pendingAssetIds?: readonly (string | null | undefined)[];
+}>): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const value of [
+    ...input.optionAssetIds,
+    ...input.variantAssetIds,
+    ...(input.pendingAssetIds ?? []),
+  ]) {
+    const assetId = typeof value === "string" ? value.trim() : "";
+    if (!assetId || seen.has(assetId)) continue;
+    seen.add(assetId);
+    ids.push(assetId);
+  }
+  return ids;
+}
+
+export function partnerVariantAssignedThumbnailUrl(
+  assetId: string | null | undefined,
+  thumbnailUrls: Readonly<Record<string, string | null>> | null | undefined,
+): string | null | undefined {
+  const id = assetId?.trim() ?? "";
+  if (!id || !thumbnailUrls) return undefined;
+  const value = thumbnailUrls[id];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function partnerDisplayedModelThumbnail(input: Readonly<{
+  stateLabel: PartnerVariantModelPresentation["stateLabel"] | null;
+  filename: string | null;
+  thumbnailUrl?: string | null;
+  replacingFileName?: string | null;
+}>): PartnerModelThumbnailSlot | null {
+  if (input.replacingFileName != null) {
+    if (input.thumbnailUrl === undefined) return null;
+    const label = input.replacingFileName.trim() || "3D model";
+    return { url: null, label };
+  }
+  if (!input.stateLabel || input.stateLabel === "No 3D model") return null;
+  if (input.thumbnailUrl === undefined) return null;
+  return {
+    url: input.thumbnailUrl,
+    label: input.filename?.trim() || "3D model",
+  };
+}
+
 export function presentPartnerVariantModel(input: Readonly<{
   assetId: string | null;
   assets: readonly Pick<StageAsset, "assetId" | "status">[];
   options: readonly PartnerCommercialAssetOption[];
   published: boolean;
   uploadedFileName?: string | null;
+  thumbnailUrls?: Readonly<Record<string, string | null>> | null;
 }>): PartnerVariantModelPresentation {
   const assetId = input.assetId?.trim() || null;
+  const thumbnailUrl = partnerVariantAssignedThumbnailUrl(assetId, input.thumbnailUrls);
+  const thumbnail = thumbnailUrl !== undefined ? { thumbnailUrl } : {};
   if (!assetId) {
     return {
       stateLabel: "No 3D model",
@@ -625,6 +686,7 @@ export function presentPartnerVariantModel(input: Readonly<{
     filename,
     detail: context && context !== filename ? context : null,
     note: input.published ? PARTNER_PUBLISHED_MODEL_NOTE : null,
+    ...thumbnail,
   };
 }
 

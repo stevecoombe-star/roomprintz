@@ -93,15 +93,17 @@ test("the 3D Models row shows a static thumbnail or a placeholder", () => {
 
 test("the library does not render GLBs or request thumbnails on each visit", () => {
   const library = source("app/partner/assets/PartnerModelLibrary.tsx");
+  const thumbnail = source("app/partner/PartnerModelThumbnail.tsx");
   const client = source("app/partner/assets/PartnerAssetWorkspaceClient.tsx");
   const page = source("app/partner/assets/page.tsx");
   const hook = source("app/partner/catalog/products/usePartnerInlineGlbUploads.ts");
   const register = source("lib/vibode-stage/partner-asset-register.server.ts");
-  assert.match(library, /object-contain/);
-  assert.match(library, /shrink-0/);
-  assert.match(library, /onError=/);
-  assert.match(library, /w-\[4\.5rem\]/);
-  assert.doesNotMatch(library + page, /GLTFLoader|WebGLRenderer|playwright|loadFurnitureGlb|generate-client|render-browser/);
+  assert.match(thumbnail, /object-contain/);
+  assert.match(thumbnail, /shrink-0/);
+  assert.match(thumbnail, /onError=/);
+  assert.match(thumbnail, /w-\[4\.5rem\]/);
+  assert.match(library, /PartnerModelThumbnail/);
+  assert.doesNotMatch(library + page + thumbnail, /GLTFLoader|WebGLRenderer|playwright|loadFurnitureGlb|generate-client|render-browser/);
   assert.match(client, /fetch\("\/api\/vibode\/partner\/assets", \{ cache: "no-store" \}\)/);
   assert.doesNotMatch(client, /vibode-model-thumbnail-render|vibode-thumbnail-jobs|GLTFLoader|WebGLRenderer/);
   const gate = client.indexOf("advancedOpen ?");

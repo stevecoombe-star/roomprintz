@@ -2,7 +2,6 @@
 
 import { useRef } from "react";
 
-import type { PartnerVariantModelPresentation } from "@/lib/vibode-stage/partner-product-editor";
 import {
   PARTNER_INLINE_GLB_ATTENTION,
   PARTNER_INLINE_GLB_CHOOSE,
@@ -17,7 +16,12 @@ import {
   partnerInlineGlbUploadingLabel,
   type PartnerInlineGlbView,
 } from "@/lib/vibode-stage/partner-inline-glb-upload";
+import {
+  partnerDisplayedModelThumbnail,
+  type PartnerVariantModelPresentation,
+} from "@/lib/vibode-stage/partner-product-editor";
 
+import { PartnerModelThumbnail } from "../../PartnerModelThumbnail";
 import { SECONDARY } from "./editor-ui";
 import { PartnerModelSelect } from "./PartnerModelSection";
 
@@ -56,6 +60,12 @@ export function PartnerInlineModelPanel(props: Readonly<{
   );
   const showUpload = !busy && !showReplace && props.upload.phase !== "attention";
   const showChoose = !busy && props.options.length > 0;
+  const thumbnail = partnerDisplayedModelThumbnail({
+    stateLabel: props.saved?.stateLabel ?? null,
+    filename: props.upload.phase === "ready" ? props.upload.fileName : (props.saved?.filename ?? null),
+    thumbnailUrl: props.saved?.thumbnailUrl,
+    replacingFileName: props.upload.phase === "ready" ? props.upload.fileName : null,
+  });
 
   return (
     <div
@@ -68,59 +78,66 @@ export function PartnerInlineModelPanel(props: Readonly<{
         takeFile(event.dataTransfer.files?.[0]);
       }}
     >
-      {props.showSectionLabel === false ? null : (
-        <p className="text-xs uppercase tracking-wide text-slate-500">3D Model</p>
-      )}
-      <div aria-live="polite" className="space-y-1">
-        {props.upload.phase === "uploading" ? (
-          <p className="text-sm text-slate-100">{partnerInlineGlbUploadingLabel(props.upload.fileName)}</p>
+      <div className={thumbnail ? "flex min-w-0 items-start gap-3" : undefined}>
+        {thumbnail ? (
+          <PartnerModelThumbnail key={thumbnail.url ?? thumbnail.label} url={thumbnail.url} label={thumbnail.label} />
         ) : null}
-        {props.upload.phase === "processing" ? (
-          <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_PROCESSING}</p>
-        ) : null}
-        {props.upload.phase === "ready" ? (
-          <>
-            <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_READY}</p>
-            <p className="text-sm text-slate-300">{props.upload.fileName}</p>
-          </>
-        ) : null}
-        {props.upload.phase === "attention" && savedReady ? (
-          <>
-            <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_READY}</p>
-            {savedFile ? <p className="text-sm text-slate-300">{savedFile}</p> : null}
-          </>
-        ) : null}
-        {props.upload.phase === "attention" ? (
-          <>
-            <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_ATTENTION}</p>
-            <p className="text-sm text-rose-200">{props.upload.message}</p>
-            {props.upload.technical ? (
-              <details className="text-xs text-slate-500">
-                <summary>Technical details</summary>
-                <p className="mt-1 font-mono">{props.upload.technical}</p>
-              </details>
+        <div className="min-w-0 flex-1 space-y-3">
+          {props.showSectionLabel === false ? null : (
+            <p className="text-xs uppercase tracking-wide text-slate-500">3D Model</p>
+          )}
+          <div aria-live="polite" className="space-y-1">
+            {props.upload.phase === "uploading" ? (
+              <p className="text-sm text-slate-100">{partnerInlineGlbUploadingLabel(props.upload.fileName)}</p>
             ) : null}
-          </>
-        ) : null}
-        {props.upload.phase === "idle" && savedReady ? (
-          <>
-            <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_READY}</p>
-            {savedFile ? <p className="text-sm text-slate-300">{savedFile}</p> : null}
-            {props.saved?.detail ? <p className="text-sm text-slate-400">{props.saved.detail}</p> : null}
-          </>
-        ) : null}
-        {props.upload.phase === "idle" && props.saved?.stateLabel === "Needs attention" ? (
-          <>
-            <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_ATTENTION}</p>
-            {props.saved.detail ? <p className="text-sm text-slate-400">{props.saved.detail}</p> : null}
-          </>
-        ) : null}
-        {props.upload.phase === "idle" && !savedReady && props.saved?.stateLabel !== "Needs attention" ? (
-          <>
-            <p className="text-sm font-medium text-slate-100">{PARTNER_INLINE_GLB_EMPTY_TITLE}</p>
-            <p className="text-sm text-slate-400">{props.emptyDetail ?? PARTNER_INLINE_GLB_EMPTY_DETAIL}</p>
-          </>
-        ) : null}
+            {props.upload.phase === "processing" ? (
+              <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_PROCESSING}</p>
+            ) : null}
+            {props.upload.phase === "ready" ? (
+              <>
+                <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_READY}</p>
+                <p className="text-sm text-slate-300">{props.upload.fileName}</p>
+              </>
+            ) : null}
+            {props.upload.phase === "attention" && savedReady ? (
+              <>
+                <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_READY}</p>
+                {savedFile ? <p className="text-sm text-slate-300">{savedFile}</p> : null}
+              </>
+            ) : null}
+            {props.upload.phase === "attention" ? (
+              <>
+                <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_ATTENTION}</p>
+                <p className="text-sm text-rose-200">{props.upload.message}</p>
+                {props.upload.technical ? (
+                  <details className="text-xs text-slate-500">
+                    <summary>Technical details</summary>
+                    <p className="mt-1 font-mono">{props.upload.technical}</p>
+                  </details>
+                ) : null}
+              </>
+            ) : null}
+            {props.upload.phase === "idle" && savedReady ? (
+              <>
+                <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_READY}</p>
+                {savedFile ? <p className="text-sm text-slate-300">{savedFile}</p> : null}
+                {props.saved?.detail ? <p className="text-sm text-slate-400">{props.saved.detail}</p> : null}
+              </>
+            ) : null}
+            {props.upload.phase === "idle" && props.saved?.stateLabel === "Needs attention" ? (
+              <>
+                <p className="text-sm text-slate-100">{PARTNER_INLINE_GLB_ATTENTION}</p>
+                {props.saved.detail ? <p className="text-sm text-slate-400">{props.saved.detail}</p> : null}
+              </>
+            ) : null}
+            {props.upload.phase === "idle" && !savedReady && props.saved?.stateLabel !== "Needs attention" ? (
+              <>
+                <p className="text-sm font-medium text-slate-100">{PARTNER_INLINE_GLB_EMPTY_TITLE}</p>
+                <p className="text-sm text-slate-400">{props.emptyDetail ?? PARTNER_INLINE_GLB_EMPTY_DETAIL}</p>
+              </>
+            ) : null}
+          </div>
+        </div>
       </div>
       <input
         ref={inputRef}
