@@ -69,6 +69,7 @@ export type PartnerModelLibraryItem = Readonly<{
   attentionMessage: string | null;
   processingMessage: string | null;
   technical: PartnerModelLibraryTechnical;
+  thumbnailUrl: string | null;
   searchText: string;
 }>;
 
@@ -82,6 +83,7 @@ export type PartnerModelLibraryAssetInput = Readonly<{
   sha256: string | null;
   registeredAt: string;
   origin: "partner_intake" | "catalog_linked" | string;
+  thumbnailUrl?: string | null;
 }>;
 
 export type PartnerModelLibraryIntakeInput = Readonly<{
@@ -300,6 +302,32 @@ function stateLabel(state: PartnerModelLibraryState): string {
   return PARTNER_MODEL_LIBRARY_ATTENTION;
 }
 
+export function modelThumbnailVisual(
+  url: string | null | undefined,
+  failed: boolean,
+): "image" | "placeholder" {
+  if (failed) return "placeholder";
+  if (!isDisplayableThumbnailUrl(url)) return "placeholder";
+  return "image";
+}
+
+function isDisplayableThumbnailUrl(url: string | null | undefined): url is string {
+  if (typeof url !== "string") return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.username || parsed.password) return false;
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function thumbnailUrlFrom(value: string | null | undefined): string | null {
+  return isDisplayableThumbnailUrl(value) ? value.trim() : null;
+}
+
 function sourceLabel(origin: string): string | null {
   if (origin === "partner_intake") return "Uploaded model";
   if (origin === "catalog_linked") return "Existing catalog model";
@@ -378,6 +406,7 @@ export function buildPartnerModelLibrary(input: Readonly<{
         errorDetail: state === "needs_attention" ? asNonEmpty(linked?.error) : null,
         sourceLabel: sourceLabel(asset.origin),
       },
+      thumbnailUrl: thumbnailUrlFrom(asset.thumbnailUrl),
       searchText: searchTextFor(fileName, uses, catalog.variants, catalog.products, assetId),
     });
   }
@@ -416,6 +445,7 @@ export function buildPartnerModelLibrary(input: Readonly<{
         errorDetail: failed ? asNonEmpty(intake.error) : null,
         sourceLabel: "Upload",
       },
+      thumbnailUrl: null,
       searchText: searchTextFor(fileName, [], [], new Map(), null),
     });
   }

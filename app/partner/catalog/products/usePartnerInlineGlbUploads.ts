@@ -53,6 +53,22 @@ export function usePartnerInlineGlbUploads() {
         });
         return { status: "failed" as const, token };
       }
+      if (session.isCurrent(token)) {
+        try {
+          const glbBytes = await file.arrayBuffer();
+          if (session.isCurrent(token)) {
+            const { generatePartnerModelThumbnail } = await import(
+              "@/lib/vibode-model-thumbnail/generate-client"
+            );
+            await generatePartnerModelThumbnail({
+              assetId: result.asset.assetId,
+              glbBytes,
+            });
+          }
+        } catch {
+          // Registration already succeeded. A missing thumbnail can be retried.
+        }
+      }
       publish({ phase: "ready", fileName: result.asset.originalFileName });
       return {
         status: "ready" as const,

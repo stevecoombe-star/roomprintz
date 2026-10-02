@@ -6,6 +6,7 @@ import {
   PARTNER_MODEL_LIBRARY_CATALOG_HREF,
   PARTNER_MODEL_LIBRARY_UNUSED,
   filterPartnerModelLibrary,
+  modelThumbnailVisual,
   partnerModelLibraryEmptyFilterMessage,
   type PartnerModelLibraryItem,
   type PartnerModelLibraryStatusFilter,
@@ -54,6 +55,46 @@ function TechnicalDetails({ item }: { item: PartnerModelLibraryItem }) {
   );
 }
 
+function ModelThumbnail({ url, label }: { url: string | null; label: string }) {
+  const [failed, setFailed] = useState(false);
+  const visual = modelThumbnailVisual(url, failed);
+  return (
+    <div
+      className="h-[4.5rem] w-[4.5rem] shrink-0 overflow-hidden rounded-lg border border-slate-800 bg-stone-200"
+      data-model-thumbnail={visual}
+    >
+      {visual === "image" ? (
+        // eslint-disable-next-line @next/next/no-img-element -- persisted catalog thumbnail, not a live GLB
+        <img
+          src={url ?? ""}
+          alt=""
+          className="h-full w-full object-contain"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <ModelThumbnailPlaceholder label={label} />
+      )}
+    </div>
+  );
+}
+
+function ModelThumbnailPlaceholder({ label }: { label: string }) {
+  return (
+    <svg
+      viewBox="0 0 64 64"
+      className="h-full w-full p-3 text-slate-500"
+      role="img"
+      aria-label={`${label} preview`}
+    >
+      <g fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round">
+        <path d="M32 16 L48 24 L32 32 L16 24 Z" />
+        <path d="M16 24 L16 40 L32 48 L32 32" />
+        <path d="M48 24 L48 40 L32 48" />
+      </g>
+    </svg>
+  );
+}
+
 function ModelRow(props: Readonly<{
   item: PartnerModelLibraryItem;
   technicalOpen: boolean;
@@ -64,7 +105,10 @@ function ModelRow(props: Readonly<{
   const hiddenUses = props.item.uses.length - visibleUses.length;
   const meta = metaLine(props.item);
   return (
-    <li className="rounded-xl border border-slate-800 p-4">
+    <li className="min-w-0 rounded-xl border border-slate-800 p-4">
+      <div className="flex min-w-0 items-start gap-3">
+        <ModelThumbnail url={props.item.thumbnailUrl} label={props.item.fileName} />
+        <div className="min-w-0 flex-1">
       <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-2">
         <h3 className="min-w-0 break-all font-medium text-slate-100">{props.item.fileName}</h3>
         <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -116,6 +160,8 @@ function ModelRow(props: Readonly<{
           Technical details
         </button>
         {showTechnical ? <TechnicalDetails item={props.item} /> : null}
+      </div>
+        </div>
       </div>
     </li>
   );
@@ -200,7 +246,7 @@ export function PartnerModelLibrary(props: Readonly<{
         </section>
       ) : null}
       {visible.length > 0 ? (
-        <ul className="space-y-3">
+        <ul className="min-w-0 space-y-3">
           {visible.map((item) => (
             <ModelRow key={item.key} item={item} technicalOpen={props.technicalOpen === true} />
           ))}

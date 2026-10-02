@@ -68,6 +68,7 @@ type RegisteredAssetDto = Readonly<{
   sha256: string | null;
   registeredAt: string;
   origin: "partner_intake" | "catalog_linked";
+  thumbnailUrl?: string | null;
 }>;
 
 type RegisteredListResponse = Readonly<{
@@ -146,6 +147,8 @@ export function PartnerAssetWorkspaceClient() {
   const [lastIntake, setLastIntake] = useState<IntakeDto | null>(null);
   const [registeringId, setRegisteringId] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [thumbnailBusy, setThumbnailBusy] = useState(false);
+  const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<unknown>(null);
   const [loaded, setLoaded] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -273,6 +276,8 @@ export function PartnerAssetWorkspaceClient() {
       const body = await response.json() as RegisterResponse;
       if (!response.ok || !body.ok) {
         setActionError(body.error ?? "The Asset could not be registered.");
+      } else if (body.asset?.assetId) {
+        await createThumbnail(body.asset.assetId);
       }
       await refresh();
     } catch {
@@ -302,7 +307,64 @@ export function PartnerAssetWorkspaceClient() {
     }
   }
 
-  const busy = phase !== "idle" || registeringId != null || activatingId != null;
+  async function createThumbnail(assetId: string) {
+    setThumbnailBusy(true);
+    setThumbnailStatus("Creating thumbnail…");
+    try {
+      const { generatePartnerModelThumbnail } = await import(
+        "@/lib/vibode-model-thumbnail/generate-client"
+      );
+      const generated = await generatePartnerModelThumbnail({ assetId });
+      setThumbnailStatus(generated.ok ? "Thumbnail saved." : "Thumbnail could not be created. The model is still registered.");
+      if (generated.ok && generated.thumbnailUrl) {
+        setRegisteredAssets((current) => current.map((asset) => (
+          asset.assetId === assetId ? { ...asset, thumbnailUrl: generated.thumbnailUrl } : asset
+        )));
+      }
+    } catch {
+      setThumbnailStatus("Thumbnail could not be created. The model is still registered.");
+    } finally {
+      setThumbnailBusy(false);
+    }
+  }
+
+  async function onGenerateMissing() {
+    const assetIds = registeredAssets
+      .filter((asset) => !asset.thumbnailUrl)
+      .map((asset) => asset.assetId);
+    if (assetIds.length === 0) {
+      setThumbnailStatus("Every model already has a thumbnail.");
+      return;
+    }
+    setThumbnailBusy(true);
+    setThumbnailStatus(`Generating thumbnail 1 of ${assetIds.length}…`);
+    try {
+      const { generateMissingPartnerModelThumbnails } = await import(
+        "@/lib/vibode-model-thumbnail/generate-client"
+      );
+      const result = await generateMissingPartnerModelThumbnails({
+        assetIds,
+        onProgress: ({ index, total }) => {
+          setThumbnailStatus(`Generating thumbnail ${index} of ${total}…`);
+        },
+      });
+      setRegisteredAssets((current) => current.map((asset) => {
+        const thumbnailUrl = result.urls[asset.assetId];
+        return thumbnailUrl ? { ...asset, thumbnailUrl } : asset;
+      }));
+      setThumbnailStatus(
+        result.failed === 0
+          ? `Created ${result.completed} thumbnail${result.completed === 1 ? "" : "s"}.`
+          : `Created ${result.completed} thumbnail${result.completed === 1 ? "" : "s"}. ${result.failed} could not be created.`,
+      );
+    } catch {
+      setThumbnailStatus("Thumbnails could not be created. The models are still registered.");
+    } finally {
+      setThumbnailBusy(false);
+    }
+  }
+
+  const busy = phase !== "idle" || registeringId != null || activatingId != null || thumbnailBusy;
   const phaseCopy = phase === "uploading"
     ? `Uploading${progress == null ? "…" : `… ${progress}%`}`
     : phase === "validating"
@@ -340,6 +402,17 @@ export function PartnerAssetWorkspaceClient() {
         </button>
         {advancedOpen ? (
           <div className="mt-4 space-y-8">
+            <div className="space-y-2">
+              <button
+                type="button"
+                disabled={busy || registeredAssets.every((asset) => Boolean(asset.thumbnailUrl))}
+                className="rounded-md border border-slate-700 px-3 py-1.5 text-sm"
+                onClick={() => void onGenerateMissing()}
+              >
+                Generate missing thumbnails
+              </button>
+              {thumbnailStatus ? <p className="text-xs text-slate-400">{thumbnailStatus}</p> : null}
+            </div>
             <p className="text-xs text-slate-500">
               Manual upload, registration, and runtime activation for beta fallback.
               Enter the actual product dimensions in metres, or use the GLB measurement shortcut.
