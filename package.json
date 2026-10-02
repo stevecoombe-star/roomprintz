@@ -69,6 +69,7 @@
     "test:partner-ux9-product-status": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-stage/partner-product-status.test.ts",
     "test:partner-ux10-variant-status": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-stage/partner-variant-status.test.ts",
     "test:partner-ux11-catalog-order": "node --import tsx --test --test-concurrency=1 lib/vibode-stage/partner-ux11-catalog-order.test.ts",
+    "test:partner-ux12-variant-order": "node --import tsx --test --test-concurrency=1 lib/vibode-stage/partner-ux12-variant-order.test.ts",
     "test:afc-v2-pi5g2": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-stage/pi5g2-partner-drafts.test.ts",
     "test:afc-v2-pi5g3": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-stage/pi5g3-partner-publish.test.ts",
     "test:afc-v2-pi5g4a": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-stage/pi5g4a-partner-variant-create.test.ts",

@@ -64,6 +64,8 @@ export type StageVariant = Readonly<{
   priceCurrency: string;
   productUrl: string | null;
   status?: StageCommercialStatus;
+  /** Durable manual position within the product. Absent on fixtures with no stored variant order. */
+  sortOrder?: number;
 }>;
 
 export type StageProduct = Readonly<{

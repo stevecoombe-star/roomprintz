@@ -13,6 +13,7 @@ import {
   resolvePartnerProductEditor,
 } from "@/lib/vibode-stage/partner-product-editor";
 import { PartnerProductEditor } from "../PartnerProductEditor";
+import { PartnerProductEditorRefresh } from "../PartnerProductEditorRefresh";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -80,6 +81,7 @@ export default async function PartnerProductEditorPage({
 
   return (
     <main>
+      <PartnerProductEditorRefresh />
       <PartnerProductEditor
         product={resolved.product}
         variants={productVariants}
