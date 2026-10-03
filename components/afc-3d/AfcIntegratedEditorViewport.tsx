@@ -16,6 +16,7 @@ import { useAfcSceneObjectCrudSession } from "@/components/afc-3d/AfcSceneObject
 import { Prepare3dRoomControl } from "@/components/afc-3d/Prepare3dRoomControl";
 import { StageFurnitureToolbar } from "@/components/stage/StageFurnitureToolbar";
 import { useOptionalStageEditor } from "@/components/stage/StageEditorContext";
+import { useStageTransformGizmos } from "@/lib/vibode-stage/use-stage-transform-gizmos";
 import {
   MODEL_AXIS_SCALE_IDENTITY,
   registerModelAxisScaleLookup,
@@ -107,6 +108,7 @@ export function AfcIntegratedEditorViewport({
       Boolean(runtime.authority && versionId && spatialAuthorityId),
   });
   const sceneCrud = useAfcSceneObjectCrudSession();
+  const showTransformGizmos = useStageTransformGizmos();
   const stage = useOptionalStageEditor();
   const bindScene = stage?.bindScene;
   const stageCatalog = stage?.catalog;
@@ -225,6 +227,7 @@ export function AfcIntegratedEditorViewport({
         transformMode={transformMode}
         onTransformModeChange={onTransformModeChange}
         showInternalControls={false}
+        showTransformGizmos={showTransformGizmos}
         sceneObjects={persistedScene.objects}
         sceneInstanceId={persistedScene.sceneInstanceId}
         sceneReady={persistedScene.sceneReady}

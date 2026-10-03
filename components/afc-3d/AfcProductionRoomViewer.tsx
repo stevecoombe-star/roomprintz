@@ -111,6 +111,10 @@ import {
   objectPositionTranslated,
 } from "@/lib/vibode-stage/selection-transform-session";
 import {
+  createStageSelectionOutlinePass,
+  stageOutlineTargets,
+} from "@/lib/vibode-stage/stage-selection-outline";
+import {
   customerMessageForStageRuntimePlacementError,
   returnedAssetMatchesExpected,
   shouldRetryStageDynamicFirstLoad,
@@ -125,6 +129,7 @@ type Props = Readonly<{
   transformMode?: RuntimeTransformMode;
   onTransformModeChange?: (mode: RuntimeTransformMode) => void;
   showInternalControls?: boolean;
+  showTransformGizmos?: boolean;
   sceneObjects?: readonly SceneObjectDefinition[];
   sceneInstanceId?: string;
   sceneReady?: boolean;
@@ -149,6 +154,7 @@ type ReadyProps = Readonly<{
   transformMode?: RuntimeTransformMode;
   onTransformModeChange?: (mode: RuntimeTransformMode) => void;
   showInternalControls?: boolean;
+  showTransformGizmos?: boolean;
   sceneObjects?: readonly SceneObjectDefinition[];
   sceneInstanceId?: string;
   sceneReady?: boolean;
@@ -173,6 +179,7 @@ export function AfcProductionRoomViewer({
   transformMode,
   onTransformModeChange,
   showInternalControls = true,
+  showTransformGizmos = false,
   sceneObjects,
   sceneInstanceId,
   sceneReady = true,
@@ -222,6 +229,7 @@ export function AfcProductionRoomViewer({
       transformMode={transformMode}
       onTransformModeChange={onTransformModeChange}
       showInternalControls={showInternalControls}
+      showTransformGizmos={showTransformGizmos}
       sceneObjects={sceneObjects}
       sceneInstanceId={sceneInstanceId}
       sceneReady={sceneReady}
@@ -246,6 +254,7 @@ function AfcProductionRoomViewerReady({
   transformMode: transformModeProp,
   onTransformModeChange,
   showInternalControls = true,
+  showTransformGizmos = false,
   sceneObjects: sceneObjectsProp,
   sceneInstanceId: sceneInstanceIdProp,
   sceneReady = true,
@@ -312,6 +321,7 @@ function AfcProductionRoomViewerReady({
   const onLiveSnapshotChangeRef = useRef(onLiveSceneSnapshotChange);
   const onPresentationRef = useRef(onSelectionPresentationChange);
   const onSelectedObjectTranslatedRef = useRef(onSelectedObjectTranslated);
+  const showTransformGizmosRef = useRef(showTransformGizmos);
   const overlayRef = useRef(runtimeAssetOverlay ?? null);
   const refreshRuntimeAssetRef = useRef(refreshRuntimeAsset);
   const ensureCommercialPlacementRef = useRef(ensureCommercialPlacement);
@@ -325,6 +335,7 @@ function AfcProductionRoomViewerReady({
   onLiveSnapshotChangeRef.current = onLiveSceneSnapshotChange;
   onPresentationRef.current = onSelectionPresentationChange;
   onSelectedObjectTranslatedRef.current = onSelectedObjectTranslated;
+  showTransformGizmosRef.current = showTransformGizmos;
   overlayRef.current = runtimeAssetOverlay ?? null;
   refreshRuntimeAssetRef.current = refreshRuntimeAsset;
   ensureCommercialPlacementRef.current = ensureCommercialPlacement;
@@ -412,6 +423,10 @@ function AfcProductionRoomViewerReady({
     controls.setSpace("world");
     controls.setSize(0.85);
     controls.setMode("translate");
+    controlsHelper.visible = showTransformGizmosRef.current === true;
+    controls.enabled = showTransformGizmosRef.current === true;
+    const outlinePass = createStageSelectionOutlinePass();
+    let hoveredObjectId: string | null = null;
     let furnitureReady = false;
 
     const raycaster = new THREE.Raycaster();
@@ -500,6 +515,13 @@ function AfcProductionRoomViewerReady({
     };
 
     const syncGizmo = () => {
+      const gizmos = showTransformGizmosRef.current === true;
+      controlsHelper.visible = gizmos;
+      if (!gizmos) {
+        controls.enabled = false;
+        if (controls.object) controls.detach();
+        return;
+      }
       if (!sceneReadyRef.current || !furnitureReady) {
         if (controls.object) controls.detach();
         return;
@@ -542,6 +564,15 @@ function AfcProductionRoomViewerReady({
       pointerNdc.set(ndc.x, ndc.y);
       raycaster.setFromCamera(pointerNdc, camera);
       return intersectRayWithHorizontalPlane(raycaster.ray, planeY);
+    };
+
+    const updateHover = (clientX: number, clientY: number) => {
+      if (bodyDrag?.active || gizmoDragging) {
+        hoveredObjectId = null;
+        return;
+      }
+      const id = pickSceneObjectId(pickHitsAt(clientX, clientY));
+      hoveredObjectId = id && sceneObjects.has(id) ? id : null;
     };
 
     const releaseBodyDragCapture = (pointerId: number) => {
@@ -630,7 +661,7 @@ function AfcProductionRoomViewerReady({
       const session = bodyDrag;
       if (!session) return;
       bodyDrag = null;
-      controls.enabled = true;
+      controls.enabled = showTransformGizmosRef.current === true;
       releaseBodyDragCapture(session.pointerId);
       if (!session.active) return;
       const object = liveSceneObjectForBodyDrag(sceneObjects, session);
@@ -876,6 +907,7 @@ function AfcProductionRoomViewerReady({
         lastDesiredX: null,
         lastDesiredZ: null,
       };
+      hoveredObjectId = null;
       controls.enabled = false;
       emitPresentation();
       try {
@@ -887,7 +919,10 @@ function AfcProductionRoomViewerReady({
 
     const pointerMoveListener = (event: PointerEvent) => {
       const session = bodyDrag;
-      if (!session || event.pointerId !== session.pointerId) return;
+      if (!session || event.pointerId !== session.pointerId) {
+        updateHover(event.clientX, event.clientY);
+        return;
+      }
       if (gizmoDragging || pointerGesture?.pointerDownOnGizmo) {
         endBodyDrag();
         return;
@@ -912,6 +947,7 @@ function AfcProductionRoomViewerReady({
       pointerGesture = null;
       const dragWasActive = bodyDrag?.active === true;
       endBodyDrag();
+      updateHover(event.clientX, event.clientY);
       if (dragWasActive) return;
       if (!gesture) return;
       const movement = Math.hypot(
@@ -933,6 +969,11 @@ function AfcProductionRoomViewerReady({
       );
       const next = id && sceneObjects.has(id) ? id : null;
       selectObject(next);
+    };
+
+    const pointerLeaveListener = () => {
+      if (bodyDrag?.active || gizmoDragging) return;
+      hoveredObjectId = null;
     };
 
     const pointerCancelListener = (event: PointerEvent) => {
@@ -990,7 +1031,7 @@ function AfcProductionRoomViewerReady({
       if (!object) return;
       if (bodyDrag?.objectId === objectId) {
         bodyDrag = null;
-        controls.enabled = true;
+        controls.enabled = showTransformGizmosRef.current === true;
       }
       if (controls.object === object.placement) controls.detach();
       objectLayer.remove(object.placement);
@@ -1474,6 +1515,7 @@ function AfcProductionRoomViewerReady({
     renderer.domElement.addEventListener("pointermove", pointerMoveListener);
     renderer.domElement.addEventListener("pointerup", pointerUpListener);
     renderer.domElement.addEventListener("pointercancel", pointerCancelListener);
+    renderer.domElement.addEventListener("pointerleave", pointerLeaveListener);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
@@ -1500,6 +1542,16 @@ function AfcProductionRoomViewerReady({
       }
       syncGizmo();
       renderer.render(scene, camera);
+      if (sceneReadyRef.current) {
+        const outlines = stageOutlineTargets({
+          selectedObjectId: selectedObjectIdRef.current,
+          hoveredObjectId,
+        }).flatMap((target) => {
+          const object = getLiveSceneObject(sceneObjects, target.objectId);
+          return object ? [{ object: object.placement, role: target.role }] : [];
+        });
+        outlinePass.render(renderer, camera, outlines);
+      }
       emitPresentation();
     };
     animate();
@@ -1525,6 +1577,8 @@ function AfcProductionRoomViewerReady({
       renderer.domElement.removeEventListener("pointermove", pointerMoveListener);
       renderer.domElement.removeEventListener("pointerup", pointerUpListener);
       renderer.domElement.removeEventListener("pointercancel", pointerCancelListener);
+      renderer.domElement.removeEventListener("pointerleave", pointerLeaveListener);
+      outlinePass.dispose();
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
