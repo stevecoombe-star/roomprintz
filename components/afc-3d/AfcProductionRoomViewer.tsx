@@ -6,6 +6,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 import { resolveSceneObjectCollision } from "@/lib/afc-v2-runtime/collision-resolver";
+import {
+  idlePushAlignSession,
+  planCanonicalMoveDrag,
+  resolveExplicitYaw,
+  type PushAlignSession,
+  type ShiftRotateBaseline,
+} from "@/lib/afc-v2-runtime/move-gesture";
 import { containFitRect, nextFrameBox } from "@/lib/afc-v2-runtime/frame-layout";
 import {
   createFurnitureAssetResolver,
@@ -89,7 +96,6 @@ import {
   shouldBeginObjectBodyDrag,
   shouldSuppressSceneSelection,
   viewportModeToControlsMode,
-  wrapSceneRotationDeg,
   worldPositionXZ,
   worldTransformFromObject3D,
   type SceneSelectionPresentation,
@@ -402,6 +408,7 @@ function AfcProductionRoomViewerReady({
     let disposed = false;
     let animationFrame = 0;
     let gizmoDragging = false;
+    let shiftHeld = false;
     let pointerGesture: {
       clientX: number;
       clientY: number;
@@ -415,8 +422,15 @@ function AfcProductionRoomViewerReady({
       offsetZ: number;
       startClientX: number;
       startClientY: number;
+      lastClientX: number;
+      lastClientY: number;
       pointerId: number;
       active: boolean;
+      shiftActive: boolean;
+      shiftBaseline: ShiftRotateBaseline | null;
+      assist: PushAlignSession;
+      lastDesiredX: number | null;
+      lastDesiredZ: number | null;
     } | null = null;
 
     const resizeRenderer = () => {
@@ -617,6 +631,107 @@ function AfcProductionRoomViewerReady({
       emitCommittedScene();
     };
 
+    const recaptureBodyGrab = (
+      session: NonNullable<typeof bodyDrag>,
+      object: LiveRuntimeSceneObject,
+      hit: { x: number; z: number },
+    ) => {
+      const placed = worldPositionXZ(object.placement);
+      const grab = bodyDragGrabOffset(hit, placed);
+      session.offsetX = grab.offsetX;
+      session.offsetZ = grab.offsetZ;
+    };
+
+    const applyResolvedDrag = (
+      object: LiveRuntimeSceneObject,
+      session: NonNullable<typeof bodyDrag>,
+      transform: WorldTransform,
+    ) => {
+      const next = {
+        ...transform,
+        position: { ...transform.position, y: session.placementY },
+        uniformScale: 1,
+      };
+      applyWorldTransform(object.placement, next);
+      object.placement.position.y = session.placementY;
+      object.placement.scale.setScalar(1);
+      object.realizedTransform = next;
+      reportCanonical(object, object.realizedTransform);
+    };
+
+    const applyMoveModeDrag = (
+      object: LiveRuntimeSceneObject,
+      session: NonNullable<typeof bodyDrag>,
+      hit: { x: number; z: number },
+      clientX: number,
+    ) => {
+      const shift = shiftHeld;
+      if (session.shiftActive && !shift) {
+        recaptureBodyGrab(session, object, hit);
+        session.shiftBaseline = null;
+        session.assist = idlePushAlignSession();
+        session.lastDesiredX = null;
+        session.lastDesiredZ = null;
+      }
+      session.shiftActive = shift;
+      const desired = objectBodyDragWorldPosition({
+        hitX: hit.x,
+        hitZ: hit.z,
+        offsetX: session.offsetX,
+        offsetZ: session.offsetZ,
+        placementY: session.placementY,
+      });
+      const pointerDelta = session.lastDesiredX === null || session.lastDesiredZ === null
+        ? null
+        : {
+          x: desired.x - session.lastDesiredX,
+          z: desired.z - session.lastDesiredZ,
+        };
+      const planned = planCanonicalMoveDrag({
+        mode: "move",
+        shiftHeld: shift,
+        current: object.realizedTransform,
+        desiredPosition: desired,
+        pointerX: clientX,
+        pointerWorld: { x: hit.x, z: hit.z },
+        pointerDelta,
+        shiftBaseline: session.shiftBaseline,
+        localAabb: object.localAabb,
+        walls: realizedWalls,
+        assist: session.assist,
+      });
+      session.assist = planned.assist;
+      session.shiftBaseline = planned.shiftBaseline;
+      if (planned.kind === "translate") {
+        applyPlacementWorldPosition(object.placement, {
+          x: planned.transform.position.x,
+          y: session.placementY,
+          z: planned.transform.position.z,
+        });
+        object.placement.position.y = session.placementY;
+        object.placement.scale.setScalar(1);
+        object.realizedTransform = {
+          ...planned.transform,
+          position: {
+            ...planned.transform.position,
+            y: session.placementY,
+          },
+          uniformScale: 1,
+        };
+        reportCanonical(object, object.realizedTransform);
+      } else {
+        applyResolvedDrag(object, session, planned.transform);
+      }
+      if (planned.releaseGrab) {
+        recaptureBodyGrab(session, object, hit);
+        session.lastDesiredX = object.realizedTransform.position.x;
+        session.lastDesiredZ = object.realizedTransform.position.z;
+      } else {
+        session.lastDesiredX = desired.x;
+        session.lastDesiredZ = desired.z;
+      }
+    };
+
     const applyBodyDragAt = (clientX: number, clientY: number) => {
       const session = bodyDrag;
       if (!session?.active) return;
@@ -624,6 +739,10 @@ function AfcProductionRoomViewerReady({
       if (!object) return;
       const hit = planeHitAt(clientX, clientY, session.grabPlaneY);
       if (!hit) return;
+      if (transformModeRef.current === "move") {
+        applyMoveModeDrag(object, session, hit, clientX);
+        return;
+      }
       const next = objectBodyDragWorldPosition({
         hitX: hit.x,
         hitZ: hit.z,
@@ -668,6 +787,7 @@ function AfcProductionRoomViewerReady({
 
     const pointerDownListener = (event: PointerEvent) => {
       if (event.isPrimary === false) return;
+      shiftHeld = event.shiftKey;
       const pointerDownOnGizmo = controls.axis !== null || gizmoDragging;
       pointerGesture = {
         clientX: event.clientX,
@@ -710,8 +830,15 @@ function AfcProductionRoomViewerReady({
         offsetZ: grab.offsetZ,
         startClientX: event.clientX,
         startClientY: event.clientY,
+        lastClientX: event.clientX,
+        lastClientY: event.clientY,
         pointerId: event.pointerId,
         active: false,
+        shiftActive: false,
+        shiftBaseline: null,
+        assist: idlePushAlignSession(),
+        lastDesiredX: null,
+        lastDesiredZ: null,
       };
       controls.enabled = false;
       emitPresentation();
@@ -737,6 +864,9 @@ function AfcProductionRoomViewerReady({
         if (!shouldActivateObjectBodyDrag(movement)) return;
         session.active = true;
       }
+      shiftHeld = event.shiftKey;
+      session.lastClientX = event.clientX;
+      session.lastClientY = event.clientY;
       applyBodyDragAt(event.clientX, event.clientY);
     };
 
@@ -1225,20 +1355,11 @@ function AfcProductionRoomViewerReady({
       commitRotationYDeg: (objectId, degrees) => {
         const object = getLiveSceneObject(sceneObjects, objectId);
         if (!object || !furnitureReady || !sceneReadyRef.current) return false;
-        const proposed = {
-          ...object.realizedTransform,
-          rotationDeg: {
-            ...object.realizedTransform.rotationDeg,
-            y: wrapSceneRotationDeg(degrees),
-          },
-          uniformScale: 1,
-        };
-        const resolved = resolveSceneObjectCollision({
+        const resolved = resolveExplicitYaw({
           current: object.realizedTransform,
-          proposed,
+          yawDeg: degrees,
           localAabb: object.localAabb,
           walls: realizedWalls,
-          mode: "pose",
         });
         commitLiveSceneObjectTransform(
           object,
@@ -1266,12 +1387,37 @@ function AfcProductionRoomViewerReady({
       ready: sceneReadyRef.current,
     });
 
+    const replayBodyDrag = () => {
+      const session = bodyDrag;
+      if (!session?.active) return;
+      applyBodyDragAt(session.lastClientX, session.lastClientY);
+    };
+    const setShiftHeld = (next: boolean) => {
+      if (shiftHeld === next) return;
+      shiftHeld = next;
+      replayBodyDrag();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Shift") setShiftHeld(true);
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Shift" || !event.shiftKey) setShiftHeld(false);
+    };
+    const onBlur = () => setShiftHeld(false);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") setShiftHeld(false);
+    };
+
     controls.addEventListener("dragging-changed", draggingChangedListener);
     controls.addEventListener("objectChange", objectChangeListener);
     renderer.domElement.addEventListener("pointerdown", pointerDownListener);
     renderer.domElement.addEventListener("pointermove", pointerMoveListener);
     renderer.domElement.addEventListener("pointerup", pointerUpListener);
     renderer.domElement.addEventListener("pointercancel", pointerCancelListener);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibility);
 
     const animate = () => {
       if (disposed) return;
@@ -1319,6 +1465,10 @@ function AfcProductionRoomViewerReady({
       renderer.domElement.removeEventListener("pointermove", pointerMoveListener);
       renderer.domElement.removeEventListener("pointerup", pointerUpListener);
       renderer.domElement.removeEventListener("pointercancel", pointerCancelListener);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
       controls.detach();
       controls.dispose();
       scene.remove(controlsHelper);
