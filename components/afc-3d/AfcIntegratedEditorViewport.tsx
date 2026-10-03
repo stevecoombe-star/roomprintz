@@ -240,6 +240,7 @@ export function AfcIntegratedEditorViewport({
         onLiveSceneSnapshotChange={sceneCrud?.setSnapshot}
         onSelectionPresentationChange={setSelection}
         onSelectedObjectTranslated={stage?.noteSelectedObjectTranslated}
+        roomScaleMultiplier={stage?.roomScaleMultiplier}
       />
       <StageFurnitureToolbar />
       {!persistedScene.sceneReady ? (

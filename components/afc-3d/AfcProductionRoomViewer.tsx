@@ -2,7 +2,7 @@
 
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 import { resolveSceneObjectCollision } from "@/lib/afc-v2-runtime/collision-resolver";
@@ -73,6 +73,7 @@ import {
   type LiveRuntimeSceneObject,
 } from "@/lib/afc-v2-runtime/scene-runtime";
 import { realizeProductionWorld } from "@/lib/afc-v2-runtime/production-world";
+import { ROOM_SCALE_DEFAULT } from "@/lib/vibode-stage/room-scale";
 import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
 import type {
   FurnitureAssetDefinition,
@@ -144,6 +145,7 @@ type Props = Readonly<{
     assetId: string,
   ) => Promise<FurnitureAssetDefinition | null>;
   ensureCommercialPlacement?: EnsureStageCommercialPlacement;
+  roomScaleMultiplier?: number;
 }>;
 
 type ReadyProps = Readonly<{
@@ -169,6 +171,7 @@ type ReadyProps = Readonly<{
     assetId: string,
   ) => Promise<FurnitureAssetDefinition | null>;
   ensureCommercialPlacement?: EnsureStageCommercialPlacement;
+  roomScaleMultiplier?: number;
 }>;
 
 export function AfcProductionRoomViewer({
@@ -192,6 +195,7 @@ export function AfcProductionRoomViewer({
   runtimeAssetOverlay,
   refreshRuntimeAsset,
   ensureCommercialPlacement,
+  roomScaleMultiplier = ROOM_SCALE_DEFAULT,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -242,6 +246,7 @@ export function AfcProductionRoomViewer({
       runtimeAssetOverlay={runtimeAssetOverlay}
       refreshRuntimeAsset={refreshRuntimeAsset}
       ensureCommercialPlacement={ensureCommercialPlacement}
+      roomScaleMultiplier={roomScaleMultiplier}
     />
   );
 }
@@ -267,6 +272,7 @@ function AfcProductionRoomViewerReady({
   runtimeAssetOverlay,
   refreshRuntimeAsset,
   ensureCommercialPlacement,
+  roomScaleMultiplier = ROOM_SCALE_DEFAULT,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -293,6 +299,11 @@ function AfcProductionRoomViewerReady({
   }>) => void)>(null);
 
   const world = useMemo(() => realizeProductionWorld(authority), [authority]);
+  const roomScaleRef = useRef(roomScaleMultiplier);
+  const applyRoomScaleRef = useRef<((multiplier: number) => void) | null>(null);
+  useLayoutEffect(() => {
+    roomScaleRef.current = roomScaleMultiplier;
+  }, [roomScaleMultiplier]);
   const furniture = useMemo(
     () => createPi4aFurnitureObjectFromAuthority(roomId, authority),
     [authority, roomId],
@@ -372,7 +383,10 @@ function AfcProductionRoomViewerReady({
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
-    const built = buildProductionPerspectiveCamera(world.camera);
+    let activeWorld = roomScaleRef.current === ROOM_SCALE_DEFAULT
+      ? world
+      : realizeProductionWorld(authority, roomScaleRef.current);
+    const built = buildProductionPerspectiveCamera(activeWorld.camera);
     if (!built.ok) return;
     const camera = built.camera;
 
@@ -464,13 +478,14 @@ function AfcProductionRoomViewerReady({
       const width = Math.max(1, Math.floor(mount.clientWidth));
       const height = Math.max(1, Math.floor(mount.clientHeight));
       renderer.setSize(width, height, false);
-      applyRealizedFrozenCamera(camera, world.camera);
+      applyRealizedFrozenCamera(camera, activeWorld.camera);
     };
     resizeRenderer();
     const frameObserver = new ResizeObserver(resizeRenderer);
     frameObserver.observe(mount);
 
-    const realizedWalls = world.collisionWalls;
+    let realizedWalls = world.collisionWalls;
+    if (activeWorld !== world) realizedWalls = activeWorld.collisionWalls;
 
     const reportCanonical = (
       object: LiveRuntimeSceneObject,
@@ -478,7 +493,7 @@ function AfcProductionRoomViewerReady({
     ) => {
       object.canonicalTransform = canonicalizeObjectWorldTransform(
         realized,
-        world.metricScale,
+        activeWorld.metricScale,
       );
     };
 
@@ -1072,18 +1087,18 @@ function AfcProductionRoomViewerReady({
       if (!descriptor) return null;
       const realized = realizeObjectWorldTransform(
         descriptor.transform,
-        world.metricScale,
+        activeWorld.metricScale,
       );
       const live = mountLiveRuntimeSceneObject({
         descriptor,
         imported: cloneFurnitureGlbScene(template),
-        metricScale: world.metricScale,
+        metricScale: activeWorld.metricScale,
       });
       live.localAabb = measurePlacementLocalAabb(
         live.placement,
         live.importPlacement,
       );
-      commitLiveSceneObjectTransform(live, realized, world.metricScale);
+      commitLiveSceneObjectTransform(live, realized, activeWorld.metricScale);
       setLiveSceneObject(sceneObjects, live);
       objectLayer.add(live.placement);
       unmountedPersisted.delete(definition.objectId);
@@ -1281,7 +1296,7 @@ function AfcProductionRoomViewerReady({
               selectedObjectId: selectedObjectIdRef.current,
               resolver,
               placement: {
-                metricScale: world.metricScale,
+                metricScale: activeWorld.metricScale,
                 realizedWalls,
               },
             });
@@ -1409,7 +1424,7 @@ function AfcProductionRoomViewerReady({
             selectedObjectId: selectedObjectIdRef.current,
             resolver: resolveAsset,
             placement: {
-              metricScale: world.metricScale,
+              metricScale: activeWorld.metricScale,
               realizedWalls,
             },
           });
@@ -1465,7 +1480,7 @@ function AfcProductionRoomViewerReady({
         commitLiveSceneObjectTransform(
           object,
           { ...resolved.transform, uniformScale: 1 },
-          world.metricScale,
+          activeWorld.metricScale,
         );
         emitCommittedScene();
         emitPresentation();
@@ -1524,7 +1539,7 @@ function AfcProductionRoomViewerReady({
     const animate = () => {
       if (disposed) return;
       animationFrame = window.requestAnimationFrame(animate);
-      applyRealizedFrozenCamera(camera, world.camera);
+      applyRealizedFrozenCamera(camera, activeWorld.camera);
       if (controls.getMode() === "scale") controls.setMode("translate");
       objectLayer.visible = sceneReadyRef.current;
       const skipObjectId = bodyDrag?.active
@@ -1556,8 +1571,32 @@ function AfcProductionRoomViewerReady({
     };
     animate();
 
+    const applyRoomScale = (multiplier: number) => {
+      if (disposed) return;
+      const next = realizeProductionWorld(authority, multiplier);
+      activeWorld = next;
+      realizedWalls = next.collisionWalls;
+      applyRealizedFrozenCamera(camera, next.camera);
+      for (const object of sceneObjects.values()) {
+        const realized = realizeObjectWorldTransform(
+          object.canonicalTransform,
+          next.metricScale,
+        );
+        applyWorldTransform(object.placement, {
+          ...realized,
+          uniformScale: 1,
+        });
+        object.realizedTransform = {
+          ...realized,
+          uniformScale: 1,
+        };
+      }
+    };
+    applyRoomScaleRef.current = applyRoomScale;
+
     return () => {
       disposed = true;
+      applyRoomScaleRef.current = null;
       applyGeneration += 1;
       applyLiveSceneRef.current = null;
       onLiveHostChangeRef.current?.(null);
@@ -1597,6 +1636,10 @@ function AfcProductionRoomViewerReady({
     // Certified History continuity: do not add visualImageUrl or version identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- PI-3B/PI-4A frozen world deps
   }, [authority.generationId, furniture.objectId, furniture.transform, world]);
+
+  useEffect(() => {
+    applyRoomScaleRef.current?.(roomScaleMultiplier);
+  }, [roomScaleMultiplier]);
 
   useEffect(() => {
     applyLiveSceneRef.current?.({

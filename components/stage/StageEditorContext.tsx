@@ -70,6 +70,7 @@ import {
   selectionTransformSessionAfterTranslation,
 } from "@/lib/vibode-stage/selection-transform-session";
 import { STAGE_DEFAULT_CATALOG_MODE } from "@/lib/vibode-stage/types";
+import { useRoomScale } from "@/lib/vibode-stage/use-room-scale";
 
 export type StageToolbarSlider = null | "rotate" | "size";
 
@@ -128,6 +129,8 @@ type StageEditorContextValue = Readonly<{
   setTransformMode: (mode: RuntimeTransformMode) => void;
   setToolbarSlider: (slider: StageToolbarSlider) => void;
   noteSelectedObjectTranslated: (objectId: string) => void;
+  roomScaleMultiplier: number;
+  setRoomScaleMultiplier: (value: number) => void;
 }>;
 
 const EMPTY_SCENE: BoundScene = {
@@ -160,6 +163,7 @@ export function StageEditorProvider({
   children: ReactNode;
 }) {
   const session = useAfcSceneObjectCrudSession();
+  const roomScale = useRoomScale(roomId);
   const selectedObjectId = session?.selectedObjectId ?? null;
   const selectionSessionRef = useRef(selectedObjectId);
   const [catalogOpen, setCatalogOpen] = useState(false);
@@ -542,6 +546,8 @@ export function StageEditorProvider({
     setTransformMode,
     setToolbarSlider,
     noteSelectedObjectTranslated,
+    roomScaleMultiplier: roomScale.roomScaleMultiplier,
+    setRoomScaleMultiplier: roomScale.setRoomScaleMultiplier,
   }), [
     active,
     addedProductId,
@@ -586,6 +592,8 @@ export function StageEditorProvider({
     transformMode,
     setTransformMode,
     noteSelectedObjectTranslated,
+    roomScale.roomScaleMultiplier,
+    roomScale.setRoomScaleMultiplier,
   ]);
 
   return (

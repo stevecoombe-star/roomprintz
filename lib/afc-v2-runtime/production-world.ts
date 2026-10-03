@@ -1,18 +1,27 @@
 /**
  * Realized production metric world from compact PI-2 authority.
  *
- * Applies persisted metricScale exactly once to Floor, Camera pose, and
- * collision walls. Does not recompute metric scale.
+ * effectiveMetricScale = certified metricScale × roomScaleMultiplier.
+ * That product is applied once to Floor, Camera pose, and collision walls.
+ * Certified metricScale on the authority is not rewritten. FOV is not scaled.
  */
 
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 
-import { realizeFrozenCameraFromAuthority } from "./frozen-camera";
+import {
+  frozenCameraSnapshotFromAuthority,
+  realizeFrozenCamera,
+} from "./frozen-camera";
 import {
   realizeCollisionWalls,
   realizeFloorRectangle,
 } from "./metric-world-realization";
 import { persistedMetricScale } from "./runtime-authority";
+import {
+  ROOM_SCALE_DEFAULT,
+  clampRoomScaleMultiplier,
+  effectiveMetricScale,
+} from "@/lib/vibode-stage/room-scale";
 import type {
   CanonicalFloorRectangle,
   RealizedFrozenCamera,
@@ -21,7 +30,10 @@ import type {
 
 export type RealizedProductionWorld = Readonly<{
   generationId: string;
+  /** Effective metric scale used by runtime consumers. */
   metricScale: number;
+  certifiedMetricScale: number;
+  roomScaleMultiplier: number;
   coordinateSpace: typeof authorityCoordinateSpace;
   floor: CanonicalFloorRectangle;
   camera: RealizedFrozenCamera;
@@ -32,11 +44,16 @@ const authorityCoordinateSpace = "calibrated-world-xz/v1" as const;
 
 export function realizeProductionWorld(
   authority: AfcV2ProductionRoomAuthority,
+  roomScaleMultiplier: number = ROOM_SCALE_DEFAULT,
 ): RealizedProductionWorld {
-  const metricScale = persistedMetricScale(authority);
+  const certifiedMetricScale = persistedMetricScale(authority);
+  const roomScale = clampRoomScaleMultiplier(roomScaleMultiplier);
+  const metricScale = effectiveMetricScale(certifiedMetricScale, roomScale);
   return {
     generationId: authority.generationId,
     metricScale,
+    certifiedMetricScale,
+    roomScaleMultiplier: roomScale,
     coordinateSpace: authorityCoordinateSpace,
     floor: realizeFloorRectangle(
       {
@@ -45,7 +62,10 @@ export function realizeProductionWorld(
       },
       metricScale,
     ),
-    camera: realizeFrozenCameraFromAuthority(authority),
+    camera: realizeFrozenCamera(
+      frozenCameraSnapshotFromAuthority(authority),
+      metricScale,
+    ),
     collisionWalls: realizeCollisionWalls(
       authority.collision.walls,
       metricScale,
