@@ -65,6 +65,10 @@ import type {
   StageProduct,
   StageVariant,
 } from "@/lib/vibode-stage/types";
+import {
+  selectionTransformSessionAfterChange,
+  selectionTransformSessionAfterTranslation,
+} from "@/lib/vibode-stage/selection-transform-session";
 import { STAGE_DEFAULT_CATALOG_MODE } from "@/lib/vibode-stage/types";
 
 export type StageToolbarSlider = null | "rotate" | "size";
@@ -123,6 +127,7 @@ type StageEditorContextValue = Readonly<{
   setSelection: (selection: SceneSelectionPresentation | null) => void;
   setTransformMode: (mode: RuntimeTransformMode) => void;
   setToolbarSlider: (slider: StageToolbarSlider) => void;
+  noteSelectedObjectTranslated: (objectId: string) => void;
 }>;
 
 const EMPTY_SCENE: BoundScene = {
@@ -155,6 +160,8 @@ export function StageEditorProvider({
   children: ReactNode;
 }) {
   const session = useAfcSceneObjectCrudSession();
+  const selectedObjectId = session?.selectedObjectId ?? null;
+  const selectionSessionRef = useRef(selectedObjectId);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [catalogSettled, setCatalogSettled] = useState(false);
   const [catalogMotion, setCatalogMotion] = useState<"instant" | "smooth">("instant");
@@ -188,6 +195,18 @@ export function StageEditorProvider({
   const [boundScene, setBoundScene] = useState<BoundScene>(EMPTY_SCENE);
   const [selection, setSelection] = useState<SceneSelectionPresentation | null>(null);
   const [toolbarSlider, setToolbarSlider] = useState<StageToolbarSlider>(null);
+  useLayoutEffect(() => {
+    const previousObjectId = selectionSessionRef.current;
+    if (previousObjectId === selectedObjectId) return;
+    selectionSessionRef.current = selectedObjectId;
+    const next = selectionTransformSessionAfterChange({
+      objectId: previousObjectId,
+      transformMode,
+      toolbarSlider,
+    }, selectedObjectId);
+    if (next.transformMode !== transformMode) onTransformModeChange(next.transformMode);
+    if (next.toolbarSlider !== toolbarSlider) setToolbarSlider(next.toolbarSlider);
+  }, [onTransformModeChange, selectedObjectId, toolbarSlider, transformMode]);
   const [addedProductId, setAddedProductId] = useState<string | null>(null);
   const [addPendingKey, setAddPendingKey] = useState<string | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
@@ -458,6 +477,16 @@ export function StageEditorProvider({
     if (mode === "rotate") setToolbarSlider("rotate");
   }, [onTransformModeChange]);
 
+  const noteSelectedObjectTranslated = useCallback((objectId: string) => {
+    const next = selectionTransformSessionAfterTranslation({
+      objectId: selectedObjectId,
+      transformMode,
+      toolbarSlider,
+    }, objectId);
+    if (next.transformMode !== transformMode) onTransformModeChange(next.transformMode);
+    if (next.toolbarSlider !== toolbarSlider) setToolbarSlider(next.toolbarSlider);
+  }, [onTransformModeChange, selectedObjectId, toolbarSlider, transformMode]);
+
   const value = useMemo<StageEditorContextValue>(() => ({
     active,
     catalogOpen,
@@ -512,6 +541,7 @@ export function StageEditorProvider({
     setSelection,
     setTransformMode,
     setToolbarSlider,
+    noteSelectedObjectTranslated,
   }), [
     active,
     addedProductId,
@@ -555,6 +585,7 @@ export function StageEditorProvider({
     toolbarSlider,
     transformMode,
     setTransformMode,
+    noteSelectedObjectTranslated,
   ]);
 
   return (

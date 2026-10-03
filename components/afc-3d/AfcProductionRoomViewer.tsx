@@ -107,6 +107,10 @@ import {
   resolveViewerBackgroundImageUrl,
 } from "@/lib/afc-v2-runtime/viewer-presentation";
 import {
+  bodyDragSampleTranslatedObject,
+  objectPositionTranslated,
+} from "@/lib/vibode-stage/selection-transform-session";
+import {
   customerMessageForStageRuntimePlacementError,
   returnedAssetMatchesExpected,
   shouldRetryStageDynamicFirstLoad,
@@ -129,6 +133,7 @@ type Props = Readonly<{
   onLiveSceneHostChange?: (host: ProductionSceneCrudHost | null) => void;
   onLiveSceneSnapshotChange?: (snapshot: LiveSceneCrudSnapshot) => void;
   onSelectionPresentationChange?: (presentation: SceneSelectionPresentation | null) => void;
+  onSelectedObjectTranslated?: (objectId: string) => void;
   runtimeAssetOverlay?: ReadonlyMap<string, FurnitureAssetDefinition> | null;
   refreshRuntimeAsset?: (
     assetId: string,
@@ -152,6 +157,7 @@ type ReadyProps = Readonly<{
   onLiveSceneHostChange?: (host: ProductionSceneCrudHost | null) => void;
   onLiveSceneSnapshotChange?: (snapshot: LiveSceneCrudSnapshot) => void;
   onSelectionPresentationChange?: (presentation: SceneSelectionPresentation | null) => void;
+  onSelectedObjectTranslated?: (objectId: string) => void;
   runtimeAssetOverlay?: ReadonlyMap<string, FurnitureAssetDefinition> | null;
   refreshRuntimeAsset?: (
     assetId: string,
@@ -175,6 +181,7 @@ export function AfcProductionRoomViewer({
   onLiveSceneHostChange,
   onLiveSceneSnapshotChange,
   onSelectionPresentationChange,
+  onSelectedObjectTranslated,
   runtimeAssetOverlay,
   refreshRuntimeAsset,
   ensureCommercialPlacement,
@@ -223,6 +230,7 @@ export function AfcProductionRoomViewer({
       onLiveSceneHostChange={onLiveSceneHostChange}
       onLiveSceneSnapshotChange={onLiveSceneSnapshotChange}
       onSelectionPresentationChange={onSelectionPresentationChange}
+      onSelectedObjectTranslated={onSelectedObjectTranslated}
       runtimeAssetOverlay={runtimeAssetOverlay}
       refreshRuntimeAsset={refreshRuntimeAsset}
       ensureCommercialPlacement={ensureCommercialPlacement}
@@ -246,6 +254,7 @@ function AfcProductionRoomViewerReady({
   onLiveSceneHostChange,
   onLiveSceneSnapshotChange,
   onSelectionPresentationChange,
+  onSelectedObjectTranslated,
   runtimeAssetOverlay,
   refreshRuntimeAsset,
   ensureCommercialPlacement,
@@ -302,6 +311,7 @@ function AfcProductionRoomViewerReady({
   const onLiveHostChangeRef = useRef(onLiveSceneHostChange);
   const onLiveSnapshotChangeRef = useRef(onLiveSceneSnapshotChange);
   const onPresentationRef = useRef(onSelectionPresentationChange);
+  const onSelectedObjectTranslatedRef = useRef(onSelectedObjectTranslated);
   const overlayRef = useRef(runtimeAssetOverlay ?? null);
   const refreshRuntimeAssetRef = useRef(refreshRuntimeAsset);
   const ensureCommercialPlacementRef = useRef(ensureCommercialPlacement);
@@ -314,6 +324,7 @@ function AfcProductionRoomViewerReady({
   onLiveHostChangeRef.current = onLiveSceneHostChange;
   onLiveSnapshotChangeRef.current = onLiveSceneSnapshotChange;
   onPresentationRef.current = onSelectionPresentationChange;
+  onSelectedObjectTranslatedRef.current = onSelectedObjectTranslated;
   overlayRef.current = runtimeAssetOverlay ?? null;
   refreshRuntimeAssetRef.current = refreshRuntimeAsset;
   ensureCommercialPlacementRef.current = ensureCommercialPlacement;
@@ -426,6 +437,7 @@ function AfcProductionRoomViewerReady({
       lastClientY: number;
       pointerId: number;
       active: boolean;
+      translated: boolean;
       shiftActive: boolean;
       shiftBaseline: ShiftRotateBaseline | null;
       assist: PushAlignSession;
@@ -629,6 +641,9 @@ function AfcProductionRoomViewerReady({
       object.realizedTransform = worldTransformFromObject3D(object.placement);
       reportCanonical(object, object.realizedTransform);
       emitCommittedScene();
+      if (session.translated) {
+        onSelectedObjectTranslatedRef.current?.(session.objectId);
+      }
     };
 
     const recaptureBodyGrab = (
@@ -665,6 +680,10 @@ function AfcProductionRoomViewerReady({
       hit: { x: number; z: number },
       clientX: number,
     ) => {
+      const before = {
+        x: object.realizedTransform.position.x,
+        z: object.realizedTransform.position.z,
+      };
       const shift = shiftHeld;
       if (session.shiftActive && !shift) {
         recaptureBodyGrab(session, object, hit);
@@ -722,6 +741,12 @@ function AfcProductionRoomViewerReady({
       } else {
         applyResolvedDrag(object, session, planned.transform);
       }
+      if (bodyDragSampleTranslatedObject(planned.kind, before, {
+        x: object.realizedTransform.position.x,
+        z: object.realizedTransform.position.z,
+      })) {
+        session.translated = true;
+      }
       if (planned.releaseGrab) {
         recaptureBodyGrab(session, object, hit);
         session.lastDesiredX = object.realizedTransform.position.x;
@@ -743,6 +768,10 @@ function AfcProductionRoomViewerReady({
         applyMoveModeDrag(object, session, hit, clientX);
         return;
       }
+      const before = {
+        x: object.realizedTransform.position.x,
+        z: object.realizedTransform.position.z,
+      };
       const next = objectBodyDragWorldPosition({
         hitX: hit.x,
         hitZ: hit.z,
@@ -783,6 +812,12 @@ function AfcProductionRoomViewerReady({
         uniformScale: 1,
       };
       reportCanonical(object, object.realizedTransform);
+      if (bodyDragSampleTranslatedObject("translate", before, {
+        x: object.realizedTransform.position.x,
+        z: object.realizedTransform.position.z,
+      })) {
+        session.translated = true;
+      }
     };
 
     const pointerDownListener = (event: PointerEvent) => {
@@ -834,6 +869,7 @@ function AfcProductionRoomViewerReady({
         lastClientY: event.clientY,
         pointerId: event.pointerId,
         active: false,
+        translated: false,
         shiftActive: false,
         shiftBaseline: null,
         assist: idlePushAlignSession(),
@@ -905,12 +941,36 @@ function AfcProductionRoomViewerReady({
       endBodyDrag();
     };
 
+    let gizmoTranslateOrigin: { objectId: string; x: number; z: number } | null = null;
     const draggingChangedListener = (event: { value?: unknown }) => {
-      gizmoDragging = event.value === true;
-      if (gizmoDragging && bodyDrag) endBodyDrag();
+      const starting = event.value === true;
+      gizmoDragging = starting;
+      if (starting) {
+        if (bodyDrag) endBodyDrag();
+        const objectId = selectedObjectIdRef.current;
+        const object = objectId ? getLiveSceneObject(sceneObjects, objectId) : null;
+        gizmoTranslateOrigin = object && controls.getMode() === "translate"
+          ? {
+            objectId: object.objectId,
+            x: object.realizedTransform.position.x,
+            z: object.realizedTransform.position.z,
+          }
+          : null;
+      }
       emitPresentation();
       if (!gizmoDragging) {
         writeAttachedTransform();
+        const origin = gizmoTranslateOrigin;
+        gizmoTranslateOrigin = null;
+        if (origin && controls.getMode() === "translate") {
+          const object = getLiveSceneObject(sceneObjects, origin.objectId);
+          if (
+            object
+            && objectPositionTranslated(origin, object.realizedTransform.position)
+          ) {
+            onSelectedObjectTranslatedRef.current?.(origin.objectId);
+          }
+        }
         emitCommittedScene();
       }
     };
