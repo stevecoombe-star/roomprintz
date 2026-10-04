@@ -37,7 +37,6 @@ import {
 } from "./types";
 import {
   composeImportAxisScale,
-  isIdentityModelAxisScale,
   MODEL_AXIS_SCALE_IDENTITY,
   resolveMountedModelAxisScale,
   type ModelAxisScale,
@@ -60,6 +59,12 @@ export type LiveRuntimeSceneObject = {
   variantId?: string;
   userSizeMultiplier: number;
   authoredImportScale: number;
+  /**
+   * Floor-contact and XZ-center offset measured at authored scale 1.
+   * Effective scale multiplies this offset. Three.js applies translation
+   * after scale, so leaving it fixed slides the mesh off the footprint.
+   */
+  authoredImportOffset: THREE.Vector3;
   /** Variant physical scale. Identity leaves the loaded GLB at its native size. */
   modelAxisScale: ModelAxisScale;
 };
@@ -135,24 +140,24 @@ export function attachTargetForSelectedObject(
   return transformControlsAttachmentTarget(object);
 }
 
-function applyComposedImportScale(
+function applyEffectiveImportPose(
   importPlacement: THREE.Object3D,
   authoredImportScale: number,
   userSizeMultiplier: number,
   modelAxisScale: ModelAxisScale,
+  authoredImportOffset: THREE.Vector3,
 ): void {
-  if (
-    userSizeMultiplier === AFC_V2_USER_SIZE_DEFAULT
-    && isIdentityModelAxisScale(modelAxisScale)
-  ) {
-    return;
-  }
   const composed = composeImportAxisScale(
     authoredImportScale,
     userSizeMultiplier,
     modelAxisScale,
   );
   importPlacement.scale.set(composed.x, composed.y, composed.z);
+  importPlacement.position.set(
+    authoredImportOffset.x * composed.x,
+    authoredImportOffset.y * composed.y,
+    authoredImportOffset.z * composed.z,
+  );
 }
 
 export function mountLiveRuntimeSceneObject(input: Readonly<{
@@ -166,6 +171,7 @@ export function mountLiveRuntimeSceneObject(input: Readonly<{
   tagSceneObjectRoot(root.placement, input.descriptor.objectId);
   attachImportedObject(root.importPlacement, input.imported);
   const authoredImportScale = root.importPlacement.scale.x;
+  const authoredImportOffset = root.importPlacement.position.clone();
   const userSizeMultiplier = clampUserSizeMultiplier(
     input.descriptor.userSizeMultiplier ?? AFC_V2_USER_SIZE_DEFAULT,
   );
@@ -174,11 +180,12 @@ export function mountLiveRuntimeSceneObject(input: Readonly<{
     variantId: input.descriptor.variantId,
     explicit: input.modelAxisScale,
   });
-  applyComposedImportScale(
+  applyEffectiveImportPose(
     root.importPlacement,
     authoredImportScale,
     userSizeMultiplier,
     modelAxisScale,
+    authoredImportOffset,
   );
   const realized = cloneWorldTransform(
     realizeObjectWorldTransform(input.descriptor.transform, input.metricScale),
@@ -204,6 +211,7 @@ export function mountLiveRuntimeSceneObject(input: Readonly<{
     variantId: identity.variantId,
     userSizeMultiplier,
     authoredImportScale,
+    authoredImportOffset,
     modelAxisScale,
   };
 }
@@ -215,16 +223,13 @@ export function applyLiveUserSizeMultiplier(
   const next = clampUserSizeMultiplier(multiplier);
   object.userSizeMultiplier = next;
   const modelAxisScale = object.modelAxisScale ?? MODEL_AXIS_SCALE_IDENTITY;
-  if (isIdentityModelAxisScale(modelAxisScale)) {
-    object.importPlacement.scale.setScalar(object.authoredImportScale * next);
-  } else {
-    const composed = composeImportAxisScale(
-      object.authoredImportScale,
-      next,
-      modelAxisScale,
-    );
-    object.importPlacement.scale.set(composed.x, composed.y, composed.z);
-  }
+  applyEffectiveImportPose(
+    object.importPlacement,
+    object.authoredImportScale,
+    next,
+    modelAxisScale,
+    object.authoredImportOffset,
+  );
   object.localAabb = measurePlacementLocalAabb(
     object.placement,
     object.importPlacement,

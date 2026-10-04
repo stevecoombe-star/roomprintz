@@ -1,5 +1,7 @@
 import * as THREE from "three";
 
+import { isStageLightingVisual } from "@/lib/vibode-stage/stage-lighting";
+
 /**
  * Consumer furniture chrome. These values are screen-space, not scene data.
  * Width is CSS pixels; the pass scales it by the renderer pixel ratio.
@@ -251,6 +253,7 @@ export function createStageSelectionOutlinePass() {
     const replaced: { mesh: THREE.Mesh; material: THREE.Material | THREE.Material[] }[] = [];
     object.updateWorldMatrix(true, true);
     object.traverse((child) => {
+      if (isStageLightingVisual(child)) return;
       if (!(child instanceof THREE.Mesh) || !child.visible) return;
       replaced.push({ mesh: child, material: child.material });
       child.material = maskMaterial;

@@ -74,6 +74,10 @@ import {
 } from "@/lib/afc-v2-runtime/scene-runtime";
 import { realizeProductionWorld } from "@/lib/afc-v2-runtime/production-world";
 import { ROOM_SCALE_DEFAULT } from "@/lib/vibode-stage/room-scale";
+import {
+  createStageLightingRig,
+  syncStageContactShadow,
+} from "@/lib/vibode-stage/stage-lighting";
 import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
 import type {
   FurnitureAssetDefinition,
@@ -408,6 +412,8 @@ function AfcProductionRoomViewerReady({
     keyLight.position.set(3, 6, 5);
     scene.add(ambient);
     scene.add(keyLight);
+    const lighting = createStageLightingRig({ scene, renderer, mainLight: keyLight });
+    lighting.syncWorld(activeWorld);
 
     const objectLayer = new THREE.Group();
     scene.add(objectLayer);
@@ -1099,6 +1105,11 @@ function AfcProductionRoomViewerReady({
         live.importPlacement,
       );
       commitLiveSceneObjectTransform(live, realized, activeWorld.metricScale);
+      syncStageContactShadow(
+        live.placement,
+        live.localAabb,
+        lighting.contactResources,
+      );
       setLiveSceneObject(sceneObjects, live);
       objectLayer.add(live.placement);
       unmountedPersisted.delete(definition.objectId);
@@ -1490,6 +1501,11 @@ function AfcProductionRoomViewerReady({
         const object = getLiveSceneObject(sceneObjects, objectId);
         if (!object || !furnitureReady || !sceneReadyRef.current) return false;
         applyLiveUserSizeMultiplier(object, multiplier);
+        syncStageContactShadow(
+          object.placement,
+          object.localAabb,
+          lighting.contactResources,
+        );
         emitCommittedScene();
         emitPresentation();
         return true;
@@ -1577,6 +1593,7 @@ function AfcProductionRoomViewerReady({
       activeWorld = next;
       realizedWalls = next.collisionWalls;
       applyRealizedFrozenCamera(camera, next.camera);
+      lighting.syncWorld(next);
       for (const object of sceneObjects.values()) {
         const realized = realizeObjectWorldTransform(
           object.canonicalTransform,
@@ -1617,6 +1634,7 @@ function AfcProductionRoomViewerReady({
       renderer.domElement.removeEventListener("pointerup", pointerUpListener);
       renderer.domElement.removeEventListener("pointercancel", pointerCancelListener);
       renderer.domElement.removeEventListener("pointerleave", pointerLeaveListener);
+      lighting.dispose();
       outlinePass.dispose();
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
