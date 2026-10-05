@@ -74,6 +74,8 @@ import {
 } from "@/lib/afc-v2-runtime/scene-runtime";
 import { realizeProductionWorld } from "@/lib/afc-v2-runtime/production-world";
 import { ROOM_SCALE_DEFAULT } from "@/lib/vibode-stage/room-scale";
+import type { TrustedPathBaseline } from "@/lib/vibode-stage/trusted-path";
+import { createTrustedPathOverlay } from "@/lib/vibode-stage/trusted-path-overlay";
 import {
   createStageLightingRig,
   syncStageContactShadow,
@@ -150,6 +152,8 @@ type Props = Readonly<{
   ) => Promise<FurnitureAssetDefinition | null>;
   ensureCommercialPlacement?: EnsureStageCommercialPlacement;
   roomScaleMultiplier?: number;
+  trustedPath?: TrustedPathBaseline | null;
+  trustedPathVisible?: boolean;
 }>;
 
 type ReadyProps = Readonly<{
@@ -176,6 +180,8 @@ type ReadyProps = Readonly<{
   ) => Promise<FurnitureAssetDefinition | null>;
   ensureCommercialPlacement?: EnsureStageCommercialPlacement;
   roomScaleMultiplier?: number;
+  trustedPath?: TrustedPathBaseline | null;
+  trustedPathVisible?: boolean;
 }>;
 
 export function AfcProductionRoomViewer({
@@ -200,6 +206,8 @@ export function AfcProductionRoomViewer({
   refreshRuntimeAsset,
   ensureCommercialPlacement,
   roomScaleMultiplier = ROOM_SCALE_DEFAULT,
+  trustedPath = null,
+  trustedPathVisible = false,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -251,6 +259,8 @@ export function AfcProductionRoomViewer({
       refreshRuntimeAsset={refreshRuntimeAsset}
       ensureCommercialPlacement={ensureCommercialPlacement}
       roomScaleMultiplier={roomScaleMultiplier}
+      trustedPath={trustedPath}
+      trustedPathVisible={trustedPathVisible}
     />
   );
 }
@@ -277,6 +287,8 @@ function AfcProductionRoomViewerReady({
   refreshRuntimeAsset,
   ensureCommercialPlacement,
   roomScaleMultiplier = ROOM_SCALE_DEFAULT,
+  trustedPath = null,
+  trustedPathVisible = false,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -304,10 +316,19 @@ function AfcProductionRoomViewerReady({
 
   const world = useMemo(() => realizeProductionWorld(authority), [authority]);
   const roomScaleRef = useRef(roomScaleMultiplier);
+  const trustedPathRef = useRef(trustedPath);
+  const trustedPathVisibleRef = useRef(trustedPathVisible);
+  const pathLabelRef = useRef<HTMLDivElement | null>(null);
+  const syncTrustedPathRef = useRef<(() => void) | null>(null);
   const applyRoomScaleRef = useRef<((multiplier: number) => void) | null>(null);
   useLayoutEffect(() => {
     roomScaleRef.current = roomScaleMultiplier;
   }, [roomScaleMultiplier]);
+  useLayoutEffect(() => {
+    trustedPathRef.current = trustedPath;
+    trustedPathVisibleRef.current = trustedPathVisible;
+    syncTrustedPathRef.current?.();
+  }, [trustedPath, trustedPathVisible]);
   const furniture = useMemo(
     () => createPi4aFurnitureObjectFromAuthority(roomId, authority),
     [authority, roomId],
@@ -1556,6 +1577,7 @@ function AfcProductionRoomViewerReady({
       if (disposed) return;
       animationFrame = window.requestAnimationFrame(animate);
       applyRealizedFrozenCamera(camera, activeWorld.camera);
+      syncTrustedPath();
       if (controls.getMode() === "scale") controls.setMode("translate");
       objectLayer.visible = sceneReadyRef.current;
       const skipObjectId = bodyDrag?.active
@@ -1585,7 +1607,39 @@ function AfcProductionRoomViewerReady({
       }
       emitPresentation();
     };
-    animate();
+
+    const trustedPathOverlay = createTrustedPathOverlay();
+    scene.add(trustedPathOverlay.object);
+    const syncTrustedPath = () => {
+      const presentation = trustedPathOverlay.sync({
+        visible: trustedPathVisibleRef.current,
+        baseline: trustedPathRef.current,
+        roomScaleMultiplier: activeWorld.roomScaleMultiplier,
+        camera,
+        metricScale: activeWorld.metricScale,
+        intrinsic: {
+          width: authority.original.decodedWidth,
+          height: authority.original.decodedHeight,
+        },
+        frame: {
+          width: authority.frozenCamera.frame.width,
+          height: authority.frozenCamera.frame.height,
+        },
+        viewportWidth: renderer.domElement.clientWidth,
+        viewportHeight: renderer.domElement.clientHeight,
+      });
+      const label = pathLabelRef.current;
+      if (!label) return;
+      if (!presentation.shown || !presentation.label) {
+        label.style.display = "none";
+        return;
+      }
+      label.style.display = "block";
+      label.textContent = presentation.label;
+      label.style.left = `${presentation.screenX}px`;
+      label.style.top = `${presentation.screenY}px`;
+    };
+    syncTrustedPathRef.current = syncTrustedPath;
 
     const applyRoomScale = (multiplier: number) => {
       if (disposed) return;
@@ -1608,12 +1662,17 @@ function AfcProductionRoomViewerReady({
           uniformScale: 1,
         };
       }
+      syncTrustedPath();
     };
     applyRoomScaleRef.current = applyRoomScale;
+    animate();
 
     return () => {
       disposed = true;
       applyRoomScaleRef.current = null;
+      syncTrustedPathRef.current = null;
+      scene.remove(trustedPathOverlay.object);
+      trustedPathOverlay.dispose();
       applyGeneration += 1;
       applyLiveSceneRef.current = null;
       onLiveHostChangeRef.current?.(null);
@@ -1709,6 +1768,12 @@ function AfcProductionRoomViewerReady({
               image.dataset.presentationFallback = "applied";
               image.src = fallback;
             }}
+          />
+          <div
+            ref={pathLabelRef}
+            data-trusted-path-label="true"
+            style={{ display: "none" }}
+            className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-[140%] whitespace-pre text-center leading-tight rounded bg-neutral-950/80 px-1.5 py-0.5 text-[11px] tabular-nums text-cyan-100"
           />
           <div
             ref={mountRef}

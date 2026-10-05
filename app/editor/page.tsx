@@ -11955,6 +11955,7 @@ function EditorPageInner() {
       roomId={editorRoomId}
       transformMode={runtimeTransformMode}
       onTransformModeChange={setRuntimeTransformMode}
+      trustedPath={afcRuntime.trustedPath}
     >
     <div className="fixed inset-0 z-0 flex min-h-0 flex-col overflow-hidden bg-neutral-950 text-neutral-100">
       {/* Top bar */}

@@ -11,6 +11,7 @@ import {
   roomScaleButtonLabel,
   stepRoomScaleMultiplier,
 } from "@/lib/vibode-stage/room-scale";
+import { TRUSTED_PATH_UNAVAILABLE_TITLE } from "@/lib/vibode-stage/trusted-path";
 
 const FOCUS =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-400";
@@ -89,13 +90,38 @@ export function RoomScaleControl() {
               +
             </button>
           </div>
-          <button
-            type="button"
-            onClick={() => stage.setRoomScaleMultiplier(1)}
-            className={`mt-2 text-[11px] text-neutral-400 hover:text-neutral-200 ${FOCUS}`}
-          >
-            Reset
-          </button>
+          <div className="mt-2 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => stage.setRoomScaleMultiplier(1)}
+              className={`text-[11px] text-neutral-400 hover:text-neutral-200 ${FOCUS}`}
+            >
+              Reset
+            </button>
+            <span title={stage.trustedPath ? undefined : TRUSTED_PATH_UNAVAILABLE_TITLE}>
+              <button
+                type="button"
+                aria-pressed={stage.trustedPathVisible}
+                aria-label="Path"
+                disabled={!stage.trustedPath}
+                title={stage.trustedPath
+                  ? stage.trustedPathVisible
+                    ? "Hide trusted path"
+                    : "Show trusted path"
+                  : TRUSTED_PATH_UNAVAILABLE_TITLE}
+                onClick={stage.toggleTrustedPath}
+                className={`rounded-md border px-2 py-0.5 text-[11px] ${FOCUS} ${
+                  !stage.trustedPath
+                    ? "border-neutral-800 bg-neutral-950 text-neutral-600"
+                    : stage.trustedPathVisible
+                      ? "border-neutral-400 bg-neutral-800 text-neutral-50"
+                      : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+                }`}
+              >
+                Path
+              </button>
+            </span>
+          </div>
         </div>
       ) : null}
     </div>

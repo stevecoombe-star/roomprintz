@@ -71,6 +71,11 @@ import {
 } from "@/lib/vibode-stage/selection-transform-session";
 import { STAGE_DEFAULT_CATALOG_MODE } from "@/lib/vibode-stage/types";
 import { useRoomScale } from "@/lib/vibode-stage/use-room-scale";
+import {
+  initialTrustedPathVisible,
+  nextTrustedPathVisible,
+  type TrustedPathBaseline,
+} from "@/lib/vibode-stage/trusted-path";
 
 export type StageToolbarSlider = null | "rotate" | "size";
 
@@ -131,6 +136,9 @@ type StageEditorContextValue = Readonly<{
   noteSelectedObjectTranslated: (objectId: string) => void;
   roomScaleMultiplier: number;
   setRoomScaleMultiplier: (value: number) => void;
+  trustedPath: TrustedPathBaseline | null;
+  trustedPathVisible: boolean;
+  toggleTrustedPath: () => void;
 }>;
 
 const EMPTY_SCENE: BoundScene = {
@@ -154,12 +162,14 @@ export function StageEditorProvider({
   roomId,
   transformMode,
   onTransformModeChange,
+  trustedPath = null,
   children,
 }: {
   active: boolean;
   roomId: string | null;
   transformMode: RuntimeTransformMode;
   onTransformModeChange: (mode: RuntimeTransformMode) => void;
+  trustedPath?: TrustedPathBaseline | null;
   children: ReactNode;
 }) {
   const session = useAfcSceneObjectCrudSession();
@@ -173,6 +183,7 @@ export function StageEditorProvider({
   const [furnitureBaseline, setFurnitureBaseline] =
     useState<StageFurnitureBaseline>("unresolved");
   const [trackedRoomId, setTrackedRoomId] = useState(roomId);
+  const [trustedPathVisible, setTrustedPathVisible] = useState(initialTrustedPathVisible);
   const catalogAppliedRoomRef = useRef<string | null>(null);
   if (roomId !== trackedRoomId) {
     setTrackedRoomId(roomId);
@@ -180,6 +191,7 @@ export function StageEditorProvider({
     setCatalogSettled(false);
     setCatalogMotion("instant");
     catalogAppliedRoomRef.current = null;
+    setTrustedPathVisible(initialTrustedPathVisible());
   }
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [catalogMode, setCatalogMode] = useState<StageCatalogMode>(STAGE_DEFAULT_CATALOG_MODE);
@@ -199,6 +211,9 @@ export function StageEditorProvider({
   const [boundScene, setBoundScene] = useState<BoundScene>(EMPTY_SCENE);
   const [selection, setSelection] = useState<SceneSelectionPresentation | null>(null);
   const [toolbarSlider, setToolbarSlider] = useState<StageToolbarSlider>(null);
+  const toggleTrustedPath = useCallback(() => {
+    setTrustedPathVisible((current) => nextTrustedPathVisible(current, trustedPath != null));
+  }, [trustedPath]);
   useLayoutEffect(() => {
     const previousObjectId = selectionSessionRef.current;
     if (previousObjectId === selectedObjectId) return;
@@ -548,6 +563,9 @@ export function StageEditorProvider({
     noteSelectedObjectTranslated,
     roomScaleMultiplier: roomScale.roomScaleMultiplier,
     setRoomScaleMultiplier: roomScale.setRoomScaleMultiplier,
+    trustedPath,
+    trustedPathVisible,
+    toggleTrustedPath,
   }), [
     active,
     addedProductId,
@@ -594,6 +612,9 @@ export function StageEditorProvider({
     noteSelectedObjectTranslated,
     roomScale.roomScaleMultiplier,
     roomScale.setRoomScaleMultiplier,
+    trustedPath,
+    trustedPathVisible,
+    toggleTrustedPath,
   ]);
 
   return (

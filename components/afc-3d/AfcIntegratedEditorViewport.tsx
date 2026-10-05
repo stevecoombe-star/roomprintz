@@ -241,6 +241,8 @@ export function AfcIntegratedEditorViewport({
         onSelectionPresentationChange={setSelection}
         onSelectedObjectTranslated={stage?.noteSelectedObjectTranslated}
         roomScaleMultiplier={stage?.roomScaleMultiplier}
+        trustedPath={stage?.trustedPath ?? null}
+        trustedPathVisible={stage?.trustedPathVisible === true}
       />
       <StageFurnitureToolbar />
       {!persistedScene.sceneReady ? (
