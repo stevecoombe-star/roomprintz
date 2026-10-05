@@ -70,6 +70,10 @@ import {
   VIBODE_PRODUCTION_AMBIENT_INTENSITY,
   VIBODE_PRODUCTION_DIRECTIONAL_INTENSITY,
   VIBODE_PRODUCTION_DIRECTIONAL_POSITION,
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_LIFT_M,
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_OPACITY,
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_SOFTNESS,
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_TECHNIQUE,
 } from "./still-renderer";
 
 type RoomRecord = Readonly<{
@@ -396,6 +400,12 @@ export function thumbnailSceneContentToken(input: Readonly<{
   const camera = input.authority.frozenCamera;
   return thumbnailContentToken({
     renderContract: VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION,
+    contactShadows: {
+      technique: VIBODE_THUMBNAIL_CONTACT_SHADOW_TECHNIQUE,
+      opacity: VIBODE_THUMBNAIL_CONTACT_SHADOW_OPACITY,
+      softness: VIBODE_THUMBNAIL_CONTACT_SHADOW_SOFTNESS,
+      liftM: VIBODE_THUMBNAIL_CONTACT_SHADOW_LIFT_M,
+    },
     roomId: input.scene.roomId,
     versionId: input.scene.versionId,
     afcGenerationId: input.authority.generationId,

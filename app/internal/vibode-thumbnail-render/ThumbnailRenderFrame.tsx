@@ -35,6 +35,11 @@ import {
   type VibodeThumbnailRenderReadiness,
 } from "@/lib/vibode-thumbnail-render/contract";
 import {
+  createStageContactResources,
+  syncStageContactShadow,
+  type StageContactResources,
+} from "@/lib/vibode-stage/stage-lighting";
+import {
   VIBODE_PRODUCTION_AMBIENT_INTENSITY,
   VIBODE_PRODUCTION_DIRECTIONAL_INTENSITY,
   VIBODE_PRODUCTION_DIRECTIONAL_POSITION,
@@ -136,6 +141,7 @@ export function ThumbnailRenderFrame() {
     };
     let cancelled = false;
     let renderer: THREE.WebGLRenderer | null = null;
+    let contactResources: StageContactResources | null = null;
     const fail = (code: VibodeThumbnailRenderErrorCode, message: string) => {
       if (cancelled) return;
       publish({
@@ -197,6 +203,7 @@ export function ThumbnailRenderFrame() {
         fail("camera_authority_missing", built.reason);
         return;
       }
+      if (cancelled) return;
       renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
       renderer.setPixelRatio(VIBODE_THUMBNAIL_RENDERER_DPR);
       renderer.setClearColor(0x000000, 0);
@@ -229,6 +236,8 @@ export function ThumbnailRenderFrame() {
       keyLight.castShadow = false;
       scene.add(ambient);
       scene.add(keyLight);
+      const resources = createStageContactResources();
+      contactResources = resources;
       const objectLayer = new THREE.Group();
       scene.add(objectLayer);
       const resolver = createFurnitureAssetResolver(dynamicOverlay(payload));
@@ -269,9 +278,11 @@ export function ThumbnailRenderFrame() {
         });
         live.localAabb = measurePlacementLocalAabb(live.placement, live.importPlacement);
         commitLiveSceneObjectTransform(live, realized, payload.camera.metricScale);
+        syncStageContactShadow(live.placement, live.localAabb, resources);
         objectLayer.add(live.placement);
       }
       timing.sceneConstructionMs = Math.round(performance.now() - sceneStarted);
+      if (cancelled) return;
       const renderStarted = performance.now();
       renderer.render(scene, built.camera);
       timing.firstRenderMs = Math.round(performance.now() - renderStarted);
@@ -292,6 +303,9 @@ export function ThumbnailRenderFrame() {
     void run().catch(() => fail("render_page_error", "Render page failed."));
     return () => {
       cancelled = true;
+      contactResources?.geometry.dispose();
+      contactResources?.material.dispose();
+      contactResources?.texture.dispose();
       renderer?.dispose();
       cache.dispose();
     };

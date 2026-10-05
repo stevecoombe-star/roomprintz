@@ -24,6 +24,12 @@ import type { DynamicRuntimeLookupRow } from "@/lib/vibode-stage/partner-runtime
 import { resetThumbnailRenderAccessForTests } from "./access.server";
 import { VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION } from "./contract";
 import {
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_LIFT_M,
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_OPACITY,
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_SOFTNESS,
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_TECHNIQUE,
+} from "./still-renderer";
+import {
   buildVibodeThumbnailRenderPayload,
   inspectVibodeThumbnailContent,
   readVibodeThumbnailRenderAccess,
@@ -442,6 +448,12 @@ test("content token uses the render-contract salt and canonical numbers", async 
   if (!built.ok) return;
   const identity = {
     renderContract: VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION,
+    contactShadows: {
+      technique: VIBODE_THUMBNAIL_CONTACT_SHADOW_TECHNIQUE,
+      opacity: VIBODE_THUMBNAIL_CONTACT_SHADOW_OPACITY,
+      softness: VIBODE_THUMBNAIL_CONTACT_SHADOW_SOFTNESS,
+      liftM: VIBODE_THUMBNAIL_CONTACT_SHADOW_LIFT_M,
+    },
     roomId: built.payload.room.roomId,
     versionId: built.payload.room.versionId,
     afcGenerationId: built.payload.room.afcGenerationId,
@@ -466,6 +478,16 @@ test("content token uses the render-contract salt and canonical numbers", async 
   assert.notEqual(
     built.payload.job.contentToken,
     thumbnailContentToken({ ...identity, renderContract: "vibode-thumbnail-render/v2" }),
+  );
+  const withoutContactShadows: Record<string, unknown> = { ...identity };
+  delete withoutContactShadows.contactShadows;
+  assert.notEqual(built.payload.job.contentToken, thumbnailContentToken(withoutContactShadows));
+  assert.notEqual(
+    built.payload.job.contentToken,
+    thumbnailContentToken({
+      ...identity,
+      contactShadows: { ...identity.contactShadows, opacity: identity.contactShadows.opacity + 0.1 },
+    }),
   );
   assert.equal(
     thumbnailContentToken({ b: 1, a: { z: 0, y: -0 } }),
@@ -629,6 +651,12 @@ test("thumbnail payload uses variant axis scale and effective room scale", async
   assert.notDeepEqual(built.payload.objects[0]?.modelAxisScale, expected.importScale);
   const identity = {
     renderContract: VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION,
+    contactShadows: {
+      technique: VIBODE_THUMBNAIL_CONTACT_SHADOW_TECHNIQUE,
+      opacity: VIBODE_THUMBNAIL_CONTACT_SHADOW_OPACITY,
+      softness: VIBODE_THUMBNAIL_CONTACT_SHADOW_SOFTNESS,
+      liftM: VIBODE_THUMBNAIL_CONTACT_SHADOW_LIFT_M,
+    },
     roomId: built.payload.room.roomId,
     versionId: built.payload.room.versionId,
     afcGenerationId: built.payload.room.afcGenerationId,

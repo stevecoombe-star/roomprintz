@@ -22,6 +22,21 @@ export const VIBODE_PRODUCTION_DIRECTIONAL_POSITION = Object.freeze({
   z: 5,
 });
 
+/**
+ * Content-token salt for the STAGE contact card.
+ *
+ * Published stills are content-addressed. Grounding is not in the scene
+ * payload, so these fields must change with the card or a completed job
+ * keeps the shadowless image. Values match STAGE_LIGHTING_V1.
+ */
+export const VIBODE_THUMBNAIL_CONTACT_SHADOW_TECHNIQUE = "stage-contact-card" as const;
+
+export const VIBODE_THUMBNAIL_CONTACT_SHADOW_OPACITY = 0.34;
+
+export const VIBODE_THUMBNAIL_CONTACT_SHADOW_SOFTNESS = 0.42;
+
+export const VIBODE_THUMBNAIL_CONTACT_SHADOW_LIFT_M = 0.008;
+
 export const VIBODE_THUMBNAIL_FRAME_SELECTOR = "[data-vibode-thumbnail-frame]";
 
 export const VIBODE_THUMBNAIL_FRAME_ATTRIBUTE = "data-vibode-thumbnail-frame";
