@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { realizeProductionWorld } from "@/lib/afc-v2-runtime/production-world";
 import {
   createPi3aAuthority,
   PI3A_GENERATION_A,
@@ -16,6 +17,7 @@ import {
   AFC_V2_USER_SIZE_DEFAULT,
 } from "@/lib/afc-v2-runtime/types";
 import { furnitureAssetDefinition } from "@/lib/afc-v2-runtime/furniture-assets";
+import { authoritativeFurnitureScale } from "@/lib/vibode-stage/furniture-model-scale";
 import { PARTNER_INTAKE_ASSET_SOURCE } from "@/lib/vibode-stage/partner-runtime-asset-id";
 import type { DynamicRuntimeLookupRow } from "@/lib/vibode-stage/partner-runtime-assets";
 
@@ -23,6 +25,7 @@ import { resetThumbnailRenderAccessForTests } from "./access.server";
 import { VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION } from "./contract";
 import {
   buildVibodeThumbnailRenderPayload,
+  inspectVibodeThumbnailContent,
   readVibodeThumbnailRenderAccess,
   mintVibodeThumbnailRenderAccess,
   thumbnailContentToken,
@@ -511,4 +514,294 @@ test("a signed history URL contributes its object path, not its token", async ()
   });
   assert.equal(first, second);
   assert.notEqual(first, otherObject);
+});
+
+const SOFA_ASSET_ID = AFC_V2_RUNTIME_FURNITURE_ASSET_ID;
+const SCALE_VARIANT_ID = "variant-scale";
+
+function scaleAuthority(metricScale: number) {
+  return createPi3aAuthority({
+    generationId: PI3A_GENERATION_A,
+    metricScale,
+  });
+}
+
+test("identity variant dimensions and room scale 1 keep the content token", async () => {
+  const baseline = await contentTokenFor({
+    objects: sceneWith([sceneObject({ variantId: SCALE_VARIANT_ID })]),
+  });
+  const explicit = await contentTokenFor({
+    objects: sceneWith([sceneObject({ variantId: SCALE_VARIANT_ID })]),
+    async loadRoomScaleMultiplier() {
+      return { ok: true, roomScaleMultiplier: 1 };
+    },
+    async lookupStageModelDimensions() {
+      return {
+        ok: true,
+        assets: [{
+          assetId: SOFA_ASSET_ID,
+          authoredWidthM: 2.2,
+          authoredHeightM: 0.8,
+          authoredDepthM: 0.9,
+        }],
+        variants: [{
+          variantId: SCALE_VARIANT_ID,
+          assetId: SOFA_ASSET_ID,
+          modelWidthM: 2.2,
+          modelHeightM: 0.8,
+          modelDepthM: 0.9,
+          modelSizingMode: "uniform",
+        }],
+      };
+    },
+  });
+  assert.equal(explicit, baseline);
+});
+
+test("thumbnail payload uses variant axis scale and effective room scale", async () => {
+  const authority = scaleAuthority(0.5);
+  const built = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    objects: sceneWith([sceneObject({
+      variantId: SCALE_VARIANT_ID,
+      userSizeMultiplier: 1.25,
+    })]),
+    async loadGeneration() {
+      return {
+        id: PI3A_GENERATION_A,
+        roomId: PI3A_ROOM_ID,
+        userId: USER_ID,
+        status: "ready",
+        productionAuthority: authority,
+      };
+    },
+    async loadRoomScaleMultiplier() {
+      return { ok: true, roomScaleMultiplier: 1.5 };
+    },
+    async lookupStageModelDimensions() {
+      return {
+        ok: true,
+        assets: [{
+          assetId: SOFA_ASSET_ID,
+          authoredWidthM: 1,
+          authoredHeightM: 1,
+          authoredDepthM: 1,
+        }],
+        variants: [{
+          variantId: SCALE_VARIANT_ID,
+          assetId: SOFA_ASSET_ID,
+          modelWidthM: 2,
+          modelHeightM: 0.5,
+          modelDepthM: 1.5,
+          modelSizingMode: "exact",
+        }],
+      };
+    },
+  }));
+  assert.equal(built.ok, true);
+  if (!built.ok) return;
+  const expected = authoritativeFurnitureScale({
+    assetId: SOFA_ASSET_ID,
+    asset: { authoredWidthM: 1, authoredHeightM: 1, authoredDepthM: 1 },
+    variant: {
+      assetId: SOFA_ASSET_ID,
+      modelWidthM: 2,
+      modelHeightM: 0.5,
+      modelDepthM: 1.5,
+      modelSizingMode: "exact",
+    },
+    userSizeMultiplier: 1.25,
+    certifiedMetricScale: 0.5,
+    roomScaleMultiplier: 1.5,
+  });
+  const world = realizeProductionWorld(authority, 1.5);
+  assert.equal(built.payload.camera.metricScale, world.metricScale);
+  assert.equal(built.payload.camera.metricScale, expected.metricScale);
+  assert.equal(built.payload.camera.metricScale, 0.75);
+  assert.notEqual(built.payload.camera.metricScale, authority.metric.metricScale);
+  assert.equal(built.payload.camera.position.z, authority.frozenCamera.pose.position.z);
+  assert.equal(built.payload.objects[0]?.userSizeMultiplier, 1.25);
+  assert.equal(built.payload.objects[0]?.position.x, 1);
+  assert.deepEqual(built.payload.objects[0]?.modelAxisScale, { x: 2, y: 0.5, z: 1.5 });
+  assert.deepEqual(built.payload.objects[0]?.modelAxisScale, expected.modelAxisScale);
+  assert.notDeepEqual(built.payload.objects[0]?.modelAxisScale, expected.importScale);
+  const identity = {
+    renderContract: VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION,
+    roomId: built.payload.room.roomId,
+    versionId: built.payload.room.versionId,
+    afcGenerationId: built.payload.room.afcGenerationId,
+    frame: built.payload.frame,
+    camera: {
+      verticalFovDeg: built.payload.camera.verticalFovDeg,
+      position: built.payload.camera.position,
+      lookAt: built.payload.camera.lookAt,
+      up: built.payload.camera.up,
+      metricScale: built.payload.camera.metricScale,
+    },
+    background: { bucket: "room-images", objectPath: "rooms/bg.jpg" },
+    objects: [{
+      objectId: built.payload.objects[0]?.objectId,
+      assetId: built.payload.objects[0]?.assetId,
+      position: built.payload.objects[0]?.position,
+      rotationDeg: built.payload.objects[0]?.rotationDeg,
+      userSizeMultiplier: 1.25,
+      modelAxisScale: { x: 2, y: 0.5, z: 1.5 },
+    }],
+  };
+  assert.equal(built.payload.job.contentToken, thumbnailContentToken(identity));
+});
+
+test("a mismatched variant asset does not apply that variant's dimensions", async () => {
+  const matched = await contentTokenFor({
+    objects: sceneWith([sceneObject()]),
+  });
+  const mismatched = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    objects: sceneWith([sceneObject({ variantId: "variant-other-asset" })]),
+    async lookupStageModelDimensions() {
+      return {
+        ok: true,
+        assets: [{
+          assetId: SOFA_ASSET_ID,
+          authoredWidthM: 1,
+          authoredHeightM: 1,
+          authoredDepthM: 1,
+        }],
+        variants: [{
+          variantId: "variant-other-asset",
+          assetId: "asset-someone-else",
+          modelWidthM: 2,
+          modelHeightM: 2,
+          modelDepthM: 2,
+          modelSizingMode: "uniform",
+        }],
+      };
+    },
+  }));
+  assert.equal(mismatched.ok, true);
+  if (!mismatched.ok) return;
+  assert.equal(mismatched.payload.objects[0]?.modelAxisScale, undefined);
+  assert.equal(mismatched.payload.job.contentToken, matched);
+});
+
+test("room scale alone changes metric scale and leaves canonical camera pose", async () => {
+  const authority = scaleAuthority(1);
+  const baseline = await contentTokenFor();
+  const built = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    async loadRoomScaleMultiplier() {
+      return { ok: true, roomScaleMultiplier: 1.25 };
+    },
+  }));
+  assert.equal(built.ok, true);
+  if (!built.ok) return;
+  assert.equal(built.payload.camera.metricScale, realizeProductionWorld(authority, 1.25).metricScale);
+  assert.equal(built.payload.camera.metricScale, 1.25);
+  assert.equal(built.payload.camera.position.z, 4);
+  assert.equal(built.payload.objects[0]?.modelAxisScale, undefined);
+  assert.notEqual(built.payload.job.contentToken, baseline);
+});
+
+test("inspect and build agree when variant scale and room scale change the picture", async () => {
+  const authority = scaleAuthority(0.5);
+  const shared = source({
+    objects: sceneWith([sceneObject({
+      variantId: SCALE_VARIANT_ID,
+      userSizeMultiplier: 1.25,
+    })]),
+    async loadSceneUpdatedAt() {
+      return "2026-10-05T00:00:00.000Z";
+    },
+    async loadGeneration() {
+      return {
+        id: PI3A_GENERATION_A,
+        roomId: PI3A_ROOM_ID,
+        userId: USER_ID,
+        status: "ready",
+        productionAuthority: authority,
+      };
+    },
+    async loadRoomScaleMultiplier() {
+      return { ok: true, roomScaleMultiplier: 1.5 };
+    },
+    async lookupStageModelDimensions() {
+      return {
+        ok: true,
+        assets: [{
+          assetId: SOFA_ASSET_ID,
+          authoredWidthM: 1,
+          authoredHeightM: 1,
+          authoredDepthM: 1,
+        }],
+        variants: [{
+          variantId: SCALE_VARIANT_ID,
+          assetId: SOFA_ASSET_ID,
+          modelWidthM: 2,
+          modelHeightM: 0.5,
+          modelDepthM: 1.5,
+          modelSizingMode: "exact",
+        }],
+      };
+    },
+  });
+  const built = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, shared);
+  const inspected = await inspectVibodeThumbnailContent({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, shared);
+  assert.equal(built.ok, true);
+  assert.equal(inspected.ok, true);
+  if (!built.ok || !inspected.ok || inspected.empty) return;
+  assert.equal(inspected.contentToken, built.payload.job.contentToken);
+});
+
+test("dimension and room-scale lookup failures do not publish an identity-scale thumbnail", async () => {
+  const missingRoomScale = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    async loadRoomScaleMultiplier() {
+      return { ok: false };
+    },
+  }));
+  assert.equal(missingRoomScale.ok, false);
+  if (missingRoomScale.ok) return;
+  assert.equal(missingRoomScale.code, "render_page_error");
+  assert.equal(missingRoomScale.retryable, true);
+
+  const missingDimensions = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    objects: sceneWith([sceneObject({ variantId: SCALE_VARIANT_ID })]),
+    async lookupStageModelDimensions() {
+      return { ok: false };
+    },
+  }));
+  assert.equal(missingDimensions.ok, false);
+  if (missingDimensions.ok) return;
+  assert.equal(missingDimensions.code, "render_page_error");
+  assert.equal(missingDimensions.retryable, true);
+
+  let dimensionCalls = 0;
+  const noVariant = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    async lookupStageModelDimensions() {
+      dimensionCalls += 1;
+      return { ok: false };
+    },
+  }));
+  assert.equal(noVariant.ok, true);
+  assert.equal(dimensionCalls, 0);
 });

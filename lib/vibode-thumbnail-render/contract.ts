@@ -6,6 +6,11 @@
  */
 
 import { furnitureAssetDefinition } from "@/lib/afc-v2-runtime/furniture-assets";
+import {
+  isModelAxisScale,
+  MODEL_AXIS_SCALE_IDENTITY,
+  type ModelAxisScale,
+} from "@/lib/afc-v2-runtime/model-axis-scale";
 import { PI4C_MAX_SCENE_OBJECTS } from "@/lib/afc-v2-runtime/persisted-scene";
 import {
   AFC_V2_RUNTIME_CAMERA_FAR,
@@ -108,6 +113,12 @@ export type VibodeThumbnailRenderObject = Readonly<{
   position: VibodeThumbnailVec3;
   rotationDeg: VibodeThumbnailVec3;
   userSizeMultiplier: number;
+  /**
+   * Variant axis scale from authoritativeFurnitureScale.
+   * Omitted when it is identity. userSizeMultiplier is applied later, at mount.
+   * Room scale is camera.metricScale, not this vector.
+   */
+  modelAxisScale?: VibodeThumbnailVec3;
 }>;
 
 export type VibodeThumbnailRenderFailure = Readonly<{
@@ -462,6 +473,17 @@ function readObjects(
     if ("transform" in item || "uniformScale" in item || "glbSignedUrl" in item) {
       return { ok: false, reason: "object transform shape is not canonical." };
     }
+    let modelAxisScale: ModelAxisScale | undefined;
+    if ("modelAxisScale" in item) {
+      if (!isModelAxisScale(item.modelAxisScale)) {
+        return { ok: false, reason: "modelAxisScale must be a positive finite scale." };
+      }
+      modelAxisScale = {
+        x: item.modelAxisScale.x,
+        y: item.modelAxisScale.y,
+        z: item.modelAxisScale.z,
+      };
+    }
     seen.add(objectId);
     objects.push({
       objectId,
@@ -470,6 +492,7 @@ function readObjects(
       position,
       rotationDeg,
       userSizeMultiplier: item.userSizeMultiplier,
+      ...(modelAxisScale ? { modelAxisScale } : {}),
     });
   }
   return { ok: true, objects };
@@ -498,6 +521,19 @@ function readLighting(value: unknown):
       directionalPosition: { ...VIBODE_PRODUCTION_DIRECTIONAL_POSITION },
     },
   };
+}
+
+export function thumbnailObjectModelAxisScale(
+  object: Pick<VibodeThumbnailRenderObject, "modelAxisScale">,
+): ModelAxisScale {
+  if (object.modelAxisScale && isModelAxisScale(object.modelAxisScale)) {
+    return {
+      x: object.modelAxisScale.x,
+      y: object.modelAxisScale.y,
+      z: object.modelAxisScale.z,
+    };
+  }
+  return MODEL_AXIS_SCALE_IDENTITY;
 }
 
 export function sceneDefinitionFromThumbnailObject(

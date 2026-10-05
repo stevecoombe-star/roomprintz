@@ -126,6 +126,36 @@ test("more than 32 objects are rejected", () => {
   assert.equal(result.ok, false);
 });
 
+test("non-uniform model axis scale is accepted and invalid scale is rejected", () => {
+  const accepted = validateVibodeThumbnailRenderPayload(payload((draft) => ({
+    ...draft,
+    objects: [{
+      ...draft.objects[0],
+      modelAxisScale: { x: 1.5, y: 0.5, z: 2 },
+    }],
+  })), POLICY);
+  assert.equal(accepted.ok, true);
+  if (!accepted.ok) return;
+  assert.deepEqual(accepted.payload.objects[0]?.modelAxisScale, { x: 1.5, y: 0.5, z: 2 });
+  const rejected = validateVibodeThumbnailRenderPayload(payload((draft) => ({
+    ...draft,
+    objects: [{
+      ...draft.objects[0],
+      modelAxisScale: { x: 0, y: 1, z: 1 },
+    }],
+  })), POLICY);
+  assert.equal(rejected.ok, false);
+  const draft = payload();
+  const missing = validateVibodeThumbnailRenderPayload({
+    ...draft,
+    objects: [{
+      ...draft.objects[0],
+      modelAxisScale: { x: 1, y: 1 },
+    }],
+  }, POLICY);
+  assert.equal(missing.ok, false);
+});
+
 test("invalid transforms and user size are rejected", () => {
   const transform = validateVibodeThumbnailRenderPayload(payload((draft) => ({
     ...draft,

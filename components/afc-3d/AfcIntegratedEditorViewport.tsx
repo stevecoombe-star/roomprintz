@@ -18,16 +18,11 @@ import { StageFurnitureToolbar } from "@/components/stage/StageFurnitureToolbar"
 import { useOptionalStageEditor } from "@/components/stage/StageEditorContext";
 import { useStageTransformGizmos } from "@/lib/vibode-stage/use-stage-transform-gizmos";
 import {
-  MODEL_AXIS_SCALE_IDENTITY,
   registerModelAxisScaleLookup,
   replaceScenePlacementFootprints,
   type ModelAxisScale,
 } from "@/lib/afc-v2-runtime/model-axis-scale";
-import {
-  deriveModelAxisScale,
-  nativeModelDimensions,
-  resolveEffectiveModelDimensions,
-} from "@/lib/vibode-stage/model-dimensions";
+import { stageModelAxisScale } from "@/lib/vibode-stage/furniture-model-scale";
 import type { StageCatalogSnapshot, StageVariant } from "@/lib/vibode-stage/types";
 
 type Props = Readonly<{
@@ -52,13 +47,12 @@ function stagePlacementScale(input: Readonly<{
   const variant = input.variantId
     ? [...input.extraVariants ?? [], ...input.catalog.variants].find((item) => item.variantId === input.variantId) ?? null
     : null;
-  if (variant?.assetId && variant.assetId !== input.assetId) return MODEL_AXIS_SCALE_IDENTITY;
   const asset = input.catalog.assets.find((item) => item.assetId === input.assetId) ?? null;
-  const derived = deriveModelAxisScale({
-    native: nativeModelDimensions(asset),
-    effective: resolveEffectiveModelDimensions(variant, asset),
+  return stageModelAxisScale({
+    assetId: input.assetId,
+    variant,
+    asset,
   });
-  return derived.ok ? derived.scale : MODEL_AXIS_SCALE_IDENTITY;
 }
 
 function ViewportMessage({

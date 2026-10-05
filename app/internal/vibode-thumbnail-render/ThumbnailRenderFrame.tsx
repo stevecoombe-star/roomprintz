@@ -28,6 +28,7 @@ import {
   isVibodeThumbnailRenderErrorCode,
   sceneDefinitionFromThumbnailObject,
   thumbnailAssetUrlPolicyFromEnv,
+  thumbnailObjectModelAxisScale,
   validateVibodeThumbnailRenderPayload,
   type VibodeThumbnailRenderErrorCode,
   type VibodeThumbnailRenderPayload,
@@ -231,6 +232,12 @@ export function ThumbnailRenderFrame() {
       const objectLayer = new THREE.Group();
       scene.add(objectLayer);
       const resolver = createFurnitureAssetResolver(dynamicOverlay(payload));
+      const modelAxisScaleByObjectId = new Map(
+        payload.objects.map((object) => [
+          object.objectId,
+          thumbnailObjectModelAxisScale(object),
+        ]),
+      );
       const instantiated = instantiateSceneObjectDefinitions({
         roomId: payload.room.roomId,
         generationId: payload.room.afcGenerationId,
@@ -258,6 +265,7 @@ export function ThumbnailRenderFrame() {
           descriptor,
           imported: cloneFurnitureGlbScene(template),
           metricScale: payload.camera.metricScale,
+          modelAxisScale: modelAxisScaleByObjectId.get(descriptor.objectId),
         });
         live.localAabb = measurePlacementLocalAabb(live.placement, live.importPlacement);
         commitLiveSceneObjectTransform(live, realized, payload.camera.metricScale);

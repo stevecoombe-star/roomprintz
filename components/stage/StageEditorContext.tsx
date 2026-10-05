@@ -36,11 +36,7 @@ import {
   STAGE_SEED_CATALOG,
 } from "@/lib/vibode-stage/catalog";
 import { parseStageCatalogPayload } from "@/lib/vibode-stage/catalog-store";
-import {
-  modelAxisScaleOrIdentity,
-  nativeModelDimensions,
-  resolveEffectiveModelDimensions,
-} from "@/lib/vibode-stage/model-dimensions";
+import { stageModelAxisScale } from "@/lib/vibode-stage/furniture-model-scale";
 import {
   readCatalogDrawerPreference,
   resolveCatalogDrawerOpen,
@@ -402,9 +398,10 @@ export function StageEditorProvider({
     const asset = placedCatalog.assets.find((item) => item.assetId === placement.assetId) ?? null;
     const endPlacementFootprint = beginPlacementFootprint({
       assetId: placement.assetId,
-      scale: modelAxisScaleOrIdentity({
-        native: nativeModelDimensions(asset),
-        effective: resolveEffectiveModelDimensions(placement.variant, asset),
+      scale: stageModelAxisScale({
+        assetId: placement.assetId,
+        variant: placement.variant,
+        asset,
       }),
     });
     void (async () => {

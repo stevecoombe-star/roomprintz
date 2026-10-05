@@ -21,10 +21,26 @@ import {
 } from "@/lib/afc-v2-runtime/types";
 import { mapSceneObjectsBetweenCameras } from "@/lib/afc-v2-runtime/effective-floor-remap";
 import { resolveEffectiveProductionAuthority } from "@/lib/afc-v2-runtime/effective-production-authority";
-import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
+import type { ModelAxisScale } from "@/lib/afc-v2-runtime/model-axis-scale";
+import { persistedMetricScale, validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
 import type { RuntimeAssetIssue } from "@/lib/afc-v2-runtime/runtime-furniture-assets";
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
+import {
+  FURNITURE_MODEL_SCALE_ASSET_TABLE,
+  FURNITURE_MODEL_SCALE_VARIANT_TABLE,
+  furnitureAxisScaleOrUndefined,
+  stageAssetDimensionFromRow,
+  stageModelAxisScale,
+  stageVariantDimensionFromRow,
+  type StageAssetModelRecord,
+  type StageVariantModelRecord,
+} from "@/lib/vibode-stage/furniture-model-scale";
 import { lookupPartnerRuntimeAssets } from "@/lib/vibode-stage/partner-runtime-assets.server";
+import {
+  ROOM_SCALE_DEFAULT,
+  effectiveMetricScale,
+  parseRoomScaleMultiplier,
+} from "@/lib/vibode-stage/room-scale";
 import {
   expiresAtFromNow,
   resolveSceneRuntimeAssets,
@@ -92,6 +108,26 @@ export type ThumbnailRenderSource = Readonly<{
     assetIds: readonly string[],
   ) => Promise<readonly DynamicRuntimeLookupRow[]>;
   mintDynamicSignedGet: (row: DynamicRuntimeLookupRow) => Promise<SignedGetMintResult>;
+  /** Absent in tests. Production reads durable room_scale_multiplier. */
+  loadRoomScaleMultiplier?: (roomId: string) => Promise<
+    | Readonly<{ ok: true; roomScaleMultiplier: number }>
+    | Readonly<{ ok: false }>
+  >;
+  /**
+   * Absent in tests. Production reads the same variant and asset dimension
+   * columns the STAGE catalog uses. Called only when a scene object has a variant.
+   */
+  lookupStageModelDimensions?: (query: Readonly<{
+    assetIds: readonly string[];
+    variantIds: readonly string[];
+  }>) => Promise<
+    | Readonly<{
+      ok: true;
+      assets: readonly StageAssetModelRecord[];
+      variants: readonly StageVariantModelRecord[];
+    }>
+    | Readonly<{ ok: false }>
+  >;
 }>;
 
 export type ThumbnailRenderBuildResult =
@@ -201,6 +237,14 @@ export async function buildVibodeThumbnailRenderPayload(
   const resolvedAssets = await resolveObjectAssets(placed.scene.objects, source);
   if (!resolvedAssets.ok) return resolvedAssets.failure;
 
+  const scaled = await thumbnailRenderScaleState(
+    source,
+    placed.authority,
+    input.roomId,
+    placed.scene.objects,
+  );
+  if (!scaled.ok) return scaled;
+
   const payload = assemblePayload({
     jobId: input.jobId ?? randomUUID(),
     scene: placed.scene,
@@ -208,6 +252,8 @@ export async function buildVibodeThumbnailRenderPayload(
     background,
     glbUrls: resolvedAssets.glbUrls,
     policy: source.policy,
+    metricScale: scaled.metricScale,
+    modelAxisScales: scaled.modelAxisScales,
   });
   if (!payload.ok) {
     return thumbnailRenderError("glb_identity_missing", payload.reason, false);
@@ -336,6 +382,7 @@ export async function readVibodeThumbnailRenderAccess(
 export function thumbnailSceneContentToken(input: Readonly<{
   scene: PersistedVersionScene;
   authority: AfcV2ProductionRoomAuthority;
+  metricScale: number;
   background: Readonly<{ bucket: string; objectPath: string }>;
   objects: readonly Readonly<{
     objectId: string;
@@ -343,6 +390,7 @@ export function thumbnailSceneContentToken(input: Readonly<{
     position: { x: number; y: number; z: number };
     rotationDeg: { x: number; y: number; z: number };
     userSizeMultiplier: number;
+    modelAxisScale?: ModelAxisScale;
   }>[];
 }>): string {
   const camera = input.authority.frozenCamera;
@@ -360,20 +408,113 @@ export function thumbnailSceneContentToken(input: Readonly<{
       position: camera.pose.position,
       lookAt: camera.pose.lookAt,
       up: camera.pose.up,
-      metricScale: input.authority.metric.metricScale,
+      metricScale: input.metricScale,
     },
     background: {
       bucket: input.background.bucket,
       objectPath: input.background.objectPath,
     },
-    objects: input.objects.map((object) => ({
-      objectId: object.objectId,
-      assetId: object.assetId,
-      position: object.position,
-      rotationDeg: object.rotationDeg,
-      userSizeMultiplier: object.userSizeMultiplier,
-    })),
+    objects: input.objects.map((object) => {
+      const modelAxisScale = furnitureAxisScaleOrUndefined(object.modelAxisScale);
+      return {
+        objectId: object.objectId,
+        assetId: object.assetId,
+        position: object.position,
+        rotationDeg: object.rotationDeg,
+        userSizeMultiplier: object.userSizeMultiplier,
+        ...(modelAxisScale ? { modelAxisScale } : {}),
+      };
+    }),
   });
+}
+
+function uniqueIds(values: readonly (string | undefined)[]): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    ids.push(value);
+  }
+  return ids;
+}
+
+async function thumbnailRenderScaleState(
+  source: ThumbnailRenderSource,
+  authority: AfcV2ProductionRoomAuthority,
+  roomId: string,
+  objects: readonly SceneObjectDefinition[],
+): Promise<
+  | Readonly<{
+    ok: true;
+    metricScale: number;
+    modelAxisScales: ReadonlyMap<string, ModelAxisScale>;
+  }>
+  | VibodeThumbnailRenderFailure
+> {
+  let roomScaleMultiplier = ROOM_SCALE_DEFAULT;
+  if (source.loadRoomScaleMultiplier) {
+    try {
+      const loaded = await source.loadRoomScaleMultiplier(roomId);
+      if (!loaded.ok) {
+        return thumbnailRenderError(
+          "render_page_error",
+          "Room scale could not be loaded.",
+          true,
+        );
+      }
+      roomScaleMultiplier = parseRoomScaleMultiplier(loaded.roomScaleMultiplier) ??
+        ROOM_SCALE_DEFAULT;
+    } catch {
+      return thumbnailRenderError(
+        "render_page_error",
+        "Room scale could not be loaded.",
+        true,
+      );
+    }
+  }
+  const metricScale = effectiveMetricScale(
+    persistedMetricScale(authority),
+    roomScaleMultiplier,
+  );
+  const modelAxisScales = new Map<string, ModelAxisScale>();
+  const variantIds = uniqueIds(objects.map((object) => object.variantId));
+  if (variantIds.length === 0 || !source.lookupStageModelDimensions) {
+    return { ok: true, metricScale, modelAxisScales };
+  }
+  let lookedUp: Awaited<ReturnType<NonNullable<ThumbnailRenderSource["lookupStageModelDimensions"]>>>;
+  try {
+    lookedUp = await source.lookupStageModelDimensions({
+      assetIds: uniqueIds(
+        objects.filter((object) => object.variantId).map((object) => object.assetId),
+      ),
+      variantIds,
+    });
+  } catch {
+    return thumbnailRenderError(
+      "render_page_error",
+      "Furniture dimensions could not be loaded.",
+      true,
+    );
+  }
+  if (!lookedUp.ok) {
+    return thumbnailRenderError(
+      "render_page_error",
+      "Furniture dimensions could not be loaded.",
+      true,
+    );
+  }
+  const assets = new Map(lookedUp.assets.map((asset) => [asset.assetId, asset]));
+  const variants = new Map(lookedUp.variants.map((variant) => [variant.variantId, variant]));
+  for (const object of objects) {
+    if (!object.variantId) continue;
+    modelAxisScales.set(object.objectId, stageModelAxisScale({
+      assetId: object.assetId,
+      asset: assets.get(object.assetId) ?? null,
+      variant: variants.get(object.variantId) ?? null,
+    }));
+  }
+  return { ok: true, metricScale, modelAxisScales };
 }
 
 function placeSceneInEffectiveWorld(
@@ -407,11 +548,16 @@ function assemblePayload(input: Readonly<{
   background: ThumbnailBackgroundIdentity;
   glbUrls: ReadonlyMap<string, string>;
   policy: ThumbnailRenderUrlPolicy;
+  metricScale: number;
+  modelAxisScales: ReadonlyMap<string, ModelAxisScale>;
 }>):
   | Readonly<{ ok: true; payload: VibodeThumbnailRenderPayload }>
   | Readonly<{ ok: false; reason: string }> {
   const objects = input.scene.objects.map((object) => {
     const glbUrl = input.glbUrls.get(object.assetId) ?? "";
+    const modelAxisScale = furnitureAxisScaleOrUndefined(
+      input.modelAxisScales.get(object.objectId),
+    );
     return {
       objectId: object.objectId,
       assetId: object.assetId,
@@ -427,6 +573,7 @@ function assemblePayload(input: Readonly<{
         z: object.transform.rotationDeg.z,
       },
       userSizeMultiplier: object.userSizeMultiplier ?? AFC_V2_USER_SIZE_DEFAULT,
+      ...(modelAxisScale ? { modelAxisScale } : {}),
     };
   });
   const draft = {
@@ -436,6 +583,7 @@ function assemblePayload(input: Readonly<{
       contentToken: thumbnailSceneContentToken({
         scene: input.scene,
         authority: input.authority,
+        metricScale: input.metricScale,
         background: input.background,
         objects,
       }),
@@ -455,7 +603,7 @@ function assemblePayload(input: Readonly<{
       position: { ...input.authority.frozenCamera.pose.position },
       lookAt: { ...input.authority.frozenCamera.pose.lookAt },
       up: { ...input.authority.frozenCamera.pose.up },
-      metricScale: input.authority.metric.metricScale,
+      metricScale: input.metricScale,
       near: AFC_V2_RUNTIME_CAMERA_NEAR,
       far: AFC_V2_RUNTIME_CAMERA_FAR,
     },
@@ -748,19 +896,33 @@ export async function inspectVibodeThumbnailContent(
       false,
     );
   }
-  const objects = placed.scene.objects.map((object) => ({
-    objectId: object.objectId,
-    assetId: object.assetId,
-    position: { ...object.transform.position },
-    rotationDeg: { ...object.transform.rotationDeg },
-    userSizeMultiplier: object.userSizeMultiplier ?? AFC_V2_USER_SIZE_DEFAULT,
-  }));
+  const scaled = await thumbnailRenderScaleState(
+    source,
+    placed.authority,
+    input.roomId,
+    placed.scene.objects,
+  );
+  if (!scaled.ok) return scaled;
+  const objects = placed.scene.objects.map((object) => {
+    const modelAxisScale = furnitureAxisScaleOrUndefined(
+      scaled.modelAxisScales.get(object.objectId),
+    );
+    return {
+      objectId: object.objectId,
+      assetId: object.assetId,
+      position: { ...object.transform.position },
+      rotationDeg: { ...object.transform.rotationDeg },
+      userSizeMultiplier: object.userSizeMultiplier ?? AFC_V2_USER_SIZE_DEFAULT,
+      ...(modelAxisScale ? { modelAxisScale } : {}),
+    };
+  });
   return {
     ok: true,
     empty: false,
     contentToken: thumbnailSceneContentToken({
       scene: placed.scene,
       authority: placed.authority,
+      metricScale: scaled.metricScale,
       background,
       objects,
     }),
@@ -903,5 +1065,74 @@ export function createProductionThumbnailRenderSource(): ThumbnailRenderSource {
         return { ok: false };
       }
     },
+    async loadRoomScaleMultiplier(roomId) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return { ok: false };
+      try {
+        const { data, error } = await supabase
+          .from("vibode_rooms")
+          .select("room_scale_multiplier")
+          .eq("id", roomId)
+          .maybeSingle();
+        if (error || !data || typeof data !== "object") return { ok: false };
+        return {
+          ok: true,
+          roomScaleMultiplier: parseRoomScaleMultiplier(
+            (data as { room_scale_multiplier?: unknown }).room_scale_multiplier,
+          ) ?? ROOM_SCALE_DEFAULT,
+        };
+      } catch {
+        return { ok: false };
+      }
+    },
+    async lookupStageModelDimensions(query) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return { ok: false };
+      try {
+        const assets = await selectModelDimensionRows(
+          supabase,
+          FURNITURE_MODEL_SCALE_ASSET_TABLE,
+          "asset_id, authored_width_m, authored_height_m, authored_depth_m",
+          "asset_id",
+          query.assetIds,
+          stageAssetDimensionFromRow,
+        );
+        const variants = await selectModelDimensionRows(
+          supabase,
+          FURNITURE_MODEL_SCALE_VARIANT_TABLE,
+          "variant_id, current_asset_id, model_width_m, model_height_m, model_depth_m, model_sizing_mode",
+          "variant_id",
+          query.variantIds,
+          stageVariantDimensionFromRow,
+        );
+        if (!assets || !variants) return { ok: false };
+        return { ok: true, assets, variants };
+      } catch {
+        return { ok: false };
+      }
+    },
   };
+}
+
+async function selectModelDimensionRows<T>(
+  supabase: NonNullable<ReturnType<typeof getServiceRoleSupabaseClient>>,
+  table: string,
+  columns: string,
+  idColumn: string,
+  ids: readonly string[],
+  mapRow: (row: Record<string, unknown>) => T | null,
+): Promise<T[] | null> {
+  if (ids.length === 0) return [];
+  const { data, error } = await supabase
+    .from(table)
+    .select(columns)
+    .in(idColumn, [...ids]);
+  if (error || !Array.isArray(data)) return null;
+  const rows: T[] = [];
+  for (const raw of data) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const mapped = mapRow(raw as Record<string, unknown>);
+    if (mapped) rows.push(mapped);
+  }
+  return rows;
 }
