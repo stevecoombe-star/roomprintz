@@ -7,10 +7,50 @@ import {
   favoriteKey,
   STAGE_SEED_PRODUCTS,
   STAGE_STUDIO_CHAIR_PRODUCT_ID,
-  STAGE_STUDIO_SETTEE_PRODUCT_ID,
-  STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
   STAGE_STUDIO_SOFA_PRODUCT_ID,
 } from "./catalog";
+import type { StageProduct } from "./types";
+
+const PARTNER_SOFA_ID = "prod-partner-browse-sofa";
+const PARTNER_CHAIR_ID = "prod-partner-browse-chair";
+
+function partnerBrowseProduct(
+  productId: string,
+  name: string,
+  subcategoryId: string,
+  collectionIds: readonly string[],
+): StageProduct {
+  return {
+    productId,
+    brand: "Partner",
+    name,
+    retailer: "Partner",
+    categoryId: "living-room",
+    subcategoryId,
+    productUrl: null,
+    imageUrl: "/partner.jpg",
+    priceAmount: 100,
+    priceCurrency: "USD",
+    defaultVariantId: `${productId}-default`,
+    collectionIds,
+    source: "partner_catalog",
+    partnerId: null,
+    status: "active",
+  };
+}
+
+const PARTNER_SOFA = partnerBrowseProduct(
+  PARTNER_SOFA_ID,
+  "Partner Sofa",
+  "sofas",
+  ["col-vibode-picks", "col-modern-living"],
+);
+const PARTNER_CHAIR = partnerBrowseProduct(
+  PARTNER_CHAIR_ID,
+  "Partner Chair",
+  "chairs",
+  ["col-vibode-picks", "col-small-spaces"],
+);
 import {
   navigationStateAfterCatalogAdd,
   rememberRecentlyUsed,
@@ -36,7 +76,7 @@ function source(relativePath: string): string {
 
 function query(input: Partial<Parameters<typeof visibleStageCatalogProducts>[0]> = {}) {
   return visibleStageCatalogProducts({
-    products: STAGE_SEED_PRODUCTS,
+    products: [...STAGE_SEED_PRODUCTS, PARTNER_SOFA, PARTNER_CHAIR],
     mode: "browse",
     query: "",
     categoryId: "living-room",
@@ -92,10 +132,8 @@ test("PI-5C UX2 Browse no longer renders Recently Used above results", () => {
     recentlyUsedProductIds: [STAGE_STUDIO_CHAIR_PRODUCT_ID],
   });
   assert.deepEqual(visible.map((product) => product.productId), [
-    STAGE_STUDIO_SOFA_PRODUCT_ID,
-    STAGE_STUDIO_SETTEE_PRODUCT_ID,
-    STAGE_STUDIO_CHAIR_PRODUCT_ID,
-    STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
+    PARTNER_SOFA_ID,
+    PARTNER_CHAIR_ID,
   ]);
 });
 
@@ -106,12 +144,14 @@ test("PI-5C UX2 Recently Used mode renders existing recently-used products in re
     subcategoryId: "chairs",
     recentlyUsedProductIds: [
       STAGE_STUDIO_CHAIR_PRODUCT_ID,
+      PARTNER_CHAIR_ID,
       STAGE_STUDIO_SOFA_PRODUCT_ID,
+      PARTNER_SOFA_ID,
     ],
   });
   assert.deepEqual(visible.map((product) => product.productId), [
-    STAGE_STUDIO_CHAIR_PRODUCT_ID,
-    STAGE_STUDIO_SOFA_PRODUCT_ID,
+    PARTNER_CHAIR_ID,
+    PARTNER_SOFA_ID,
   ]);
   const empty = query({ mode: "recently_used", recentlyUsedProductIds: [] });
   assert.equal(visible.length > 0, true);
@@ -123,22 +163,25 @@ test("PI-5C UX2 Collections and Favorites behavior remains unchanged", () => {
     mode: "collections",
     collectionId: "col-vibode-picks",
   });
-  assert.equal(picks.length, 4);
+  assert.deepEqual(picks.map((product) => product.productId), [
+    PARTNER_SOFA_ID,
+    PARTNER_CHAIR_ID,
+  ]);
   const small = query({
     mode: "collections",
     collectionId: "col-small-spaces",
   });
   assert.deepEqual(small.map((product) => product.productId), [
-    STAGE_STUDIO_SETTEE_PRODUCT_ID,
-    STAGE_STUDIO_CHAIR_PRODUCT_ID,
+    PARTNER_CHAIR_ID,
   ]);
 
   const favoriteKeys = new Set([
     favoriteKey(STAGE_STUDIO_SOFA_PRODUCT_ID, "var-vibode-studio-sofa-default"),
+    favoriteKey(PARTNER_SOFA_ID, PARTNER_SOFA.defaultVariantId),
   ]);
   const favorites = query({ mode: "favorites", favoriteKeys });
   assert.equal(favorites.length, 1);
-  assert.equal(favorites[0]?.productId, STAGE_STUDIO_SOFA_PRODUCT_ID);
+  assert.equal(favorites[0]?.productId, PARTNER_SOFA_ID);
 
   const afterModes: StageCatalogMode[] = [
     "browse",
@@ -226,7 +269,7 @@ test("PI-5C UX2 Add does not remount the Catalog scroller or switch to Recently 
 
 test("PI-5C UX2 favoriting does not replace four-mode navigation", () => {
   const favoriteKeys = new Set([
-    favoriteKey(STAGE_STUDIO_CHAIR_PRODUCT_ID, "var-vibode-studio-chair-default"),
+    favoriteKey(PARTNER_CHAIR_ID, PARTNER_CHAIR.defaultVariantId),
   ]);
   const sequence: StageCatalogMode[] = [
     "browse",
@@ -239,16 +282,16 @@ test("PI-5C UX2 favoriting does not replace four-mode navigation", () => {
     const ids = query({
       mode,
       favoriteKeys,
-      recentlyUsedProductIds: [STAGE_STUDIO_CHAIR_PRODUCT_ID],
+      recentlyUsedProductIds: [PARTNER_CHAIR_ID],
       collectionId: "col-small-spaces",
     }).map((product) => product.productId);
     if (mode === "favorites" || mode === "recently_used") {
-      assert.deepEqual(ids, [STAGE_STUDIO_CHAIR_PRODUCT_ID]);
+      assert.deepEqual(ids, [PARTNER_CHAIR_ID]);
     } else {
-      assert.equal(ids.includes(STAGE_STUDIO_CHAIR_PRODUCT_ID), true);
+      assert.equal(ids.includes(PARTNER_CHAIR_ID), true);
     }
     assert.equal(favoriteKeys.has(
-      favoriteKey(STAGE_STUDIO_CHAIR_PRODUCT_ID, "var-vibode-studio-chair-default"),
+      favoriteKey(PARTNER_CHAIR_ID, PARTNER_CHAIR.defaultVariantId),
     ), true);
   }
 });

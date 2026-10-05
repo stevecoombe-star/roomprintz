@@ -748,19 +748,43 @@ test("PI-5E2 Favorites, Recent, Collections, and search stay Product-level excep
   );
   assert.equal(favorite.has(walnutKey), true);
   assert.equal(isProductFavorited(STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID, favorite), true);
+  const partnerTableId = "prod-partner-side-table";
+  const partnerTable = {
+    productId: partnerTableId,
+    brand: "Partner",
+    name: "Partner Side Table",
+    retailer: "Partner",
+    categoryId: "living-room",
+    subcategoryId: "side-tables",
+    productUrl: null,
+    imageUrl: "/partner-side-table.jpg",
+    priceAmount: 220,
+    priceCurrency: "USD",
+    defaultVariantId: `${partnerTableId}-default`,
+    collectionIds: ["col-vibode-picks"],
+    source: "partner_catalog" as const,
+    partnerId: null,
+    status: "active" as const,
+  };
+  const shopperProducts = [...STAGE_SEED_PRODUCTS, partnerTable];
   const favorites = filterStageCatalogProducts({
-    products: STAGE_SEED_PRODUCTS,
+    products: shopperProducts,
     mode: "favorites",
     query: "",
     categoryId: null,
     subcategoryId: null,
     collectionId: null,
-    favoriteKeys: favorite,
+    favoriteKeys: toggleFavoriteKeys(
+      favorite,
+      partnerTableId,
+      partnerTable.defaultVariantId,
+    ),
     favoriteKeyFor: (product) => favoriteKey(product.productId, product.defaultVariantId),
   });
   assert.equal(favorites.filter((product) => (
     product.productId === STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID
-  )).length, 1);
+  )).length, 0);
+  assert.equal(favorites.filter((product) => product.productId === partnerTableId).length, 1);
 
   const drawer = source("components/stage/StageCatalogDrawer.tsx");
   const card = source("components/stage/StageProductCard.tsx");
@@ -776,7 +800,7 @@ test("PI-5E2 Favorites, Recent, Collections, and search stay Product-level excep
   assert.doesNotMatch(context, /selectedVariantId/);
 
   const picks = filterStageCatalogProducts({
-    products: STAGE_SEED_PRODUCTS,
+    products: shopperProducts,
     mode: "collections",
     query: "",
     categoryId: null,
@@ -787,7 +811,8 @@ test("PI-5E2 Favorites, Recent, Collections, and search stay Product-level excep
   });
   assert.equal(picks.filter((product) => (
     product.productId === STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID
-  )).length, 1);
+  )).length, 0);
+  assert.equal(picks.filter((product) => product.productId === partnerTableId).length, 1);
 
   const walnutSearch = filterStageCatalogProducts({
     products: STAGE_SEED_PRODUCTS,

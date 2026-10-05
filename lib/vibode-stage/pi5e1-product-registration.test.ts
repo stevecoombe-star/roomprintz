@@ -538,12 +538,12 @@ test("PI-5E1 Favorites, Recent, search, and subcategory filters are data-driven"
   assert.equal(fromRecent?.assetId, ASSET_C);
 
   const sideTableSearch = catalogQuery({ query: "side table" });
-  assert.equal(sideTableSearch.some((product) => product.productId === STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID), true);
+  assert.equal(sideTableSearch.some((product) => product.productId === STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID), false);
   const brandSearch = catalogQuery({ query: "Vibode" });
-  assert.equal(brandSearch.some((product) => product.productId === STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID), true);
+  assert.equal(brandSearch.some((product) => product.productId === STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID), false);
 
   const sideTables = catalogQuery({ subcategoryId: "side-tables" });
-  assert.equal(sideTables.some((product) => product.productId === STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID), true);
+  assert.equal(sideTables.some((product) => product.productId === STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID), false);
   const sofas = catalogQuery({ subcategoryId: "sofas" });
   assert.equal(sofas.some((product) => product.productId === STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID), false);
 
@@ -552,7 +552,7 @@ test("PI-5E1 Favorites, Recent, search, and subcategory filters are data-driven"
     collectionId: "col-vibode-picks",
     categoryId: null,
   });
-  assert.equal(picks.some((product) => product.productId === STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID), true);
+  assert.equal(picks.some((product) => product.productId === STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID), false);
 
   const drawer = source("components/stage/StageCatalogDrawer.tsx");
   const card = source("components/stage/StageProductCard.tsx");
