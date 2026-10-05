@@ -22,12 +22,22 @@ import {
   browserPreviewCacheStore,
   initialDisplayPreview,
   nextPreviewCache,
+  overlayPreviewCache,
   readFreshPreviewUrls,
   requestRoomPreviewBatch,
   retainPreviewCache,
   settlePendingPreviews,
   writeFreshPreviewUrls,
 } from "@/components/my-rooms/preview-batch";
+import {
+  applyThumbnailRefreshToRooms,
+  beginThumbnailRefresh,
+  endThumbnailRefresh,
+  ROOM_THUMBNAIL_REFRESH_ERROR_MESSAGE,
+  requestRoomThumbnailRefresh,
+  thumbnailRefreshDisplayUrl,
+  upsertPreviewCacheUrl,
+} from "@/lib/vibode-room-preview/refresh-room-thumbnail";
 import { scopeLabel, sortRooms } from "@/components/my-rooms/utils";
 import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
 import { supabase } from "@/lib/supabaseClient";
@@ -115,6 +125,18 @@ function isAbortError(err: unknown): boolean {
   if (name === "AbortError") return true;
   const message = "message" in err && typeof err.message === "string" ? err.message.toLowerCase() : "";
   return message.includes("abort");
+}
+
+function preservedThumbnailsForLoad(
+  entries: ReadonlyMap<string, { loadGeneration: number; displayUrl: string | null }>,
+  generation: number,
+): Map<string, string | null> {
+  const overlays = new Map<string, string | null>();
+  for (const [roomId, entry] of entries) {
+    if (entry.loadGeneration !== generation) continue;
+    overlays.set(roomId, entry.displayUrl);
+  }
+  return overlays;
 }
 
 function markMyRooms(name: string) {
@@ -233,6 +255,14 @@ export function MyRoomsPage() {
 
   const [mutatingRoomId, setMutatingRoomId] = useState<string | null>(null);
   const [mutatingFolderId, setMutatingFolderId] = useState<string | null>(null);
+  const refreshingRoomsRef = useRef<ReadonlySet<string>>(new Set());
+  const [refreshingRoomIds, setRefreshingRoomIds] = useState<ReadonlySet<string>>(
+    () => refreshingRoomsRef.current,
+  );
+  const preservedThumbnailsRef = useRef(
+    new Map<string, { loadGeneration: number; displayUrl: string | null }>(),
+  );
+  const mountedRef = useRef(true);
   const toastTimeoutRef = useRef<number | null>(null);
   const loadGenerationRef = useRef(0);
 
@@ -248,7 +278,9 @@ export function MyRoomsPage() {
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       if (toastTimeoutRef.current !== null) {
         window.clearTimeout(toastTimeoutRef.current);
       }
@@ -373,13 +405,14 @@ export function MyRoomsPage() {
         });
         if (stale()) return;
         const now = Date.now();
-        setRooms((prev) => applyRoomPreviewBatch(prev, batch, now));
+        const preserved = preservedThumbnailsForLoad(preservedThumbnailsRef.current, generation);
+        setRooms((prev) => applyRoomPreviewBatch(prev, batch, now, new Set(preserved.keys())));
         if (batch.ok || batch.completedRoomIds.length > 0) {
           writeFreshPreviewUrls(
             browserPreviewCacheStore(),
             userId,
             retainPreviewCache(
-              nextPreviewCache(previewCache, batch, now),
+              overlayPreviewCache(nextPreviewCache(previewCache, batch, now), preserved),
               mappedRooms.map((room) => room.id),
             ),
           );
@@ -573,6 +606,53 @@ export function MyRoomsPage() {
       setCreateError("Could not create folder right now.");
     } finally {
       setIsCreatingFolder(false);
+    }
+  };
+
+  const handleRefreshThumbnail = async (room: MyRoomsRoom) => {
+    const nextRefreshing = beginThumbnailRefresh(refreshingRoomsRef.current, room.id);
+    if (nextRefreshing === refreshingRoomsRef.current) return;
+    refreshingRoomsRef.current = nextRefreshing;
+    setRefreshingRoomIds(nextRefreshing);
+    try {
+      const accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        if (mountedRef.current) showToast(ROOM_THUMBNAIL_REFRESH_ERROR_MESSAGE, "error");
+        return;
+      }
+      const result = await requestRoomThumbnailRefresh({
+        roomId: room.id,
+        accessToken,
+      });
+      if (!result.ok) {
+        if (mountedRef.current) showToast(ROOM_THUMBNAIL_REFRESH_ERROR_MESSAGE, "error");
+        return;
+      }
+      const displayUrl = thumbnailRefreshDisplayUrl(result.previewUrl, result.cacheVersion);
+      preservedThumbnailsRef.current.set(room.id, {
+        loadGeneration: loadGenerationRef.current,
+        displayUrl,
+      });
+      if (userId) {
+        const store = browserPreviewCacheStore();
+        writeFreshPreviewUrls(
+          store,
+          userId,
+          upsertPreviewCacheUrl(
+            readFreshPreviewUrls(store, userId, Date.now()),
+            room.id,
+            displayUrl,
+          ),
+        );
+      }
+      if (!mountedRef.current) return;
+      setRooms((prev) => applyThumbnailRefreshToRooms(prev, room.id, result));
+    } catch (err) {
+      console.warn("[MyRooms] thumbnail refresh failed:", err);
+      if (mountedRef.current) showToast(ROOM_THUMBNAIL_REFRESH_ERROR_MESSAGE, "error");
+    } finally {
+      refreshingRoomsRef.current = endThumbnailRefresh(refreshingRoomsRef.current, room.id);
+      if (mountedRef.current) setRefreshingRoomIds(refreshingRoomsRef.current);
     }
   };
 
@@ -930,6 +1010,7 @@ export function MyRoomsPage() {
               isLoading={isLoading}
               emptyState={emptyState}
               mutatingRoomId={mutatingRoomId}
+              refreshingRoomIds={refreshingRoomIds}
               onOpenRoom={(room) => {
                 void handleOpenRoom(room);
               }}
@@ -937,6 +1018,9 @@ export function MyRoomsPage() {
               onMoveRoom={handleMoveRoom}
               onDeleteRoom={(room) => {
                 setDeleteRoom(room);
+              }}
+              onRefreshThumbnail={(room) => {
+                void handleRefreshThumbnail(room);
               }}
             />
           </>

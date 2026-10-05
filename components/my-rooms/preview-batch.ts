@@ -169,6 +169,7 @@ export function applyRoomPreviewBatch(
   rooms: readonly MyRoomsRoom[],
   batch: RoomPreviewBatchLoad,
   nowMs: number,
+  preserveRoomIds?: ReadonlySet<string>,
 ): MyRoomsRoom[] {
   if (!batch.ok && batch.completedRoomIds.length === 0) {
     return settlePendingPreviews(rooms);
@@ -176,6 +177,7 @@ export function applyRoomPreviewBatch(
   const failed = new Set(batch.failedRoomIds);
   const completed = new Set(batch.completedRoomIds);
   return rooms.map((room) => {
+    if (preserveRoomIds?.has(room.id)) return room;
     if (completed.has(room.id) && !failed.has(room.id)) {
       const item = batch.previews[room.id];
       return {
@@ -199,6 +201,19 @@ export function retainPreviewCache(
   const next: Record<string, string> = {};
   for (const [roomId, url] of Object.entries(entries)) {
     if (keep.has(roomId)) next[roomId] = url;
+  }
+  return next;
+}
+
+export function overlayPreviewCache(
+  computed: Readonly<Record<string, string>>,
+  overlays: ReadonlyMap<string, string | null>,
+): Record<string, string> {
+  if (overlays.size === 0) return { ...computed };
+  const next = { ...computed };
+  for (const [roomId, url] of overlays) {
+    if (url) next[roomId] = url;
+    else delete next[roomId];
   }
   return next;
 }

@@ -17,10 +17,12 @@ type MyRoomsGridProps = {
   isLoading: boolean;
   emptyState: EmptyState | null;
   mutatingRoomId: string | null;
+  refreshingRoomIds: ReadonlySet<string>;
   onOpenRoom: (room: MyRoomsRoom) => void;
   onRenameRoom: (room: MyRoomsRoom) => void;
   onMoveRoom: (room: MyRoomsRoom, folderId: string | null) => Promise<void>;
   onDeleteRoom: (room: MyRoomsRoom) => void;
+  onRefreshThumbnail: (room: MyRoomsRoom) => void;
 };
 
 function LoadingSkeletonGrid() {
@@ -70,10 +72,12 @@ export function MyRoomsGrid({
   isLoading,
   emptyState,
   mutatingRoomId,
+  refreshingRoomIds,
   onOpenRoom,
   onRenameRoom,
   onMoveRoom,
   onDeleteRoom,
+  onRefreshThumbnail,
 }: MyRoomsGridProps) {
   if (isLoading) return <LoadingSkeletonGrid />;
   if (emptyState) return <EmptyRoomsState state={emptyState} />;
@@ -93,6 +97,8 @@ export function MyRoomsGrid({
             onRename={() => onRenameRoom(room)}
             onDelete={() => onDeleteRoom(room)}
             onMoveToFolder={(folderId) => onMoveRoom(room, folderId)}
+            onRefreshThumbnail={() => onRefreshThumbnail(room)}
+            isRefreshingThumbnail={refreshingRoomIds.has(room.id)}
             isBusy={mutatingRoomId === room.id}
           />
         );

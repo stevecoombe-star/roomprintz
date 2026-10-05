@@ -65,6 +65,16 @@ export function thumbnailQuietWindowDeadline(nowMs: number): string {
   return new Date(nowMs + VIBODE_THUMBNAIL_JOB_QUIET_WINDOW_SEC * 1000).toISOString();
 }
 
+/**
+ * Scene saves keep the quiet window so a burst of gestures becomes one
+ * render. A manual refresh passes `immediate` so that same job is
+ * claimable on the worker's next poll.
+ */
+export function thumbnailScheduleNotBefore(nowMs: number, immediate = false): string {
+  if (immediate) return new Date(nowMs).toISOString();
+  return thumbnailQuietWindowDeadline(nowMs);
+}
+
 export function vibode3dThumbnailObjectPath(
   roomId: string,
   versionId: string,

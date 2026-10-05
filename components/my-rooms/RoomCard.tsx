@@ -14,6 +14,8 @@ type RoomCardProps = {
   onRename: () => void;
   onMoveToFolder: (folderId: string | null) => Promise<void>;
   onDelete: () => void;
+  onRefreshThumbnail: () => void;
+  isRefreshingThumbnail: boolean;
   isBusy: boolean;
 };
 
@@ -26,6 +28,8 @@ export function RoomCard({
   onRename,
   onMoveToFolder,
   onDelete,
+  onRefreshThumbnail,
+  isRefreshingThumbnail,
   isBusy,
 }: RoomCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -97,6 +101,29 @@ export function RoomCard({
           </p>
         </div>
       </button>
+
+      <div className="absolute left-2 top-2 z-10">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onRefreshThumbnail();
+          }}
+          disabled={isBusy || isRefreshingThumbnail}
+          aria-label="Refresh thumbnail"
+          aria-busy={isRefreshingThumbnail}
+          title="Refresh thumbnail"
+          className={
+            "inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/85 text-slate-300 backdrop-blur transition hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-200 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 disabled:cursor-default " +
+            (isRefreshingThumbnail
+              ? "opacity-100"
+              : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100")
+          }
+        >
+          <RefreshThumbnailIcon spinning={isRefreshingThumbnail} />
+        </button>
+      </div>
 
       <div ref={menuRef} className="absolute right-2 top-2">
         <button
@@ -183,5 +210,25 @@ export function RoomCard({
         ) : null}
       </div>
     </article>
+  );
+}
+
+function RefreshThumbnailIcon({ spinning }: { spinning: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={spinning ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+      <path d="M16 16h5v5" />
+    </svg>
   );
 }

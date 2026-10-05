@@ -14,7 +14,7 @@ import {
 
 import {
   thumbnailJobFailureIsRetryable,
-  thumbnailQuietWindowDeadline,
+  thumbnailScheduleNotBefore,
 } from "./policy";
 
 /**
@@ -24,8 +24,23 @@ import {
  * same content token and coalesces a new pending job.
  */
 
+export type ThumbnailScheduleOptions = {
+  /** Skip the quiet window. Scene saves leave this false. */
+  immediate?: boolean;
+};
+
 export type ThumbnailScheduleResult =
-  | Readonly<{ ok: true; scheduled: "pending" | "cleared" | "unchanged" }>
+  | Readonly<{
+      ok: true;
+      scheduled: "pending" | "unchanged";
+      contentToken: string;
+    }>
+  | Readonly<{
+      ok: true;
+      scheduled: "cleared";
+      contentToken: null;
+      sceneUpdatedAt: string;
+    }>
   | Readonly<{ ok: false; code: string }>;
 
 export type ClaimedThumbnailJob = Readonly<{
@@ -41,7 +56,8 @@ export type ClaimedThumbnailJob = Readonly<{
 }>;
 
 export async function scheduleVibodeThumbnailAfterSceneSave(
-  scene: PersistedVersionScene,
+  scene: Pick<PersistedVersionScene, "roomId" | "versionId">,
+  options?: ThumbnailScheduleOptions,
 ): Promise<ThumbnailScheduleResult> {
   try {
     const inspected = await inspectVibodeThumbnailContent({
@@ -70,20 +86,26 @@ export async function scheduleVibodeThumbnailAfterSceneSave(
         p_version_id: scene.versionId,
       });
       if (!cleared.ok) return { ok: false, code: cleared.code };
-      return { ok: true, scheduled: "cleared" };
+      return {
+        ok: true,
+        scheduled: "cleared",
+        contentToken: null,
+        sceneUpdatedAt: inspected.sceneUpdatedAt,
+      };
     }
     const enqueued = await callRpc("enqueue_vibode_3d_thumbnail_job", {
       p_room_id: inspected.roomId,
       p_version_id: inspected.versionId,
       p_afc_generation_id: inspected.afcGenerationId,
       p_content_token: inspected.contentToken,
-      p_not_before: thumbnailQuietWindowDeadline(Date.now()),
+      p_not_before: thumbnailScheduleNotBefore(Date.now(), options?.immediate === true),
       p_scene_updated_at: inspected.sceneUpdatedAt,
     });
     if (!enqueued.ok) return { ok: false, code: enqueued.code };
     const status = typeof enqueued.row.status === "string" ? enqueued.row.status : "";
-    if (status === "completed") return { ok: true, scheduled: "unchanged" };
-    return { ok: true, scheduled: "pending" };
+    const contentToken = thumbnailContentTokenFrom(enqueued.row.content_token) ?? inspected.contentToken;
+    if (status === "completed") return { ok: true, scheduled: "unchanged", contentToken };
+    return { ok: true, scheduled: "pending", contentToken };
   } catch (error) {
     console.error("[vibode-3d-thumbnail] enqueue failed", {
       roomId: scene.roomId,
@@ -260,4 +282,10 @@ async function callRpc(
 
 function text(value: unknown): string {
   return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+const CONTENT_TOKEN = /^[0-9a-f]{64}$/;
+
+function thumbnailContentTokenFrom(value: unknown): string | null {
+  return typeof value === "string" && CONTENT_TOKEN.test(value) ? value : null;
 }
