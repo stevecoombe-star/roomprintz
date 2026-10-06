@@ -154,9 +154,10 @@ test("25-38) empty copy, human labels, attempts, and notes presence only", () =>
   assert.match(helper, /Failed/);
   assert.match(helper, /1 attempt/);
   assert.match(helper, /\$\{count\} attempts/);
-  assert.match(inbox, /hasNotes/);
-  assert.match(inbox, /AFC_DIAGNOSTIC_INBOX_COPY\.notes/);
-  assert.doesNotMatch(inbox, /item\.notes|reviewNotes|notes body/i);
+  assert.match(inbox, /item\.notes/);
+  assert.match(helper, /close: "Close"/);
+  assert.match(helper, /closeCase: "Close Case"/);
+  assert.doesNotMatch(inbox, /reviewNotes|notes body/i);
   assert.doesNotMatch(queueSources, /AFC_QA_ISSUE_CODE_LABELS/);
 });
 
@@ -174,6 +175,10 @@ test("39-47) UUID shortening, copy, local time, semantic table, and explicit Ope
   assert.match(inbox, /Submitted \(local\)/);
   assert.match(helper, /toLocaleString/);
   assert.match(inbox, /formatAfcDiagnosticInboxSubmittedAt/);
+  assert.match(inbox, /submitted\.date/);
+  assert.match(inbox, /submitted\.time/);
+  assert.match(inbox, /max-w-\[9rem\] whitespace-normal/);
+  assert.doesNotMatch(inbox, /afcDiagnosticInboxSessionStatusLabel/);
   assert.match(inbox, /<table/);
   assert.match(inbox, /<thead/);
   assert.match(inbox, /<th scope="col"/);
@@ -229,13 +234,17 @@ test("63-75) inbox stays read-only; Case GET remains GET-only; review PATCH is n
   assert.doesNotMatch(queueSources, /method:\s*["'](POST|PATCH|PUT|DELETE)["']/);
   assert.doesNotMatch(queueSources, /export async function (POST|PATCH|PUT|DELETE)/);
   assert.doesNotMatch(detailSources, /method:\s*["'](POST|PATCH|PUT|DELETE)["']/);
-  assert.doesNotMatch(inbox, /Close case|Assign reviewer|Create Case|Delete case|Rerun room/i);
+  assert.match(inbox, /AFC_DIAGNOSTIC_INBOX_COPY\.closeCase/);
+  assert.match(inbox, /closeAfcDiagnosticAdminCase/);
+  assert.match(inbox, /suppressAfcDiagnosticInboxRowActivation/);
+  assert.doesNotMatch(inbox, /Assign reviewer|Create Case|Delete case|Rerun room/i);
   assert.doesNotMatch(inbox, /AfcDiagnosticAdminCapturePanel|postAfcDiagnosticAdminCaptureCase/);
   assert.doesNotMatch(inspector, /Close case|Assign reviewer|Delete case|Rerun room/i);
   assert.match(inspector, /AfcDiagnosticAdminCapturePanel/);
   assert.doesNotMatch(inbox, /reviewStatus:\s*["']closed["']\s*,/);
   assert.doesNotMatch(inbox, /Save review|patchAfcDiagnosticAdminCaseReview/);
-  assert.doesNotMatch(queueSources, /<img|next\/image|signedUrl|createSignedUrl/);
+  assert.match(inbox, /<img/);
+  assert.doesNotMatch(queueSources, /next\/image|signedUrl|createSignedUrl/);
   assert.doesNotMatch(detailSources, /<img|next\/image|signedUrl|createSignedUrl/);
   assert.doesNotMatch(queueSources, /createBrowserClient|getServiceRoleSupabaseClient|getCookieSupabaseClient/);
   assert.doesNotMatch(page, /admin layout|AdminSidebar|sidebar/i);

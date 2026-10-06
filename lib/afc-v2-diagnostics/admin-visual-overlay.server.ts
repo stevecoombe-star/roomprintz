@@ -112,6 +112,7 @@ export type AfcAdminVisualOverlayV1 = Readonly<{
   }>;
   floorQuad: AfcAdminVisualOverlayFloorQuad | null;
   collisionEdges: readonly AfcAdminVisualOverlayCollisionEdge[];
+  sourceNormalizedHost: boolean;
 }>;
 
 export type AfcDiagnosticVisualOverlayGenerationRecord = Readonly<{
@@ -319,6 +320,7 @@ const OVERLAY_ALLOWED_KEYS = new Set([
   "y",
   "collisionEdges",
   "id",
+  "sourceNormalizedHost",
 ]);
 
 const OVERLAY_FORBIDDEN_KEYS = new Set([
@@ -395,6 +397,7 @@ export function assertAfcAdminVisualOverlayPrivacy(payload: unknown): void {
 function emptyOverlay(
   artifactBasis: AfcDiagnosticVisualArtifactKind,
   frame: Readonly<{ width: number; height: number }>,
+  sourceNormalizedHost: boolean,
 ): AfcAdminVisualOverlayV1 {
   return Object.freeze({
     version: AFC_ADMIN_VISUAL_OVERLAY_VERSION,
@@ -403,6 +406,7 @@ function emptyOverlay(
     frame: Object.freeze({ width: frame.width, height: frame.height }),
     floorQuad: null,
     collisionEdges: Object.freeze([]),
+    sourceNormalizedHost,
   });
 }
 
@@ -435,6 +439,7 @@ function freezeOverlay(overlay: AfcAdminVisualOverlayV1): AfcAdminVisualOverlayV
         }),
       ),
     ),
+    sourceNormalizedHost: overlay.sourceNormalizedHost,
   });
 }
 
@@ -674,7 +679,13 @@ export function buildAfcAdminVisualOverlayV1(input: {
   const frame =
     artifactFrame(input.kind, input.generation, authority) ??
     fallbackFrame(input.generation, authority);
-  const blank = () => freezeOverlay(emptyOverlay(input.kind, frame));
+  const sourceNormalizedHost = overlayGeometryTransferAllowed({
+    kind: input.kind,
+    original: artifactLineage(input.generation, "original"),
+    empty: artifactLineage(input.generation, "empty"),
+    tiled: artifactLineage(input.generation, "tiled"),
+  });
+  const blank = () => freezeOverlay(emptyOverlay(input.kind, frame, sourceNormalizedHost));
 
   if (input.generation.status !== "ready") {
     return blank();
@@ -682,14 +693,7 @@ export function buildAfcAdminVisualOverlayV1(input: {
   if (!authority) {
     return blank();
   }
-  if (
-    !overlayGeometryTransferAllowed({
-      kind: input.kind,
-      original: artifactLineage(input.generation, "original"),
-      empty: artifactLineage(input.generation, "empty"),
-      tiled: artifactLineage(input.generation, "tiled"),
-    })
-  ) {
+  if (!sourceNormalizedHost) {
     return blank();
   }
 
@@ -707,6 +711,7 @@ export function buildAfcAdminVisualOverlayV1(input: {
         }
       : null,
     collisionEdges,
+    sourceNormalizedHost,
   });
 }
 

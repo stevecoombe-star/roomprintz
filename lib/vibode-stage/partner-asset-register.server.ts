@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import { attachModelThumbnailUrls } from "@/lib/vibode-model-thumbnail/persist.server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { resolvePartnerPortalContext } from "./partner-portal-auth.server";
@@ -305,7 +306,19 @@ export async function partnerRegisteredAssetListResponse(): Promise<PartnerPorta
     }
     return unavailable();
   }
-  return listPartnerRegisteredAssets({ auth, registry: stores.registry });
+  const listed = await listPartnerRegisteredAssets({ auth, registry: stores.registry });
+  if (listed.status !== 200 || !Array.isArray((listed.body as { assets?: unknown }).assets)) {
+    return listed;
+  }
+  const body = listed.body as { ok: true; assets: PartnerRegisteredAssetDto[] };
+  const assets = await attachModelThumbnailUrls(body.assets);
+  return {
+    status: 200,
+    body: {
+      ...body,
+      assets,
+    },
+  };
 }
 
 export type { PartnerRegisteredAssetDto };

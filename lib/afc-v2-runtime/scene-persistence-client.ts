@@ -4,8 +4,12 @@
  * Does not import the AFC engine, providers, or Lab analysis.
  */
 
-import type { PersistedSceneIdentity, PersistedVersionScene } from "./persisted-scene";
-import type { SerializedRuntimeScene } from "./types";
+import {
+  validatePersistedVersionScene,
+  type PersistedSceneIdentity,
+  type PersistedVersionScene,
+} from "./persisted-scene";
+import type { SceneObjectDefinition, SerializedRuntimeScene } from "./types";
 import {
   parseRuntimeAssetDefinitions,
   parseRuntimeAssetIssues,
@@ -122,6 +126,89 @@ export function interpretVersionSceneLoadResponse(input: Readonly<{
   return {
     status: "error",
     message: readOptionalString(payload?.error) ?? "Failed to load 3D scene.",
+  };
+}
+
+/**
+ * Stable empty furniture list for a resolved scene that has no objects.
+ * A missing row and a persisted `objects: []` snapshot are both initialized
+ * scenes. Callers must not treat length 0 as "not loaded".
+ */
+export const EMPTY_PRODUCTION_FURNITURE_OBJECTS: readonly SceneObjectDefinition[] =
+  Object.freeze([]);
+
+export type ProductionFurnitureSnapshot = Readonly<{
+  objects: readonly SceneObjectDefinition[];
+  origin: "default" | "persisted";
+  assetDefinitions: readonly RuntimeFurnitureAssetDefinition[];
+  assetIssues: readonly RuntimeAssetIssue[];
+}>;
+
+/**
+ * Authoritative furniture for one loaded room/version, or an unresolved read.
+ *
+ * Known empty (`none`, or a valid `objects: []` scene) and a generation
+ * mismatch (no scene for this generation) may initialize an empty scene.
+ * Store, transport, and malformed reads stay unresolved so they cannot
+ * become a baseline that a later save would upsert over.
+ * PI-4B demo sofas are not inserted here.
+ */
+export type ProductionFurnitureResolution =
+  | Readonly<{
+      status: "authoritative";
+      snapshot: ProductionFurnitureSnapshot;
+    }>
+  | Readonly<{
+      status: "unavailable";
+    }>;
+
+function emptyProductionFurnitureSnapshot(): ProductionFurnitureSnapshot {
+  return {
+    objects: EMPTY_PRODUCTION_FURNITURE_OBJECTS,
+    origin: "default",
+    assetDefinitions: [],
+    assetIssues: [],
+  };
+}
+
+export function resolveProductionFurnitureSnapshot(input: Readonly<{
+  interpreted: VersionSceneLoadResponse;
+  requestIdentity: PersistedSceneIdentity;
+}>): ProductionFurnitureResolution {
+  if (
+    input.interpreted.status === "none" ||
+    input.interpreted.status === "incompatible"
+  ) {
+    return {
+      status: "authoritative",
+      snapshot: emptyProductionFurnitureSnapshot(),
+    };
+  }
+  if (input.interpreted.status !== "ready") {
+    return { status: "unavailable" };
+  }
+  const parsed = validatePersistedVersionScene(input.interpreted.scene);
+  if (
+    !parsed.ok ||
+    parsed.scene.roomId !== input.requestIdentity.roomId ||
+    parsed.scene.versionId !== input.requestIdentity.versionId
+  ) {
+    return { status: "unavailable" };
+  }
+  if (parsed.scene.afcGenerationId !== input.requestIdentity.afcGenerationId) {
+    return {
+      status: "authoritative",
+      snapshot: emptyProductionFurnitureSnapshot(),
+    };
+  }
+  return {
+    status: "authoritative",
+    snapshot: {
+      objects: parsed.scene.objects,
+      origin: "persisted",
+      assetDefinitions: input.interpreted.assetDefinitions ?? [],
+      assetIssues: input.interpreted.assetIssues ?? [],
+    },
   };
 }
 

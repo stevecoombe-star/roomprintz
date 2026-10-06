@@ -16,6 +16,14 @@ import { useAfcSceneObjectCrudSession } from "@/components/afc-3d/AfcSceneObject
 import { Prepare3dRoomControl } from "@/components/afc-3d/Prepare3dRoomControl";
 import { StageFurnitureToolbar } from "@/components/stage/StageFurnitureToolbar";
 import { useOptionalStageEditor } from "@/components/stage/StageEditorContext";
+import { useStageTransformGizmos } from "@/lib/vibode-stage/use-stage-transform-gizmos";
+import {
+  registerModelAxisScaleLookup,
+  replaceScenePlacementFootprints,
+  type ModelAxisScale,
+} from "@/lib/afc-v2-runtime/model-axis-scale";
+import { stageModelAxisScale } from "@/lib/vibode-stage/furniture-model-scale";
+import type { StageCatalogSnapshot, StageVariant } from "@/lib/vibode-stage/types";
 
 type Props = Readonly<{
   roomId: string;
@@ -29,6 +37,23 @@ type Props = Readonly<{
   transformMode: RuntimeTransformMode;
   onTransformModeChange: (mode: RuntimeTransformMode) => void;
 }>;
+
+function stagePlacementScale(input: Readonly<{
+  assetId: string;
+  variantId?: string;
+  catalog: StageCatalogSnapshot;
+  extraVariants?: readonly StageVariant[];
+}>): ModelAxisScale {
+  const variant = input.variantId
+    ? [...input.extraVariants ?? [], ...input.catalog.variants].find((item) => item.variantId === input.variantId) ?? null
+    : null;
+  const asset = input.catalog.assets.find((item) => item.assetId === input.assetId) ?? null;
+  return stageModelAxisScale({
+    assetId: input.assetId,
+    variant,
+    asset,
+  });
+}
 
 function ViewportMessage({
   children,
@@ -77,9 +102,43 @@ export function AfcIntegratedEditorViewport({
       Boolean(runtime.authority && versionId && spatialAuthorityId),
   });
   const sceneCrud = useAfcSceneObjectCrudSession();
+  const showTransformGizmos = useStageTransformGizmos();
   const stage = useOptionalStageEditor();
   const bindScene = stage?.bindScene;
+  const stageCatalog = stage?.catalog;
+  const stageExtraVariants = stage?.extraVariants;
+
+  useEffect(() => {
+    if (!stageCatalog) return registerModelAxisScaleLookup(null);
+    return registerModelAxisScaleLookup(({ assetId, variantId }) => (
+      stagePlacementScale({
+        assetId,
+        variantId,
+        catalog: stageCatalog,
+        extraVariants: stageExtraVariants,
+      })
+    ));
+  }, [stageCatalog, stageExtraVariants]);
+
+  useEffect(() => {
+    if (!stageCatalog) return replaceScenePlacementFootprints([]);
+    return replaceScenePlacementFootprints(persistedScene.objects.map((object) => ({
+      objectId: object.objectId,
+      assetId: object.assetId,
+      scale: stagePlacementScale({
+        assetId: object.assetId,
+        variantId: object.variantId,
+        catalog: stageCatalog,
+        extraVariants: stageExtraVariants,
+      }),
+    })));
+  }, [persistedScene.objects, stageCatalog, stageExtraVariants]);
   const setSelection = stage?.setSelection;
+  const noteFurnitureBaseline = stage?.noteFurnitureBaseline;
+
+  useEffect(() => {
+    noteFurnitureBaseline?.(roomId, persistedScene.furnitureBaseline);
+  }, [noteFurnitureBaseline, persistedScene.furnitureBaseline, roomId]);
 
   useEffect(() => {
     bindScene?.({
@@ -162,6 +221,7 @@ export function AfcIntegratedEditorViewport({
         transformMode={transformMode}
         onTransformModeChange={onTransformModeChange}
         showInternalControls={false}
+        showTransformGizmos={showTransformGizmos}
         sceneObjects={persistedScene.objects}
         sceneInstanceId={persistedScene.sceneInstanceId}
         sceneReady={persistedScene.sceneReady}
@@ -173,6 +233,10 @@ export function AfcIntegratedEditorViewport({
         onLiveSceneHostChange={sceneCrud?.setHost}
         onLiveSceneSnapshotChange={sceneCrud?.setSnapshot}
         onSelectionPresentationChange={setSelection}
+        onSelectedObjectTranslated={stage?.noteSelectedObjectTranslated}
+        roomScaleMultiplier={stage?.roomScaleMultiplier}
+        trustedPath={stage?.trustedPath ?? null}
+        trustedPathVisible={stage?.trustedPathVisible === true}
       />
       <StageFurnitureToolbar />
       {!persistedScene.sceneReady ? (

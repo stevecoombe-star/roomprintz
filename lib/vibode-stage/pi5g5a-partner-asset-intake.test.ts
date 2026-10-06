@@ -959,8 +959,9 @@ test("PI-5G5A merchant UX distinguishes product dimensions from GLB measurement"
   assert.match(client, /formatPartnerIntakeMetresTriple/);
   assert.doesNotMatch(client, /Authored /);
   assert.doesNotMatch(client, /copy these numbers|adjust until validation/i);
-  assert.match(page, /actual product dimensions in metres/);
-  assert.match(page, /does not automatically\s+resize/);
+  assert.match(client, /actual product dimensions in metres/);
+  assert.match(client, /does not automatically\s+resize/);
+  assert.match(page, /View and manage the 3D models used across your Vibode catalog/);
   assert.match(
     merchantMessageForIntakeErrorCode("DIMENSION_MISMATCH"),
     /Confirm the product dimensions and make sure the GLB is modeled at real-world scale/,
@@ -1279,12 +1280,13 @@ test("PI-5G5A does not register runtime Assets or mutate commercial/runtime surf
   assert.match(source("lib/vibode-stage/partner-asset-intake.server.ts"), /getServiceRoleSupabaseClient/);
   assert.match(source("lib/vibode-stage/partner-asset-intake.server.ts"), /createSignedUploadUrl/);
   assert.match(source("app/api/vibode/partner/assets/intakes/[intakeId]/finalize/route.ts"), /runtime = "nodejs"/);
-  assert.match(source("app/partner/assets/page.tsx"), /metres/);
-  assert.match(source("app/partner/assets/page.tsx"), /does not automatically\s+resize/);
+  assert.match(source("app/partner/assets/page.tsx"), /<h1[^>]*>3D Models<\/h1>/);
+  assert.match(source("app/partner/assets/page.tsx"), /View and manage the 3D models used across your Vibode catalog/);
+  assert.match(source("app/partner/assets/PartnerAssetWorkspaceClient.tsx"), /does not automatically\s+resize/);
   assert.match(source("app/partner/assets/PartnerAssetWorkspaceClient.tsx"), /Width \(m\)/);
   assert.doesNotMatch(source("app/partner/assets/PartnerAssetWorkspaceClient.tsx"), /productId|variantId|collectionId|planVersion/);
   assert.doesNotMatch(source("app/partner/catalog/drafts/[draftId]/PartnerDraftWorkspaceClient.tsx"), /\/api\/vibode\/partner\/assets\/intakes/);
-  assert.match(source("app/partner/layout.tsx"), /href="\/partner\/assets"/);
+  assert.match(source("app/partner/PartnerPortalNav.tsx"), /href="\/partner\/assets"/);
   assert.match(source("package.json"), /test:afc-v2-pi5g5a/);
   for (const table of LIVE_CATALOG_TABLES) {
     assert.doesNotMatch(source("lib/vibode-stage/partner-asset-intake.server.ts"), new RegExp(`from\\("${table}"\\)`));

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import Link from "next/link";
 
 import AfcDiagnosticAdminCapturePanel from "../../AfcDiagnosticAdminCapturePanel";
+import AfcDiagnosticMetricDecisionPanel from "../../AfcDiagnosticMetricDecisionPanel";
 import { AdminDiagnosticsCopyButton } from "@/lib/afc-v2-diagnostics/admin-diagnostics-copy-button";
 import {
   AFC_DIAGNOSTIC_INSPECTOR_COPY,
@@ -175,6 +176,11 @@ function SelectedAttemptText({
             {afcDiagnosticInspectorRecoveryLabel(generation.recoverySafeFailureState)}
           </MetaRow>
         </dl>
+        <AfcDiagnosticMetricDecisionPanel
+          metricStatus={generation.metricStatus}
+          metricDecision={generation.metricDecision}
+          legacyMetricConclusion={generation.legacyMetricConclusion}
+        />
         {generation.failureReason != null ? (
           <div>
             <h3 className="text-xs uppercase tracking-wide text-slate-500">Failure</h3>

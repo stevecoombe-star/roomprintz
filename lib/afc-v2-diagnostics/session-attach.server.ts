@@ -77,7 +77,7 @@ export async function attachAfcDiagnosticSessionBestEffort(
   const ensure = options.ensureMembership ?? ensureAfcDiagnosticSessionMembership;
   try {
     return await ensure(input, {
-      env: options.env,
+      qaAccess: options.qaAccess,
       store: options.store,
     });
   } catch (error) {

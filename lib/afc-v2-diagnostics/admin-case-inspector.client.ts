@@ -23,11 +23,33 @@ import {
   type AfcDiagnosticInboxIssueChip,
 } from "./admin-case-inbox.client";
 import {
+  parseAfcDiagnosticAdminLegacyMetricConclusion,
+  parseAfcDiagnosticAdminMetricDecisionDto,
+  type AfcDiagnosticAdminLegacyMetricConclusion,
+  type AfcDiagnosticAdminMetricDecision,
+} from "./admin-metric-decision-dto";
+import {
+  parseAfcDiagnosticAdminArtifactLineageDto,
+  type AfcDiagnosticAdminArtifactLineage,
+} from "./admin-artifact-lineage-dto";
+import {
+  parseAfcDiagnosticAdminCameraRealizabilityDto,
+  type AfcDiagnosticAdminCameraRealizability,
+} from "./admin-camera-realizability-dto";
+import {
+  parseAfcDiagnosticAdminSettleDecisionDto,
+  type AfcDiagnosticAdminSettleDecision,
+} from "./admin-settle-decision-dto";
+import {
   isAfcDiagnosticCaseTrigger,
   isAfcDiagnosticMachineStatusSnapshot,
   isAfcDiagnosticReviewStatus,
   isAfcDiagnosticSessionStatus,
 } from "./contracts";
+import {
+  parseAfcImageGenerationProvenance,
+  type AfcImageGenerationProvenance,
+} from "@/lib/afc-image-models";
 
 export const AFC_DIAGNOSTIC_INSPECTOR_CASE_API_PATH =
   "/api/admin/afc-diagnostics/cases" as const;
@@ -96,6 +118,7 @@ export type AfcDiagnosticInspectorEngineFingerprint = Readonly<{
     requestedModelId: string;
     readerVersion: string | null;
   }>;
+  imageGeneration?: AfcImageGenerationProvenance;
 }>;
 
 export type AfcDiagnosticInspectorArtifactSummary = Readonly<{
@@ -122,6 +145,11 @@ export type AfcDiagnosticInspectorGenerationEvidence = Readonly<{
   analysisStatus: string | null;
   analysisReason: string | null;
   recoverySafeFailureState: string | null;
+  metricDecision: AfcDiagnosticAdminMetricDecision;
+  settleDecision: AfcDiagnosticAdminSettleDecision;
+  cameraRealizability: AfcDiagnosticAdminCameraRealizability;
+  artifactLineage: AfcDiagnosticAdminArtifactLineage;
+  legacyMetricConclusion: AfcDiagnosticAdminLegacyMetricConclusion | null;
   engineFingerprint: AfcDiagnosticInspectorEngineFingerprint | null;
   original: AfcDiagnosticInspectorSourceSummary | null;
   empty: AfcDiagnosticInspectorArtifactSummary;
@@ -358,6 +386,7 @@ function parseEngineFingerprint(
   ) {
     return undefined;
   }
+  const imageGeneration = parseAfcImageGenerationProvenance(value.imageGeneration);
   return Object.freeze({
     fingerprintSchemaVersion: value.fingerprintSchemaVersion,
     productionSchemaVersion: value.productionSchemaVersion,
@@ -382,6 +411,7 @@ function parseEngineFingerprint(
           ? value.tiled.readerVersion
           : null,
     }),
+    ...(imageGeneration ? { imageGeneration } : {}),
   });
 }
 
@@ -435,6 +465,24 @@ export function parseAfcDiagnosticInspectorGenerationEvidence(
     value.recoverySafeFailureState,
   );
   if (recoverySafeFailureState === undefined) return null;
+  const metricDecision = Object.prototype.hasOwnProperty.call(value, "metricDecision")
+    ? parseAfcDiagnosticAdminMetricDecisionDto(value.metricDecision)
+    : null;
+  const settleDecision = Object.prototype.hasOwnProperty.call(value, "settleDecision")
+    ? parseAfcDiagnosticAdminSettleDecisionDto(value.settleDecision)
+    : null;
+  const cameraRealizability = Object.prototype.hasOwnProperty.call(value, "cameraRealizability")
+    ? parseAfcDiagnosticAdminCameraRealizabilityDto(value.cameraRealizability)
+    : null;
+  const artifactLineage = Object.prototype.hasOwnProperty.call(value, "artifactLineage")
+    ? parseAfcDiagnosticAdminArtifactLineageDto(value.artifactLineage)
+    : null;
+  const legacyMetricConclusion = Object.prototype.hasOwnProperty.call(
+    value,
+    "legacyMetricConclusion",
+  )
+    ? parseAfcDiagnosticAdminLegacyMetricConclusion(value.legacyMetricConclusion)
+    : null;
   const engineFingerprint = parseEngineFingerprint(value.engineFingerprint);
   if (engineFingerprint === undefined) return null;
   const original = parseOptionalOriginal(value.original);
@@ -461,6 +509,11 @@ export function parseAfcDiagnosticInspectorGenerationEvidence(
     analysisStatus,
     analysisReason,
     recoverySafeFailureState,
+    metricDecision,
+    settleDecision,
+    cameraRealizability,
+    artifactLineage,
+    legacyMetricConclusion,
     engineFingerprint,
     original,
     empty,

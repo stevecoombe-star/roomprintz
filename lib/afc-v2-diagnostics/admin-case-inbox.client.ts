@@ -6,6 +6,7 @@
  */
 
 import type { AfcDiagnosticAdminCaseSummary } from "./admin-read-model";
+import { buildAfcDiagnosticVisualArtifactUrl } from "./admin-visual-evidence.client";
 import {
   isAfcDiagnosticCaseTrigger,
   isAfcDiagnosticMachineStatusSnapshot,
@@ -110,9 +111,14 @@ export const AFC_DIAGNOSTIC_INBOX_COPY = {
   invalidDate: "Enter a valid submitted date.",
   unknownIssue: "Unknown issue",
   notes: "Notes",
+  close: "Close",
+  closeCase: "Close Case",
+  closingCase: "Closing...",
   retry: "Retry",
   apply: "Apply",
   clearFilters: "Clear filters",
+  showClosed: "Show closed",
+  hideClosed: "Hide closed",
   refresh: "Refresh",
   backToAdmin: "Back to Admin",
   detailTitle: "Case detail",
@@ -254,6 +260,92 @@ export function afcDiagnosticInboxReviewLabel(
   return status;
 }
 
+export function afcDiagnosticInboxEffectiveShowClosed(
+  showClosed: boolean,
+  committedReviewStatus: AfcDiagnosticReviewStatus | null,
+): boolean {
+  return showClosed || committedReviewStatus === "closed";
+}
+
+export function afcDiagnosticInboxShowsClosedVisibilityToggle(
+  committedReviewStatus: AfcDiagnosticReviewStatus | null,
+): boolean {
+  return committedReviewStatus !== "closed";
+}
+
+export function afcDiagnosticInboxCaseNotesText(
+  notes: string | null,
+): string | null {
+  if (typeof notes !== "string" || notes.trim().length === 0) return null;
+  return notes;
+}
+
+export function afcDiagnosticInboxCaseCanClose(
+  reviewStatus: AfcDiagnosticReviewStatus | string,
+): boolean {
+  return reviewStatus !== "closed";
+}
+
+export function afcDiagnosticInboxViewportThumbnailUrl(input: {
+  caseId: string;
+  generationId: string;
+  kind: AfcDiagnosticAdminCaseSummary["viewportArtifactKind"];
+}): string | null {
+  if (!input.kind) return null;
+  return buildAfcDiagnosticVisualArtifactUrl({
+    caseId: input.caseId,
+    generationId: input.generationId,
+    kind: input.kind,
+  });
+}
+
+export function suppressAfcDiagnosticInboxRowActivation(event: {
+  preventDefault: () => void;
+  stopPropagation: () => void;
+}): void {
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+export function filterAfcDiagnosticCasesByClosedVisibility<
+  T extends { readonly reviewStatus: string },
+>(cases: readonly T[], showClosed: boolean): readonly T[] {
+  if (showClosed) return cases;
+  return cases.filter((item) => item.reviewStatus !== "closed");
+}
+
+export function countAfcDiagnosticInboxClosedCases(
+  cases: readonly { readonly reviewStatus: string }[],
+): number {
+  let count = 0;
+  for (const item of cases) {
+    if (item.reviewStatus === "closed") count += 1;
+  }
+  return count;
+}
+
+export function afcDiagnosticInboxClosedVisibilityLabel(
+  showClosed: boolean,
+  closedCount = 0,
+): string {
+  if (showClosed) return AFC_DIAGNOSTIC_INBOX_COPY.hideClosed;
+  if (closedCount > 0) {
+    return `${AFC_DIAGNOSTIC_INBOX_COPY.showClosed} (${closedCount})`;
+  }
+  return AFC_DIAGNOSTIC_INBOX_COPY.showClosed;
+}
+
+export function afcDiagnosticInboxEmptyStateUsesFilterCopy(input: {
+  hasCommittedFilters: boolean;
+  showClosed: boolean;
+  loadedCount: number;
+  visibleCount: number;
+}): boolean {
+  if (input.visibleCount > 0) return false;
+  if (input.hasCommittedFilters) return true;
+  return !input.showClosed && input.loadedCount > 0;
+}
+
 export function afcDiagnosticInboxTriggerLabel(
   trigger: AfcDiagnosticCaseTrigger | string,
 ): string {
@@ -301,22 +393,30 @@ export function afcDiagnosticInboxAttemptLabel(count: number): string {
 
 export function formatAfcDiagnosticInboxSubmittedAt(submittedAt: string): {
   display: string;
+  date: string;
+  time: string;
   title: string;
 } {
   const title = submittedAt;
   const ms = Date.parse(submittedAt);
   if (!Number.isFinite(ms)) {
-    return { display: "—", title };
+    return { display: "—", date: "—", time: "", title };
   }
+  const date = new Date(ms);
+  const dateOptions: Intl.DateTimeFormatOptions = {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  };
+  const timeOptions: Intl.DateTimeFormatOptions = {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  };
   return {
-    display: new Date(ms).toLocaleString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      second: "2-digit",
-    }),
+    display: date.toLocaleString(undefined, { ...dateOptions, ...timeOptions }),
+    date: date.toLocaleDateString(undefined, dateOptions),
+    time: date.toLocaleTimeString(undefined, timeOptions),
     title,
   };
 }
@@ -545,6 +645,44 @@ export function validateAfcDiagnosticInboxDraftFilters(input: {
   };
 }
 
+function parseInboxNotes(value: unknown): string | null | undefined {
+  if (!isRecord(value) || !("notes" in value)) return undefined;
+  if (value.notes == null) return null;
+  if (typeof value.notes !== "string") return undefined;
+  return value.notes;
+}
+
+function parseInboxViewportKind(
+  value: unknown,
+): AfcDiagnosticAdminCaseSummary["viewportArtifactKind"] | undefined {
+  if (!isRecord(value) || !("viewportArtifactKind" in value)) return undefined;
+  const kind = value.viewportArtifactKind;
+  if (kind == null) return null;
+  if (kind === "original" || kind === "empty" || kind === "tiled") return kind;
+  return undefined;
+}
+
+function parseInboxViewportFrame(
+  value: unknown,
+): AfcDiagnosticAdminCaseSummary["viewportFrame"] | undefined {
+  if (!isRecord(value) || !("viewportFrame" in value)) return undefined;
+  const frame = value.viewportFrame;
+  if (frame == null) return null;
+  if (!isRecord(frame)) return undefined;
+  if (typeof frame.width !== "number" || typeof frame.height !== "number") {
+    return undefined;
+  }
+  if (
+    !Number.isFinite(frame.width) ||
+    !Number.isFinite(frame.height) ||
+    !(frame.width > 0) ||
+    !(frame.height > 0)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({ width: frame.width, height: frame.height });
+}
+
 function parseIssueCodes(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null;
   const codes: string[] = [];
@@ -567,6 +705,12 @@ function parseCaseSummary(value: unknown): AfcDiagnosticAdminCaseSummary | null 
   if (!issueCodes) return null;
   if (typeof value.taxonomyVersion !== "string") return null;
   if (typeof value.hasNotes !== "boolean") return null;
+  const notes = parseInboxNotes(value);
+  if (notes === undefined) return null;
+  const viewportArtifactKind = parseInboxViewportKind(value);
+  if (viewportArtifactKind === undefined) return null;
+  const viewportFrame = parseInboxViewportFrame(value);
+  if (viewportFrame === undefined) return null;
   const roomId = parseAfcDiagnosticInboxUuid(value.roomId);
   if (!roomId) return null;
   const sessionId = parseAfcDiagnosticInboxUuid(value.sessionId);
@@ -597,6 +741,9 @@ function parseCaseSummary(value: unknown): AfcDiagnosticAdminCaseSummary | null 
     issueCodes: Object.freeze(issueCodes),
     taxonomyVersion: value.taxonomyVersion,
     hasNotes: value.hasNotes,
+    notes,
+    viewportArtifactKind,
+    viewportFrame,
     roomId,
     sessionId,
     sessionStatus: value.sessionStatus,

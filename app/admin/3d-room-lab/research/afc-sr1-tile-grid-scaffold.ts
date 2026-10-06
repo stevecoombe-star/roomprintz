@@ -14,6 +14,18 @@ import {
   type AfcR3cImagePairCompatibility,
 } from "./afc-r3c-image-pair-compatibility";
 import { callCompositorVibodeStageRun } from "@/lib/callCompositorVibodeStageRun";
+import { readAfcImageModelSettings } from "@/lib/afc-image-model-settings.server";
+import {
+  afcApprovedTiledProvenanceFields,
+  resolveAfcImageModel,
+  type AfcImageModelChoice,
+  type AfcImageModelProvider,
+} from "@/lib/afc-image-models";
+import {
+  editAfcImageWithOpenAi,
+  type AfcOpenAiImageEditDependencies,
+  type AfcOpenAiImageEditInput,
+} from "@/lib/afc-openai-image-edit.server";
 import {
   CompositorTransportError,
   toCompositorTransportDiagnostic,
@@ -56,17 +68,21 @@ export type AfcSr1TileGridScaffoldProvenance = Readonly<{
   generatorId: typeof AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID;
   profileId: typeof AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE;
   researchPreset: typeof AFC_SR1_TILE_GRID_SCAFFOLD_PRESET;
-  requestedModelId: typeof AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID;
+  requestedModelId: string;
   runId: string;
   generatedAt: string;
   appliedAspectRatio: string | null;
   imageTransport: "data_url" | "http_url";
   generationStatus: "generated";
+  imageChoice?: AfcImageModelChoice;
+  imageProvider?: AfcImageModelProvider;
+  imageQuality?: "high" | null;
 }>;
 
 export type AfcSr1Ts0GenerationFailureCode =
   | "invalid_empty_input"
   | "compositor_unavailable"
+  | "sunburst_generation_failed"
   | "timeout"
   | "connection_failure"
   | "http_4xx"
@@ -127,9 +143,15 @@ export type AfcSr1TileGridScaffoldArgs = Readonly<{
   maxOutputBytes: number;
   fetchTimeoutMs: number;
   allowLocalhostHttp: boolean;
+  /** Omitted reads the persisted TILED model. Tests and NBP stay on the compositor. */
+  imageModel?: AfcImageModelChoice;
   dependencies?: Readonly<{
     now?: () => Date;
     createRunId?: () => string;
+    editImage?: (
+      input: AfcOpenAiImageEditInput,
+      dependencies?: AfcOpenAiImageEditDependencies,
+    ) => ReturnType<typeof editAfcImageWithOpenAi>;
   }>;
 }>;
 
@@ -427,7 +449,45 @@ export async function vibodeTileGridScaffoldAssist(
       }),
     });
   }
-  if (!process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim()) {
+  const imageModel = args.imageModel
+    ?? (await readAfcImageModelSettings()).tiled;
+  const modelResolution = resolveAfcImageModel(imageModel);
+  const requestedModelId = modelResolution.modelId;
+  let generation: { imageUrl: string; appliedAspectRatio?: string | null };
+  if (modelResolution.provider === "openai") {
+    const edited = await (args.dependencies?.editImage ?? editAfcImageWithOpenAi)({
+      stage: "tiled",
+      imageBytes: empty.bytes,
+      mimeType: empty.identity.mimeType,
+      width: empty.identity.decodedWidth,
+      height: empty.identity.decodedHeight,
+    });
+    if (!edited.ok) {
+      const code = "sunburst_generation_failed";
+      return Object.freeze({
+        status: "failure",
+        code,
+        runId,
+        input: empty.identity,
+        diagnostic: generationDiagnostic({
+          classification: code,
+          failureBoundary: edited.reason.includes("missing OPENAI_API_KEY")
+            ? "pre_dispatch_readiness_failure"
+            : "knowable_generation_failure",
+          startedAt,
+          message: edited.reason,
+          authorizedAttemptCount: edited.reason.includes("missing OPENAI_API_KEY") ? 0 : 1,
+          providerDispatch: edited.reason.includes("missing OPENAI_API_KEY")
+            ? "not_attempted"
+            : "response_received",
+        }),
+      });
+    }
+    generation = {
+      imageUrl: `data:image/png;base64,${edited.base64}`,
+      appliedAspectRatio: edited.outputSize,
+    };
+  } else if (!process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim()) {
     const code = "compositor_unavailable";
     return Object.freeze({
       status: "failure",
@@ -443,42 +503,41 @@ export async function vibodeTileGridScaffoldAssist(
         providerDispatch: "not_attempted",
       }),
     });
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    AFC_SR1_TS0_GENERATION_TIMEOUT_MS
-  );
-  let generation: Awaited<ReturnType<typeof callCompositorVibodeStageRun>>;
-  try {
-    generation = await callCompositorVibodeStageRun({
-      payload: {
-        stage: 2,
-        baseImageBase64: empty.bytes.toString("base64"),
-        modelVersion: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
-        flooringPreset: AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
-        researchProfile: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
-        isContinuation: true,
-        repairDamage: false,
-        repaintWalls: false,
-        heavyDeclutter: false,
-        renovateRoom: false,
-        aspectRatio: "auto",
-      },
-      signal: controller.signal,
-    });
-  } catch (error) {
-    const failure = classifyGenerationError(error, startedAt);
-    return Object.freeze({
-      status: "failure",
-      code: failure.code,
-      runId,
-      input: empty.identity,
-      diagnostic: failure.diagnostic,
-    });
-  } finally {
-    clearTimeout(timeout);
+  } else {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      AFC_SR1_TS0_GENERATION_TIMEOUT_MS
+    );
+    try {
+      generation = await callCompositorVibodeStageRun({
+        payload: {
+          stage: 2,
+          baseImageBase64: empty.bytes.toString("base64"),
+          modelVersion: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+          flooringPreset: AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
+          researchProfile: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
+          isContinuation: true,
+          repairDamage: false,
+          repaintWalls: false,
+          heavyDeclutter: false,
+          renovateRoom: false,
+          aspectRatio: "auto",
+        },
+        signal: controller.signal,
+      });
+    } catch (error) {
+      const failure = classifyGenerationError(error, startedAt);
+      return Object.freeze({
+        status: "failure",
+        code: failure.code,
+        runId,
+        input: empty.identity,
+        diagnostic: failure.diagnostic,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   const decoded = await decodeCompositorResult({
@@ -565,12 +624,13 @@ export async function vibodeTileGridScaffoldAssist(
       generatorId: AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
       profileId: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
       researchPreset: AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
-      requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+      requestedModelId,
       runId,
       generatedAt,
       appliedAspectRatio: sanitizeAppliedAspectRatio(generation.appliedAspectRatio),
       imageTransport: decoded.imageTransport,
-      generationStatus: "generated",
+      generationStatus: "generated" as const,
+      ...afcApprovedTiledProvenanceFields(imageModel),
     }),
     compatibility,
   });

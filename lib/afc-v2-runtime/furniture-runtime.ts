@@ -14,6 +14,10 @@ import {
   type FurnitureAssetResolver,
 } from "./furniture-assets";
 import {
+  isIdentityModelAxisScale,
+  takePlacementFootprintScale,
+} from "./model-axis-scale";
+import {
   AFC_V2_RUNTIME_COORDINATE_SPACE,
   AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
   AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH,
@@ -106,7 +110,22 @@ export function furnitureAssetPlacementAabb(
 ): LocalAabb | null {
   const asset = resolver(assetId);
   if (!asset) return null;
-  return authoredPlacementLocalAabb(asset);
+  const native = authoredPlacementLocalAabb(asset);
+  if (!native) return null;
+  const scale = takePlacementFootprintScale(assetId);
+  if (!scale || isIdentityModelAxisScale(scale)) return native;
+  return Object.freeze({
+    min: Object.freeze({
+      x: native.min.x * scale.x,
+      y: native.min.y * scale.y,
+      z: native.min.z * scale.z,
+    }),
+    max: Object.freeze({
+      x: native.max.x * scale.x,
+      y: native.max.y * scale.y,
+      z: native.max.z * scale.z,
+    }),
+  });
 }
 
 export function pi4aFurnitureGlbPublicPath(): string {

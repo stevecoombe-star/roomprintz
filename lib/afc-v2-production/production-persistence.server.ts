@@ -7,6 +7,22 @@ import type { AfcSr1GeneratedTiledArtifact } from "@/app/admin/3d-room-lab/afc-s
 import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 
 import type { AfcV2ProductionRoomAuthority } from "./production-authority-contract";
+import {
+  parseAfcV2MetricDecision,
+  type AfcV2MetricDecisionPersistedValue,
+} from "./metric-decision-diagnostic";
+import {
+  parseAfcV2ArtifactLineage,
+  type AfcV2ArtifactLineagePersistedValue,
+} from "./artifact-lineage-diagnostic";
+import {
+  parseAfcV2CameraRealizability,
+  type AfcV2CameraRealizabilityPersistedValue,
+} from "./camera-realizability-diagnostic";
+import {
+  parseAfcV2SettleDecision,
+  type AfcV2SettleDecisionPersistedValue,
+} from "./settle-decision-diagnostic";
 import { durableArtifactBytesMatch } from "./production-artifact-integrity";
 import {
   buildAfcV2EngineFingerprint,
@@ -36,6 +52,34 @@ import {
 } from "./production-store";
 
 type AnySupabase = SupabaseClient;
+
+function metricDecisionFromRow(value: unknown): AfcV2MetricDecisionPersistedValue {
+  if (value == null) return null;
+  const parsed = parseAfcV2MetricDecision(value);
+  return parsed.ok ? parsed.decision : null;
+}
+
+function settleDecisionFromRow(value: unknown): AfcV2SettleDecisionPersistedValue {
+  if (value == null) return null;
+  const parsed = parseAfcV2SettleDecision(value);
+  return parsed.ok ? parsed.decision : null;
+}
+
+function cameraRealizabilityFromRow(
+  value: unknown,
+): AfcV2CameraRealizabilityPersistedValue {
+  if (value == null) return null;
+  const parsed = parseAfcV2CameraRealizability(value);
+  return parsed.ok ? parsed.decision : null;
+}
+
+function artifactLineageFromRow(
+  value: unknown,
+): AfcV2ArtifactLineagePersistedValue {
+  if (value == null) return null;
+  const parsed = parseAfcV2ArtifactLineage(value);
+  return parsed.ok ? parsed.decision : null;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -140,6 +184,16 @@ function rowToGeneration(row: Record<string, unknown>): AfcGenerationRecord {
     metricStatus: typeof row.metric_status === "string" ? row.metric_status : null,
     collisionStatus: typeof row.collision_status === "string"
       ? row.collision_status
+      : null,
+    metricDecision: metricDecisionFromRow(row.metric_decision),
+    settleDecision: settleDecisionFromRow(row.settle_decision),
+    cameraRealizability: cameraRealizabilityFromRow(row.camera_realizability_decision),
+    artifactLineage: artifactLineageFromRow(row.artifact_lineage_decision),
+    manualPerspective: Object.prototype.hasOwnProperty.call(row, "manual_perspective")
+      ? row.manual_perspective ?? null
+      : null,
+    recoveryProvenance: Object.prototype.hasOwnProperty.call(row, "recovery_provenance")
+      ? row.recovery_provenance ?? null
       : null,
     providerProvenance: isRecord(row.provider_provenance)
       ? Object.freeze({ ...row.provider_provenance })
@@ -320,8 +374,23 @@ export function createSupabaseAfcProductionStore(
       if (patch.collisionStatus !== undefined) {
         update.collision_status = patch.collisionStatus;
       }
+      if (patch.metricDecision !== undefined) {
+        update.metric_decision = patch.metricDecision;
+      }
+      if (patch.settleDecision !== undefined) {
+        update.settle_decision = patch.settleDecision;
+      }
+      if (patch.cameraRealizability !== undefined) {
+        update.camera_realizability_decision = patch.cameraRealizability;
+      }
+      if (patch.artifactLineage !== undefined) {
+        update.artifact_lineage_decision = patch.artifactLineage;
+      }
       if (patch.providerProvenance !== undefined) {
         update.provider_provenance = patch.providerProvenance;
+      }
+      if (patch.recoveryProvenance !== undefined) {
+        update.recovery_provenance = patch.recoveryProvenance;
       }
       const { data, error } = await supabase
         .from("vibode_afc_generations")

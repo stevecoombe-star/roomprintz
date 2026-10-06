@@ -7,17 +7,15 @@ export default function PartnerAssetsPage() {
   return (
     <main className="space-y-6">
       <section className="space-y-2">
-        <h2 className="text-lg font-semibold">Partner assets</h2>
-        <p className="text-sm text-slate-300">
-          Upload a furniture GLB and enter the actual product dimensions in metres.
-          Vibode measures the GLB and checks that the model is correctly scaled.
+        <h1 className="break-words text-lg font-semibold">3D Models</h1>
+        <p className="max-w-2xl text-sm text-slate-300">
+          View and manage the 3D models used across your Vibode catalog.
         </p>
-        <p className="text-sm text-slate-400">
-          The GLB should already be modeled at real-world scale. Vibode does not automatically
-          resize uploaded furniture. A validated intake is not a runtime-ready Asset. Register
-          Asset creates an immutable technical Asset whose runtime activation is still pending.
-          After registration, Activate Runtime makes the Asset available to the Vibode room
-          runtime. Registered Assets are not available in Product or Variant authoring yet.
+        <p className="max-w-2xl text-sm text-slate-400">
+          Upload new models while editing a Product or Variant.{" "}
+          <a href="/partner/catalog" className="text-slate-200 underline">
+            Open Catalog
+          </a>
         </p>
       </section>
       <PartnerAssetWorkspaceClient />

@@ -1,0 +1,1148 @@
+import "server-only";
+
+import { createHash, randomUUID } from "node:crypto";
+
+import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import { createProductionAfcStoreFromEnv } from "@/lib/afc-v2-production/production-persistence.server";
+import { furnitureAssetDefinition } from "@/lib/afc-v2-runtime/furniture-assets";
+import {
+  authorizeOwned3dSceneContext,
+  resolvePersistedSceneCompatibility,
+  validatePersistedVersionScene,
+  PI4C_SCENE_TABLE,
+  type PersistedVersionScene,
+} from "@/lib/afc-v2-runtime/persisted-scene";
+import type { LoadedSceneRow } from "@/lib/afc-v2-runtime/scene-inheritance";
+import {
+  AFC_V2_RUNTIME_CAMERA_FAR,
+  AFC_V2_RUNTIME_CAMERA_NEAR,
+  AFC_V2_USER_SIZE_DEFAULT,
+  type SceneObjectDefinition,
+} from "@/lib/afc-v2-runtime/types";
+import { mapSceneObjectsBetweenCameras } from "@/lib/afc-v2-runtime/effective-floor-remap";
+import { resolveEffectiveProductionAuthority } from "@/lib/afc-v2-runtime/effective-production-authority";
+import type { ModelAxisScale } from "@/lib/afc-v2-runtime/model-axis-scale";
+import { persistedMetricScale, validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
+import type { RuntimeAssetIssue } from "@/lib/afc-v2-runtime/runtime-furniture-assets";
+import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
+import {
+  FURNITURE_MODEL_SCALE_ASSET_TABLE,
+  FURNITURE_MODEL_SCALE_VARIANT_TABLE,
+  furnitureAxisScaleOrUndefined,
+  stageAssetDimensionFromRow,
+  stageModelAxisScale,
+  stageVariantDimensionFromRow,
+  type StageAssetModelRecord,
+  type StageVariantModelRecord,
+} from "@/lib/vibode-stage/furniture-model-scale";
+import { lookupPartnerRuntimeAssets } from "@/lib/vibode-stage/partner-runtime-assets.server";
+import {
+  ROOM_SCALE_DEFAULT,
+  effectiveMetricScale,
+  parseRoomScaleMultiplier,
+} from "@/lib/vibode-stage/room-scale";
+import {
+  expiresAtFromNow,
+  resolveSceneRuntimeAssets,
+  type DynamicRuntimeLookupRow,
+  type SignedGetMintResult,
+} from "@/lib/vibode-stage/partner-runtime-assets";
+
+import {
+  consumeThumbnailRenderToken,
+  mintThumbnailRenderToken,
+  readSignedThumbnailRenderToken,
+  verifyThumbnailRenderToken,
+} from "./access.server";
+import {
+  isServerMintedThumbnailSignedUrl,
+  isServerThumbnailBackgroundUrl,
+  thumbnailAssetUrlPolicyFromEnv,
+  thumbnailRenderError,
+  validateVibodeThumbnailRenderPayload,
+  VIBODE_THUMBNAIL_ASSET_URL_EXPIRES_SEC,
+  VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION,
+  type ThumbnailRenderUrlPolicy,
+  type VibodeThumbnailRenderFailure,
+  type VibodeThumbnailRenderPayload,
+} from "./contract";
+import {
+  VIBODE_PRODUCTION_AMBIENT_INTENSITY,
+  VIBODE_PRODUCTION_DIRECTIONAL_INTENSITY,
+  VIBODE_PRODUCTION_DIRECTIONAL_POSITION,
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_LIFT_M,
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_OPACITY,
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_SOFTNESS,
+  VIBODE_THUMBNAIL_CONTACT_SHADOW_TECHNIQUE,
+} from "./still-renderer";
+
+type RoomRecord = Readonly<{
+  id: string;
+  userId: string;
+  currentAfcGenerationId: string | null;
+}>;
+
+type VersionRecord = Readonly<{
+  id: string;
+  roomId: string;
+  userId: string;
+  imageUrl: string | null;
+  storageBucket: string | null;
+  storagePath: string | null;
+}>;
+
+type GenerationRecord = Readonly<{
+  id: string;
+  roomId: string;
+  userId: string;
+  status: string;
+  productionAuthority: unknown;
+  manualPerspective?: unknown;
+}>;
+
+export type ThumbnailRenderSource = Readonly<{
+  policy: ThumbnailRenderUrlPolicy;
+  loadRoom: (roomId: string) => Promise<RoomRecord | null>;
+  loadVersion: (versionId: string) => Promise<VersionRecord | null>;
+  loadGeneration: (generationId: string) => Promise<GenerationRecord | null>;
+  loadScene: (roomId: string, versionId: string) => Promise<LoadedSceneRow>;
+  loadSceneUpdatedAt?: (roomId: string, versionId: string) => Promise<string | null>;
+  signStorageUrl: (bucket: string, path: string) => Promise<string | null>;
+  lookupDynamicAssets: (
+    assetIds: readonly string[],
+  ) => Promise<readonly DynamicRuntimeLookupRow[]>;
+  mintDynamicSignedGet: (row: DynamicRuntimeLookupRow) => Promise<SignedGetMintResult>;
+  /** Absent in tests. Production reads durable room_scale_multiplier. */
+  loadRoomScaleMultiplier?: (roomId: string) => Promise<
+    | Readonly<{ ok: true; roomScaleMultiplier: number }>
+    | Readonly<{ ok: false }>
+  >;
+  /**
+   * Absent in tests. Production reads the same variant and asset dimension
+   * columns the STAGE catalog uses. Called only when a scene object has a variant.
+   */
+  lookupStageModelDimensions?: (query: Readonly<{
+    assetIds: readonly string[];
+    variantIds: readonly string[];
+  }>) => Promise<
+    | Readonly<{
+      ok: true;
+      assets: readonly StageAssetModelRecord[];
+      variants: readonly StageVariantModelRecord[];
+    }>
+    | Readonly<{ ok: false }>
+  >;
+}>;
+
+export type ThumbnailRenderBuildResult =
+  | Readonly<{ ok: true; payload: VibodeThumbnailRenderPayload }>
+  | VibodeThumbnailRenderFailure;
+
+export async function buildVibodeThumbnailRenderPayload(
+  input: Readonly<{ roomId: string; versionId: string; jobId?: string }>,
+  source: ThumbnailRenderSource = createProductionThumbnailRenderSource(),
+): Promise<ThumbnailRenderBuildResult> {
+  const room = await source.loadRoom(input.roomId);
+  const version = room ? await source.loadVersion(input.versionId) : null;
+  const generationId = room?.currentAfcGenerationId ?? "";
+  const generation = generationId ? await source.loadGeneration(generationId) : null;
+  const authorized = authorizeOwned3dSceneContext({
+    userId: room?.userId ?? null,
+    room,
+    version,
+    generation: generation
+      ? {
+          id: generation.id,
+          roomId: generation.roomId,
+          userId: generation.userId,
+          status: generation.status,
+        }
+      : null,
+    requestedRoomId: input.roomId,
+    requestedVersionId: input.versionId,
+    requestedAfcGenerationId: generationId,
+  });
+  if (!authorized.ok) {
+    if (
+      authorized.error === "AFC generation is not production-ready." ||
+      authorized.error === "AFC generation is not the room's current spatial authority." ||
+      authorized.error === "AFC generation not found."
+    ) {
+      return thumbnailRenderError(
+        "camera_authority_missing",
+        "Production camera authority is not ready.",
+        false,
+      );
+    }
+    return thumbnailRenderError(
+      "render_access_denied",
+      "Render access denied.",
+      false,
+    );
+  }
+
+  const validated = validateProductionRuntimeAuthority(generation?.productionAuthority);
+  if (!validated.ok) {
+    return thumbnailRenderError(
+      "camera_authority_missing",
+      "Production camera authority is missing.",
+      false,
+    );
+  }
+
+  const loaded = await source.loadScene(input.roomId, input.versionId);
+  if (!loaded.found || "malformed" in loaded) {
+    return thumbnailRenderError(
+      "scene_missing",
+      "Saved 3D scene is missing.",
+      false,
+    );
+  }
+  const placed = placeSceneInEffectiveWorld(
+    validated.authority,
+    generation?.manualPerspective ?? null,
+    loaded.scene,
+  );
+  if (!placed) {
+    return thumbnailRenderError(
+      "scene_missing",
+      "Saved furniture cannot be placed in the manual perspective.",
+      false,
+    );
+  }
+  const compatibility = resolvePersistedSceneCompatibility({
+    storedAfcGenerationId: placed.scene.afcGenerationId,
+    currentAfcGenerationId: placed.authority.generationId,
+  });
+  if (!compatibility.ok) {
+    return thumbnailRenderError(
+      "generation_mismatch",
+      "Saved scene does not match the current AFC generation.",
+      false,
+    );
+  }
+  if (placed.scene.objects.length === 0) {
+    return thumbnailRenderError(
+      "scene_empty",
+      "Saved scene has no furniture.",
+      false,
+    );
+  }
+
+  const background = await resolveBackground(version, source);
+  if (!background) {
+    return thumbnailRenderError(
+      "background_missing",
+      "History background image is missing.",
+      false,
+    );
+  }
+
+  const resolvedAssets = await resolveObjectAssets(placed.scene.objects, source);
+  if (!resolvedAssets.ok) return resolvedAssets.failure;
+
+  const scaled = await thumbnailRenderScaleState(
+    source,
+    placed.authority,
+    input.roomId,
+    placed.scene.objects,
+  );
+  if (!scaled.ok) return scaled;
+
+  const payload = assemblePayload({
+    jobId: input.jobId ?? randomUUID(),
+    scene: placed.scene,
+    authority: placed.authority,
+    background,
+    glbUrls: resolvedAssets.glbUrls,
+    policy: source.policy,
+    metricScale: scaled.metricScale,
+    modelAxisScales: scaled.modelAxisScales,
+  });
+  if (!payload.ok) {
+    return thumbnailRenderError("glb_identity_missing", payload.reason, false);
+  }
+  return { ok: true, payload: payload.payload };
+}
+
+export async function mintVibodeThumbnailRenderAccess(
+  input: Readonly<{ roomId: string; versionId: string }>,
+  source?: ThumbnailRenderSource,
+): Promise<
+  | Readonly<{
+      ok: true;
+      accessToken: string;
+      jobId: string;
+      expiresAt: string;
+      frame: { width: number; height: number };
+      objectCount: number;
+    }>
+  | VibodeThumbnailRenderFailure
+> {
+  const built = await buildVibodeThumbnailRenderPayload(input, source);
+  if (!built.ok) return built;
+  const minted = mintThumbnailRenderToken({
+    jobId: built.payload.job.jobId,
+    roomId: built.payload.room.roomId,
+    versionId: built.payload.room.versionId,
+    contentToken: built.payload.job.contentToken,
+  });
+  if (!minted) {
+    return thumbnailRenderError(
+      "render_access_denied",
+      "Render access denied.",
+      false,
+    );
+  }
+  return {
+    ok: true,
+    accessToken: minted.token,
+    jobId: built.payload.job.jobId,
+    expiresAt: new Date(minted.claims.exp).toISOString(),
+    frame: built.payload.frame,
+    objectCount: built.payload.objects.length,
+  };
+}
+
+export type ThumbnailRenderClaimRecord = Readonly<{
+  jobId: string;
+  roomId: string;
+  versionId: string;
+  contentToken: string;
+  expiresAtMs: number;
+}>;
+
+export type ThumbnailRenderClaimLookup = (
+  nonce: string,
+) => Promise<ThumbnailRenderClaimRecord | null>;
+
+export async function readVibodeThumbnailRenderAccess(
+  token: string,
+  source?: ThumbnailRenderSource,
+  authorize?: Readonly<{
+    lookupClaim?: ThumbnailRenderClaimLookup;
+    nowMs?: number;
+  }>,
+): Promise<ThumbnailRenderBuildResult> {
+  const nowMs = authorize?.nowMs ?? Date.now();
+  const signed = readSignedThumbnailRenderToken(token, nowMs);
+  if (!signed) {
+    return thumbnailRenderError(
+      "render_access_denied",
+      "Render access denied.",
+      false,
+    );
+  }
+  const durable = authorize?.lookupClaim
+    ? await authorize.lookupClaim(signed.nonce)
+    : null;
+  if (durable) {
+    const durableMatches = durable.jobId === signed.jobId &&
+      durable.roomId === signed.roomId &&
+      durable.versionId === signed.versionId &&
+      durable.contentToken === signed.contentToken &&
+      durable.expiresAtMs > nowMs;
+    if (!durableMatches) {
+      return thumbnailRenderError(
+        "render_access_denied",
+        "Render access denied.",
+        false,
+      );
+    }
+  }
+  const claims = durable
+    ? signed
+    : verifyThumbnailRenderToken(token, nowMs);
+  if (!claims) {
+    return thumbnailRenderError(
+      "render_access_denied",
+      "Render access denied.",
+      false,
+    );
+  }
+  const built = await buildVibodeThumbnailRenderPayload({
+    roomId: claims.roomId,
+    versionId: claims.versionId,
+    jobId: claims.jobId,
+  }, source);
+  if (!built.ok) return built;
+  if (
+    built.payload.job.contentToken !== claims.contentToken ||
+    built.payload.room.roomId !== claims.roomId ||
+    built.payload.room.versionId !== claims.versionId ||
+    built.payload.job.jobId !== claims.jobId
+  ) {
+    consumeThumbnailRenderToken(claims);
+    return thumbnailRenderError(
+      "render_access_denied",
+      "Render access denied.",
+      false,
+    );
+  }
+  consumeThumbnailRenderToken(claims);
+  return built;
+}
+
+export function thumbnailSceneContentToken(input: Readonly<{
+  scene: PersistedVersionScene;
+  authority: AfcV2ProductionRoomAuthority;
+  metricScale: number;
+  background: Readonly<{ bucket: string; objectPath: string }>;
+  objects: readonly Readonly<{
+    objectId: string;
+    assetId: string;
+    position: { x: number; y: number; z: number };
+    rotationDeg: { x: number; y: number; z: number };
+    userSizeMultiplier: number;
+    modelAxisScale?: ModelAxisScale;
+  }>[];
+}>): string {
+  const camera = input.authority.frozenCamera;
+  return thumbnailContentToken({
+    renderContract: VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION,
+    contactShadows: {
+      technique: VIBODE_THUMBNAIL_CONTACT_SHADOW_TECHNIQUE,
+      opacity: VIBODE_THUMBNAIL_CONTACT_SHADOW_OPACITY,
+      softness: VIBODE_THUMBNAIL_CONTACT_SHADOW_SOFTNESS,
+      liftM: VIBODE_THUMBNAIL_CONTACT_SHADOW_LIFT_M,
+    },
+    roomId: input.scene.roomId,
+    versionId: input.scene.versionId,
+    afcGenerationId: input.authority.generationId,
+    frame: {
+      width: camera.frame.width,
+      height: camera.frame.height,
+    },
+    camera: {
+      verticalFovDeg: camera.verticalFovDeg,
+      position: camera.pose.position,
+      lookAt: camera.pose.lookAt,
+      up: camera.pose.up,
+      metricScale: input.metricScale,
+    },
+    background: {
+      bucket: input.background.bucket,
+      objectPath: input.background.objectPath,
+    },
+    objects: input.objects.map((object) => {
+      const modelAxisScale = furnitureAxisScaleOrUndefined(object.modelAxisScale);
+      return {
+        objectId: object.objectId,
+        assetId: object.assetId,
+        position: object.position,
+        rotationDeg: object.rotationDeg,
+        userSizeMultiplier: object.userSizeMultiplier,
+        ...(modelAxisScale ? { modelAxisScale } : {}),
+      };
+    }),
+  });
+}
+
+function uniqueIds(values: readonly (string | undefined)[]): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    ids.push(value);
+  }
+  return ids;
+}
+
+async function thumbnailRenderScaleState(
+  source: ThumbnailRenderSource,
+  authority: AfcV2ProductionRoomAuthority,
+  roomId: string,
+  objects: readonly SceneObjectDefinition[],
+): Promise<
+  | Readonly<{
+    ok: true;
+    metricScale: number;
+    modelAxisScales: ReadonlyMap<string, ModelAxisScale>;
+  }>
+  | VibodeThumbnailRenderFailure
+> {
+  let roomScaleMultiplier = ROOM_SCALE_DEFAULT;
+  if (source.loadRoomScaleMultiplier) {
+    try {
+      const loaded = await source.loadRoomScaleMultiplier(roomId);
+      if (!loaded.ok) {
+        return thumbnailRenderError(
+          "render_page_error",
+          "Room scale could not be loaded.",
+          true,
+        );
+      }
+      roomScaleMultiplier = parseRoomScaleMultiplier(loaded.roomScaleMultiplier) ??
+        ROOM_SCALE_DEFAULT;
+    } catch {
+      return thumbnailRenderError(
+        "render_page_error",
+        "Room scale could not be loaded.",
+        true,
+      );
+    }
+  }
+  const metricScale = effectiveMetricScale(
+    persistedMetricScale(authority),
+    roomScaleMultiplier,
+  );
+  const modelAxisScales = new Map<string, ModelAxisScale>();
+  const variantIds = uniqueIds(objects.map((object) => object.variantId));
+  if (variantIds.length === 0 || !source.lookupStageModelDimensions) {
+    return { ok: true, metricScale, modelAxisScales };
+  }
+  let lookedUp: Awaited<ReturnType<NonNullable<ThumbnailRenderSource["lookupStageModelDimensions"]>>>;
+  try {
+    lookedUp = await source.lookupStageModelDimensions({
+      assetIds: uniqueIds(
+        objects.filter((object) => object.variantId).map((object) => object.assetId),
+      ),
+      variantIds,
+    });
+  } catch {
+    return thumbnailRenderError(
+      "render_page_error",
+      "Furniture dimensions could not be loaded.",
+      true,
+    );
+  }
+  if (!lookedUp.ok) {
+    return thumbnailRenderError(
+      "render_page_error",
+      "Furniture dimensions could not be loaded.",
+      true,
+    );
+  }
+  const assets = new Map(lookedUp.assets.map((asset) => [asset.assetId, asset]));
+  const variants = new Map(lookedUp.variants.map((variant) => [variant.variantId, variant]));
+  for (const object of objects) {
+    if (!object.variantId) continue;
+    modelAxisScales.set(object.objectId, stageModelAxisScale({
+      assetId: object.assetId,
+      asset: assets.get(object.assetId) ?? null,
+      variant: variants.get(object.variantId) ?? null,
+    }));
+  }
+  return { ok: true, metricScale, modelAxisScales };
+}
+
+function placeSceneInEffectiveWorld(
+  automatic: AfcV2ProductionRoomAuthority,
+  manualPerspective: unknown,
+  scene: PersistedVersionScene,
+): Readonly<{
+  authority: AfcV2ProductionRoomAuthority;
+  scene: PersistedVersionScene;
+}> | null {
+  const effective = resolveEffectiveProductionAuthority(automatic, manualPerspective);
+  if (effective.kind === "automatic") {
+    return { authority: automatic, scene };
+  }
+  const objects = mapSceneObjectsBetweenCameras(
+    scene.objects,
+    automatic.frozenCamera,
+    effective.authority.frozenCamera,
+  );
+  if (!objects) return null;
+  return {
+    authority: effective.authority,
+    scene: { ...scene, objects },
+  };
+}
+
+function assemblePayload(input: Readonly<{
+  jobId: string;
+  scene: PersistedVersionScene;
+  authority: AfcV2ProductionRoomAuthority;
+  background: ThumbnailBackgroundIdentity;
+  glbUrls: ReadonlyMap<string, string>;
+  policy: ThumbnailRenderUrlPolicy;
+  metricScale: number;
+  modelAxisScales: ReadonlyMap<string, ModelAxisScale>;
+}>):
+  | Readonly<{ ok: true; payload: VibodeThumbnailRenderPayload }>
+  | Readonly<{ ok: false; reason: string }> {
+  const objects = input.scene.objects.map((object) => {
+    const glbUrl = input.glbUrls.get(object.assetId) ?? "";
+    const modelAxisScale = furnitureAxisScaleOrUndefined(
+      input.modelAxisScales.get(object.objectId),
+    );
+    return {
+      objectId: object.objectId,
+      assetId: object.assetId,
+      glbUrl,
+      position: {
+        x: object.transform.position.x,
+        y: object.transform.position.y,
+        z: object.transform.position.z,
+      },
+      rotationDeg: {
+        x: object.transform.rotationDeg.x,
+        y: object.transform.rotationDeg.y,
+        z: object.transform.rotationDeg.z,
+      },
+      userSizeMultiplier: object.userSizeMultiplier ?? AFC_V2_USER_SIZE_DEFAULT,
+      ...(modelAxisScale ? { modelAxisScale } : {}),
+    };
+  });
+  const draft = {
+    schemaVersion: VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION,
+    job: {
+      jobId: input.jobId,
+      contentToken: thumbnailSceneContentToken({
+        scene: input.scene,
+        authority: input.authority,
+        metricScale: input.metricScale,
+        background: input.background,
+        objects,
+      }),
+    },
+    room: {
+      roomId: input.scene.roomId,
+      versionId: input.scene.versionId,
+      afcGenerationId: input.authority.generationId,
+    },
+    frame: {
+      width: input.authority.frozenCamera.frame.width,
+      height: input.authority.frozenCamera.frame.height,
+    },
+    background: { url: input.background.url },
+    camera: {
+      verticalFovDeg: input.authority.frozenCamera.verticalFovDeg,
+      position: { ...input.authority.frozenCamera.pose.position },
+      lookAt: { ...input.authority.frozenCamera.pose.lookAt },
+      up: { ...input.authority.frozenCamera.pose.up },
+      metricScale: input.metricScale,
+      near: AFC_V2_RUNTIME_CAMERA_NEAR,
+      far: AFC_V2_RUNTIME_CAMERA_FAR,
+    },
+    objects,
+    lighting: {
+      ambientIntensity: VIBODE_PRODUCTION_AMBIENT_INTENSITY,
+      directionalIntensity: VIBODE_PRODUCTION_DIRECTIONAL_INTENSITY,
+      directionalPosition: { ...VIBODE_PRODUCTION_DIRECTIONAL_POSITION },
+    },
+  };
+  return validateVibodeThumbnailRenderPayload(draft, input.policy);
+}
+
+type ThumbnailBackgroundIdentity = Readonly<{
+  url: string;
+  bucket: string;
+  objectPath: string;
+}>;
+
+export function thumbnailContentToken(value: unknown): string {
+  return createHash("sha256").update(stableJson(value)).digest("hex");
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(sortValue(value));
+}
+
+function sortValue(value: unknown): unknown {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error("thumbnail content token rejected a non-finite number");
+    }
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(sortValue);
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(record).sort()) {
+    sorted[key] = sortValue(record[key]);
+  }
+  return sorted;
+}
+
+const OBJECT_MARKERS = [
+  "/storage/v1/object/public/",
+  "/storage/v1/object/sign/",
+] as const;
+
+function publicObjectIdentity(imageUrl: string): { bucket: string; objectPath: string } | null {
+  let url: URL;
+  try {
+    url = new URL(imageUrl);
+  } catch {
+    return null;
+  }
+  const marker = OBJECT_MARKERS.find((candidate) => url.pathname.includes(candidate));
+  if (!marker) return null;
+  const markerAt = url.pathname.indexOf(marker);
+  const rest = decodeURIComponent(url.pathname.slice(markerAt + marker.length));
+  const slash = rest.indexOf("/");
+  if (slash <= 0 || slash === rest.length - 1) return null;
+  const bucket = rest.slice(0, slash);
+  const objectPath = rest.slice(slash + 1);
+  if (!bucket || !objectPath || objectPath.includes("..")) return null;
+  return { bucket, objectPath };
+}
+
+async function resolveBackground(
+  version: VersionRecord | null,
+  source: ThumbnailRenderSource,
+): Promise<ThumbnailBackgroundIdentity | null> {
+  if (!version) return null;
+  const bucket = version.storageBucket?.trim() ?? "";
+  const objectPath = version.storagePath?.trim() ?? "";
+  if (bucket && objectPath && !objectPath.includes("..")) {
+    const signed = await source.signStorageUrl(bucket, objectPath);
+    if (signed && isServerThumbnailBackgroundUrl(signed, source.policy)) {
+      return { url: signed, bucket, objectPath };
+    }
+    return null;
+  }
+  const imageUrl = version.imageUrl?.trim() ?? "";
+  if (!imageUrl || !isServerThumbnailBackgroundUrl(imageUrl, source.policy)) return null;
+  const identity = publicObjectIdentity(imageUrl);
+  if (!identity) return null;
+  return { url: imageUrl, bucket: identity.bucket, objectPath: identity.objectPath };
+}
+
+async function resolveObjectAssets(
+  objects: readonly SceneObjectDefinition[],
+  source: ThumbnailRenderSource,
+): Promise<
+  | Readonly<{ ok: true; glbUrls: Map<string, string> }>
+  | Readonly<{ ok: false; failure: VibodeThumbnailRenderFailure }>
+> {
+  const glbUrls = new Map<string, string>();
+  const dynamicIds: string[] = [];
+  for (const object of objects) {
+    const registered = furnitureAssetDefinition(object.assetId);
+    if (registered) {
+      glbUrls.set(object.assetId, registered.glbUrl);
+      continue;
+    }
+    dynamicIds.push(object.assetId);
+  }
+  if (dynamicIds.length === 0) return { ok: true, glbUrls };
+  let resolved: {
+    assetDefinitions: ReadonlyArray<{ assetId: string; glbUrl: string }>;
+    assetIssues: readonly RuntimeAssetIssue[];
+  };
+  try {
+    resolved = await resolveSceneRuntimeAssets({
+      assetIds: objects.map((object) => object.assetId),
+      lookupDynamicAssets: source.lookupDynamicAssets,
+      mintSignedGet: source.mintDynamicSignedGet,
+    });
+  } catch {
+    return {
+      ok: false,
+      failure: thumbnailRenderError(
+        "signed_url_failed",
+        "Furniture signed URL could not be created.",
+        true,
+      ),
+    };
+  }
+  if (resolved.assetIssues.length > 0) {
+    const retryable = resolved.assetIssues.some((issue) =>
+      issue.code === "RUNTIME_ASSET_URL_MINT_FAILED" ||
+      issue.code === "RUNTIME_ASSET_LOAD_FAILED"
+    );
+    return {
+      ok: false,
+      failure: thumbnailRenderError(
+        retryable ? "signed_url_failed" : "glb_identity_missing",
+        retryable
+          ? "Furniture signed URL could not be created."
+          : "Furniture asset identity could not be resolved.",
+        retryable,
+      ),
+    };
+  }
+  for (const definition of resolved.assetDefinitions) {
+    if (!isServerMintedThumbnailSignedUrl(definition.glbUrl, source.policy)) {
+      return {
+        ok: false,
+        failure: thumbnailRenderError(
+          "signed_url_failed",
+          "Furniture signed URL could not be created.",
+          true,
+        ),
+      };
+    }
+    glbUrls.set(definition.assetId, definition.glbUrl);
+  }
+  for (const object of objects) {
+    if (!glbUrls.has(object.assetId)) {
+      return {
+        ok: false,
+        failure: thumbnailRenderError(
+          "glb_identity_missing",
+          "Furniture asset identity could not be resolved.",
+          false,
+        ),
+      };
+    }
+  }
+  return { ok: true, glbUrls };
+}
+
+export type VibodeThumbnailContentInspection =
+  | Readonly<{
+    ok: true;
+    empty: true;
+    roomId: string;
+    versionId: string;
+    afcGenerationId: string;
+    sceneUpdatedAt: string;
+  }>
+  | Readonly<{
+    ok: true;
+    empty: false;
+    contentToken: string;
+    roomId: string;
+    versionId: string;
+    afcGenerationId: string;
+    backgroundBucket: string;
+    backgroundPath: string;
+    sceneUpdatedAt: string;
+    objects: PersistedVersionScene["objects"];
+  }>
+  | VibodeThumbnailRenderFailure;
+
+/**
+ * Authoritative thumbnail identity for enqueue and publish.
+ * Does not mint signed URLs or fetch GLBs.
+ */
+export async function inspectVibodeThumbnailContent(
+  input: Readonly<{ roomId: string; versionId: string }>,
+  source: ThumbnailRenderSource = createProductionThumbnailRenderSource(),
+): Promise<VibodeThumbnailContentInspection> {
+  const room = await source.loadRoom(input.roomId);
+  const version = room ? await source.loadVersion(input.versionId) : null;
+  const generationId = room?.currentAfcGenerationId ?? "";
+  const generation = generationId ? await source.loadGeneration(generationId) : null;
+  const authorized = authorizeOwned3dSceneContext({
+    userId: room?.userId ?? null,
+    room,
+    version,
+    generation: generation
+      ? {
+        id: generation.id,
+        roomId: generation.roomId,
+        userId: generation.userId,
+        status: generation.status,
+      }
+      : null,
+    requestedRoomId: input.roomId,
+    requestedVersionId: input.versionId,
+    requestedAfcGenerationId: generationId,
+  });
+  if (!authorized.ok) {
+    if (
+      authorized.error === "AFC generation is not production-ready." ||
+      authorized.error === "AFC generation is not the room's current spatial authority." ||
+      authorized.error === "AFC generation not found."
+    ) {
+      return thumbnailRenderError(
+        "camera_authority_missing",
+        "Production camera authority is not ready.",
+        false,
+      );
+    }
+    return thumbnailRenderError("render_access_denied", "Render access denied.", false);
+  }
+  const validated = validateProductionRuntimeAuthority(generation?.productionAuthority);
+  if (!validated.ok) {
+    return thumbnailRenderError(
+      "camera_authority_missing",
+      "Production camera authority is missing.",
+      false,
+    );
+  }
+  const loaded = await source.loadScene(input.roomId, input.versionId);
+  const sceneUpdatedAt = source.loadSceneUpdatedAt
+    ? await source.loadSceneUpdatedAt(input.roomId, input.versionId)
+    : null;
+  if (!loaded.found || "malformed" in loaded || !sceneUpdatedAt) {
+    return thumbnailRenderError("scene_missing", "Saved 3D scene is missing.", false);
+  }
+  const placed = placeSceneInEffectiveWorld(
+    validated.authority,
+    generation?.manualPerspective ?? null,
+    loaded.scene,
+  );
+  if (!placed) {
+    return thumbnailRenderError(
+      "scene_missing",
+      "Saved furniture cannot be placed in the manual perspective.",
+      false,
+    );
+  }
+  const compatibility = resolvePersistedSceneCompatibility({
+    storedAfcGenerationId: placed.scene.afcGenerationId,
+    currentAfcGenerationId: placed.authority.generationId,
+  });
+  if (!compatibility.ok) {
+    return thumbnailRenderError(
+      "generation_mismatch",
+      "Saved scene does not match the current AFC generation.",
+      false,
+    );
+  }
+  if (placed.scene.objects.length === 0) {
+    return {
+      ok: true,
+      empty: true,
+      roomId: input.roomId,
+      versionId: input.versionId,
+      afcGenerationId: placed.scene.afcGenerationId,
+      sceneUpdatedAt,
+    };
+  }
+  const background = backgroundIdentityOf(version);
+  if (!background) {
+    return thumbnailRenderError(
+      "background_missing",
+      "History background image is missing.",
+      false,
+    );
+  }
+  const scaled = await thumbnailRenderScaleState(
+    source,
+    placed.authority,
+    input.roomId,
+    placed.scene.objects,
+  );
+  if (!scaled.ok) return scaled;
+  const objects = placed.scene.objects.map((object) => {
+    const modelAxisScale = furnitureAxisScaleOrUndefined(
+      scaled.modelAxisScales.get(object.objectId),
+    );
+    return {
+      objectId: object.objectId,
+      assetId: object.assetId,
+      position: { ...object.transform.position },
+      rotationDeg: { ...object.transform.rotationDeg },
+      userSizeMultiplier: object.userSizeMultiplier ?? AFC_V2_USER_SIZE_DEFAULT,
+      ...(modelAxisScale ? { modelAxisScale } : {}),
+    };
+  });
+  return {
+    ok: true,
+    empty: false,
+    contentToken: thumbnailSceneContentToken({
+      scene: placed.scene,
+      authority: placed.authority,
+      metricScale: scaled.metricScale,
+      background,
+      objects,
+    }),
+    roomId: placed.scene.roomId,
+    versionId: placed.scene.versionId,
+    afcGenerationId: placed.authority.generationId,
+    backgroundBucket: background.bucket,
+    backgroundPath: background.objectPath,
+    sceneUpdatedAt,
+    objects: placed.scene.objects,
+  };
+}
+
+function backgroundIdentityOf(
+  version: VersionRecord | null,
+): { bucket: string; objectPath: string } | null {
+  if (!version) return null;
+  const bucket = version.storageBucket?.trim() ?? "";
+  const objectPath = version.storagePath?.trim() ?? "";
+  if (bucket && objectPath && !objectPath.includes("..")) {
+    return { bucket, objectPath };
+  }
+  const imageUrl = version.imageUrl?.trim() ?? "";
+  if (!imageUrl) return null;
+  return publicObjectIdentity(imageUrl);
+}
+
+export function createProductionThumbnailRenderSource(): ThumbnailRenderSource {
+  const policy = thumbnailAssetUrlPolicyFromEnv();
+  return {
+    policy,
+    async loadRoom(roomId) {
+      const store = createProductionAfcStoreFromEnv();
+      if (!store) return null;
+      const room = await store.getRoom(roomId);
+      if (!room) return null;
+      return {
+        id: room.id,
+        userId: room.userId,
+        currentAfcGenerationId: room.currentAfcGenerationId,
+      };
+    },
+    async loadVersion(versionId) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return null;
+      const { data, error } = await supabase
+        .from("vibode_room_assets")
+        .select("id, room_id, user_id, image_url, storage_bucket, storage_path")
+        .eq("id", versionId)
+        .maybeSingle();
+      if (error || !data || typeof data !== "object") return null;
+      const row = data as Record<string, unknown>;
+      return {
+        id: String(row.id),
+        roomId: String(row.room_id),
+        userId: String(row.user_id),
+        imageUrl: typeof row.image_url === "string" ? row.image_url : null,
+        storageBucket: typeof row.storage_bucket === "string" ? row.storage_bucket : null,
+        storagePath: typeof row.storage_path === "string" ? row.storage_path : null,
+      };
+    },
+    async loadGeneration(generationId) {
+      const store = createProductionAfcStoreFromEnv();
+      if (!store) return null;
+      const generation = await store.getGeneration(generationId);
+      if (!generation) return null;
+      return {
+        id: generation.id,
+        roomId: generation.roomId,
+        userId: generation.userId,
+        status: generation.status,
+        productionAuthority: generation.productionAuthority,
+        manualPerspective: generation.manualPerspective,
+      };
+    },
+    async loadScene(roomId, versionId) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return { found: false };
+      const { data, error } = await supabase
+        .from(PI4C_SCENE_TABLE)
+        .select("room_id, version_id, afc_generation_id, coordinate_space, objects_json")
+        .eq("room_id", roomId)
+        .eq("version_id", versionId)
+        .maybeSingle();
+      if (error || !data || typeof data !== "object") return { found: false };
+      const row = data as Record<string, unknown>;
+      const scene = validatePersistedVersionScene({
+        roomId: row.room_id,
+        versionId: row.version_id,
+        afcGenerationId: row.afc_generation_id,
+        coordinateSpace: row.coordinate_space,
+        objects: row.objects_json,
+      });
+      if (!scene.ok) return { found: true, malformed: true };
+      return { found: true, scene: scene.scene };
+    },
+    async loadSceneUpdatedAt(roomId, versionId) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return null;
+      const { data, error } = await supabase
+        .from(PI4C_SCENE_TABLE)
+        .select("updated_at")
+        .eq("room_id", roomId)
+        .eq("version_id", versionId)
+        .maybeSingle();
+      if (error || !data || typeof data !== "object") return null;
+      const updatedAt = (data as { updated_at?: unknown }).updated_at;
+      return typeof updatedAt === "string" && updatedAt ? updatedAt : null;
+    },
+    async signStorageUrl(bucket, path) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return null;
+      const { data, error } = await supabase.storage
+        .from(bucket)
+        .createSignedUrl(path, VIBODE_THUMBNAIL_ASSET_URL_EXPIRES_SEC);
+      const signedUrl = typeof data?.signedUrl === "string" ? data.signedUrl.trim() : "";
+      if (error || !signedUrl) return null;
+      return signedUrl;
+    },
+    lookupDynamicAssets(assetIds) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return Promise.resolve([]);
+      return lookupPartnerRuntimeAssets(supabase, assetIds);
+    },
+    async mintDynamicSignedGet(row) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return { ok: false };
+      try {
+        const { data, error } = await supabase.storage
+          .from(row.storageBucket)
+          .createSignedUrl(row.storageObjectPath, VIBODE_THUMBNAIL_ASSET_URL_EXPIRES_SEC);
+        const signedUrl = typeof data?.signedUrl === "string" ? data.signedUrl.trim() : "";
+        if (error || !signedUrl) return { ok: false };
+        return {
+          ok: true,
+          signedUrl,
+          expiresAt: expiresAtFromNow(Date.now(), VIBODE_THUMBNAIL_ASSET_URL_EXPIRES_SEC),
+        };
+      } catch {
+        return { ok: false };
+      }
+    },
+    async loadRoomScaleMultiplier(roomId) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return { ok: false };
+      try {
+        const { data, error } = await supabase
+          .from("vibode_rooms")
+          .select("room_scale_multiplier")
+          .eq("id", roomId)
+          .maybeSingle();
+        if (error || !data || typeof data !== "object") return { ok: false };
+        return {
+          ok: true,
+          roomScaleMultiplier: parseRoomScaleMultiplier(
+            (data as { room_scale_multiplier?: unknown }).room_scale_multiplier,
+          ) ?? ROOM_SCALE_DEFAULT,
+        };
+      } catch {
+        return { ok: false };
+      }
+    },
+    async lookupStageModelDimensions(query) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return { ok: false };
+      try {
+        const assets = await selectModelDimensionRows(
+          supabase,
+          FURNITURE_MODEL_SCALE_ASSET_TABLE,
+          "asset_id, authored_width_m, authored_height_m, authored_depth_m",
+          "asset_id",
+          query.assetIds,
+          stageAssetDimensionFromRow,
+        );
+        const variants = await selectModelDimensionRows(
+          supabase,
+          FURNITURE_MODEL_SCALE_VARIANT_TABLE,
+          "variant_id, current_asset_id, model_width_m, model_height_m, model_depth_m, model_sizing_mode",
+          "variant_id",
+          query.variantIds,
+          stageVariantDimensionFromRow,
+        );
+        if (!assets || !variants) return { ok: false };
+        return { ok: true, assets, variants };
+      } catch {
+        return { ok: false };
+      }
+    },
+  };
+}
+
+async function selectModelDimensionRows<T>(
+  supabase: NonNullable<ReturnType<typeof getServiceRoleSupabaseClient>>,
+  table: string,
+  columns: string,
+  idColumn: string,
+  ids: readonly string[],
+  mapRow: (row: Record<string, unknown>) => T | null,
+): Promise<T[] | null> {
+  if (ids.length === 0) return [];
+  const { data, error } = await supabase
+    .from(table)
+    .select(columns)
+    .in(idColumn, [...ids]);
+  if (error || !Array.isArray(data)) return null;
+  const rows: T[] = [];
+  for (const raw of data) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const mapped = mapRow(raw as Record<string, unknown>);
+    if (mapped) rows.push(mapped);
+  }
+  return rows;
+}

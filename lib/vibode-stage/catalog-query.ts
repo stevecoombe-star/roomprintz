@@ -10,8 +10,32 @@ import {
   isStageCommercialActive,
   isStagePartnerActive,
   isStageProductAvailable,
+  STAGE_STUDIO_CHAIR_PRODUCT_ID,
+  STAGE_STUDIO_SETTEE_PRODUCT_ID,
+  STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
+  STAGE_STUDIO_SOFA_PRODUCT_ID,
   stagePartnerById,
 } from "./catalog";
+
+/**
+ * Vibode sample products hard-wired before Partner Portal catalog authority.
+ * Shopper Catalog cards exclude these identities. Asset, variant, and placement
+ * records stay available for existing STAGE scenes.
+ */
+export const LEGACY_SHOPPER_CATALOG_SAMPLE_PRODUCT_IDS: readonly string[] = Object.freeze([
+  STAGE_STUDIO_SOFA_PRODUCT_ID,
+  STAGE_STUDIO_SETTEE_PRODUCT_ID,
+  STAGE_STUDIO_CHAIR_PRODUCT_ID,
+  STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
+]);
+
+const LEGACY_SHOPPER_CATALOG_SAMPLE_PRODUCT_ID_SET: ReadonlySet<string> = new Set(
+  LEGACY_SHOPPER_CATALOG_SAMPLE_PRODUCT_IDS,
+);
+
+export function isLegacyShopperCatalogSample(productId: string): boolean {
+  return LEGACY_SHOPPER_CATALOG_SAMPLE_PRODUCT_ID_SET.has(productId);
+}
 
 export type StageCatalogQueryInput = Readonly<{
   products: readonly StageProduct[];
@@ -84,6 +108,7 @@ export function filterStageCatalogProducts(input: StageCatalogQueryInput): Stage
   const recentIds = input.recentlyUsedProductIds ?? [];
   const partners = partnersForQuery(input);
   return input.products.filter((product) => {
+    if (isLegacyShopperCatalogSample(product.productId)) return false;
     if (!isQueryProductAvailable(product, partners, input.catalog)) return false;
     if (input.mode === "favorites") {
       const prefixOrDefault = isProductFavorited(product.productId, input.favoriteKeys)

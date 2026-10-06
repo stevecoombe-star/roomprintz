@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 
 import sharp from "sharp";
 
+import { certifyAfcTiledModelIdentity } from "@/lib/afc-image-models";
+
 import {
   classifyAfcR3cImagePairCompatibility,
   type AfcR3cImagePairCompatibility,
@@ -100,19 +102,37 @@ function validateIdentity(
   }
 }
 
+const REQUIRED_PROVENANCE_KEYS = [
+  "generatorId",
+  "profileId",
+  "researchPreset",
+  "requestedModelId",
+  "runId",
+  "generatedAt",
+  "appliedAspectRatio",
+  "imageTransport",
+  "generationStatus",
+] as const;
+
+const OPTIONAL_PROVENANCE_KEYS = ["imageChoice", "imageProvider", "imageQuality"] as const;
+
+function provenanceKeysAllowed(value: Record<string, unknown>): boolean {
+  if (!REQUIRED_PROVENANCE_KEYS.every((key) => key in value)) return false;
+  return Object.keys(value).every((key) =>
+    REQUIRED_PROVENANCE_KEYS.includes(key as typeof REQUIRED_PROVENANCE_KEYS[number])
+    || OPTIONAL_PROVENANCE_KEYS.includes(key as typeof OPTIONAL_PROVENANCE_KEYS[number])
+  );
+}
+
 function validateProvenance(
   value: unknown
 ): asserts value is AfcSr1TileGridScaffoldProvenance {
   if (!isPlainRecord(value) ||
-      !hasExactKeys(value, [
-        "generatorId", "profileId", "researchPreset", "requestedModelId",
-        "runId", "generatedAt", "appliedAspectRatio", "imageTransport",
-        "generationStatus",
-      ]) ||
+      !provenanceKeysAllowed(value) ||
       value.generatorId !== "vibode-tile-grid-scaffold/stage2/v1" ||
       value.profileId !== "afc-sr1-tile-grid-scaffold/v1" ||
       value.researchPreset !== "tile_grid_scaffold" ||
-      value.requestedModelId !== "NBP" ||
+      typeof value.requestedModelId !== "string" ||
       typeof value.runId !== "string" ||
       value.runId.length === 0 ||
       typeof value.generatedAt !== "string" ||
@@ -122,7 +142,8 @@ function validateProvenance(
        (typeof value.appliedAspectRatio !== "string" ||
         !/^[A-Za-z0-9:._-]{1,32}$/.test(value.appliedAspectRatio))) ||
       (value.imageTransport !== "data_url" && value.imageTransport !== "http_url") ||
-      value.generationStatus !== "generated") {
+      value.generationStatus !== "generated" ||
+      !certifyAfcTiledModelIdentity(value)) {
     fail("provenance_invalid");
   }
 }

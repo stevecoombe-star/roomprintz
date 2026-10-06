@@ -23,10 +23,8 @@ import {
   type AfcDiagnosticSelectHead,
   type AfcDiagnosticTableClient,
 } from "./diagnostic-db-client";
-import {
-  resolveAfcQaCapability,
-  type AfcQaCapabilityEnv,
-} from "./qa-capability.server";
+import type { AfcQaAccessConfig } from "./qa-access";
+import { resolveAfcQaCapability } from "./qa-capability.server";
 import {
   AFC_GENERATION_TABLE,
   getAfcDiagnosticRetryEpisodeSignal,
@@ -162,7 +160,7 @@ export type AfcDiagnosticTesterCaseDbClient<
 >;
 
 export type AfcDiagnosticTesterCaseOptions = {
-  env?: AfcQaCapabilityEnv | NodeJS.ProcessEnv;
+  qaAccess?: AfcQaAccessConfig;
   store?: AfcDiagnosticTesterCaseStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
@@ -658,9 +656,9 @@ export async function submitAfcDiagnosticTesterCase(
   options: AfcDiagnosticTesterCaseOptions = {},
 ): Promise<AfcDiagnosticTesterCaseSubmitResult> {
   const userId = requireUuid(input.userId, "invalid_user_id", "userId");
-  const capability = resolveAfcQaCapability(
+  const capability = await resolveAfcQaCapability(
     userId,
-    options.env ?? process.env,
+    options.qaAccess,
   );
   if (!capability.enabled) {
     throw new AfcDiagnosticTesterCaseQaDisabledError();
@@ -816,7 +814,7 @@ export async function submitAfcDiagnosticTesterCase(
 export async function handleAfcQaTesterCasePost(args: {
   request: Request;
   authorize: (request: Request) => Promise<ProductionAfcAuth>;
-  env?: AfcQaCapabilityEnv | NodeJS.ProcessEnv;
+  qaAccess?: AfcQaAccessConfig;
   store?: AfcDiagnosticTesterCaseStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
@@ -841,7 +839,7 @@ export async function handleAfcQaTesterCasePost(args: {
         trigger: record.trigger,
       },
       {
-        env: args.env ?? process.env,
+        qaAccess: args.qaAccess,
         store: args.store,
         retryStore: args.retryStore,
         retrySignal: args.retrySignal,

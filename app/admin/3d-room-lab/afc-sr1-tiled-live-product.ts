@@ -8,6 +8,11 @@ import {
   getEmptyRoomAssistResultAllowedHosts,
   isAutoFloorVisionAllowLocalhostHttp,
 } from "@/lib/vibodeAutoFloorVisionConfig";
+import { readAfcImageModelSettings } from "@/lib/afc-image-model-settings.server";
+import {
+  resolveAfcImageModel,
+  type AfcImageModelChoice,
+} from "@/lib/afc-image-models";
 import {
   callCompositorAfcSr1TiledPerspectiveReader,
   type AfcSr1TiledPerspectiveReaderIdentity,
@@ -31,6 +36,12 @@ import {
 } from "./research/afc-sr1-tiled-perspective-exact-grid-lineage";
 import { classifyAfcR3cImagePairCompatibility } from "./research/gemini-floor-proposal-composition";
 import type { AfcSr1SourcePolygon } from "./research/afc-sr1-semantic-prior";
+import { validateFloorSourcePolygonExtent } from "./floor-coordinate-extent";
+import { validateOrderedFloorCorners } from "./perspective-solve";
+import {
+  MANUAL_SOURCE_QUAD_GEOMETRY_AUTHORITY,
+  MANUAL_SOURCE_QUAD_GEOMETRY_VERSION,
+} from "@/lib/afc-v2-production/manual-source-quad";
 import {
   afcSr1LiveSourceIdentityMatches,
   cloneAfcSr1LivePolygon,
@@ -44,6 +55,7 @@ import {
   retainAfcSr1LiveAttemptTiledEvidence,
   type AfcSr1QualifiedOriginal,
   type AfcSr1ResolvedEmpty,
+  type ResolveAfcSr1LiveEmptyOptions,
 } from "./afc-sr1-live-product";
 import {
   AFC_SR1_LIVE_PRODUCT_VERSION,
@@ -52,6 +64,7 @@ import {
   type AfcSr1LiveBasis,
   type AfcSr1LiveFailureReason,
   type AfcSr1LiveProductResult,
+  type AfcSr1TiledPerspectiveReaderObservation,
 } from "./afc-sr1-live-product-contract";
 
 type MutableCounts = {
@@ -75,6 +88,44 @@ function emptyCounts(): MutableCounts {
   };
 }
 
+function readerObservationFromResponse(
+  reader: AfcSr1TiledPerspectiveReaderResponse,
+): AfcSr1TiledPerspectiveReaderObservation {
+  if (reader.status === "failed") {
+    return Object.freeze({
+      readerVersion: reader.readerVersion,
+      status: "failed",
+      rawQuadCount: null,
+      deduplicatedCellCount: null,
+      selectedComponentTileCount: null,
+      selectedCore: null,
+      latticeReprojectionMeanPx: null,
+      latticeReprojectionMaxPx: null,
+      selectedPolygon: null,
+    });
+  }
+  return Object.freeze({
+    readerVersion: reader.readerVersion,
+    status: "ok",
+    rawQuadCount: reader.rawQuadrilateralCount,
+    deduplicatedCellCount: reader.deduplicatedCellCount,
+    selectedComponentTileCount: reader.selectedComponentTileCount,
+    selectedCore: Object.freeze({
+      rows: reader.authoritativeCore.rows,
+      columns: reader.authoritativeCore.columns,
+      j0: reader.authoritativeCore.j0,
+      i0: reader.authoritativeCore.i0,
+    }),
+    latticeReprojectionMeanPx: reader.reprojectionMeanPx,
+    latticeReprojectionMaxPx: reader.reprojectionMaxPx,
+    selectedPolygon: Object.freeze(
+      reader.authoritativeQuadSourceNormalized.map((point) =>
+        Object.freeze({ x: point.x, y: point.y }),
+      ),
+    ),
+  });
+}
+
 function diagnostics(
   counts: AfcSr1LiveAttemptCounts,
   detail: string | null,
@@ -82,7 +133,8 @@ function diagnostics(
     empty?: "cache" | "generated";
     tiled?: "cache" | "generated";
     tiledArtifactRefreshRequested?: boolean;
-  }> = {}
+  }> = {},
+  readerObservation: AfcSr1TiledPerspectiveReaderObservation | null = null,
 ) {
   return Object.freeze({
     finalReason: detail,
@@ -97,6 +149,7 @@ function diagnostics(
     ...(sources.empty ? { emptyArtifactSource: sources.empty } : {}),
     ...(sources.tiled ? { tiledArtifactSource: sources.tiled } : {}),
     tiledArtifactRefreshRequested: sources.tiledArtifactRefreshRequested === true,
+    ...(readerObservation ? { tiledPerspectiveReader: readerObservation } : {}),
   });
 }
 
@@ -110,6 +163,20 @@ function matchingIdentity(
     left.decodedHeight === right.decodedHeight &&
     left.mimeType === right.mimeType &&
     left.orientation === right.orientation;
+}
+
+function manualSourceQuadPolygon(
+  points: readonly Readonly<{ x: number; y: number }>[],
+): AfcSr1SourcePolygon | null {
+  if (points.length !== 4) return null;
+  const polygon = points.map((point) => Object.freeze({ x: point.x, y: point.y }));
+  if (!polygon.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) {
+    return null;
+  }
+  if (!validateFloorSourcePolygonExtent(polygon).ok) return null;
+  if (!validateOrderedFloorCorners(polygon).ok) return null;
+  const cloned = cloneAfcSr1LivePolygon(polygon as unknown as AfcSr1SourcePolygon);
+  return isValidAfcSr1LiveProductPolygon(cloned) ? cloned : null;
 }
 
 function readerPolygon(
@@ -129,9 +196,12 @@ export type AfcSr1TiledLiveProductDependencies = Readonly<{
     request: AfcSr1LiveAnalyzeRequest
   ) => Promise<AfcSr1QualifiedOriginal | null>;
   resolveEmpty?: (
-    original: AfcSr1QualifiedOriginal
+    original: AfcSr1QualifiedOriginal,
+    options?: ResolveAfcSr1LiveEmptyOptions,
   ) => Promise<AfcSr1ResolvedEmpty | null>;
   generateTiled?: typeof vibodeTileGridScaffoldAssist;
+  /** Explicit stage model. Omitted reads the persisted TILED selection. */
+  imageModel?: AfcImageModelChoice;
   /**
    * Injected generateTiled hooks bypass the process cache unless this is true.
    * Production omits generateTiled, so the default live wrapper always caches.
@@ -146,6 +216,11 @@ export type AfcSr1TiledLiveProductDependencies = Readonly<{
     imageBase64: string;
     claimedIdentity: AfcSr1TiledPerspectiveReaderIdentity;
   }) => Promise<AfcSr1TiledPerspectiveReaderResponse>;
+  /**
+   * Human NL/NR/FR/FL polygon. When present, the TILED perspective reader
+   * is not called and the quad is stamped manual_source_quad.
+   */
+  manualSourceQuad?: readonly Readonly<{ x: number; y: number }>[];
   onEmptyRetained?: (args: Readonly<{
     attemptId: string;
     resultId: string;
@@ -177,6 +252,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
   } = {
     tiledArtifactRefreshRequested: forceTiledRegeneration,
   };
+  let readerObservation: AfcSr1TiledPerspectiveReaderObservation | null = null;
   const failed = (
     reason: AfcSr1LiveFailureReason,
     detail: string
@@ -188,7 +264,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     labLoadGeneration: request?.labLoadGeneration ?? -1,
     reason,
     detail,
-    diagnostics: diagnostics(counts, detail, artifactSources),
+    diagnostics: diagnostics(counts, detail, artifactSources, readerObservation),
   });
 
   if (!isValidAfcSr1LiveAnalyzeRequest(request)) {
@@ -259,6 +335,8 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     return failed("original_empty_incompatible", "image_pair_incompatible");
   }
 
+  const imageModel = dependencies.imageModel
+    ?? (await readAfcImageModelSettings()).tiled;
   const tiledArgs = {
     empty: {
       base64: Buffer.from(empty.bytes).toString("base64"),
@@ -268,6 +346,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     maxOutputBytes: getAutoFloorVisionImageMaxBytes(),
     fetchTimeoutMs: getAutoFloorVisionImageFetchTimeoutMs(),
     allowLocalhostHttp: isAutoFloorVisionAllowLocalhostHttp(),
+    imageModel,
   };
   const generateTiled =
     dependencies.generateTiled ?? vibodeTileGridScaffoldAssist;
@@ -275,6 +354,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     dependencies.useTiledArtifactCache ?? dependencies.generateTiled == null;
   const tiledCacheKey = buildAfcSr1TiledArtifactCacheKey({
     emptySha256: empty.basis.sha256,
+    requestedModelId: resolveAfcImageModel(imageModel).modelId,
   });
   const previousCompleted = useTiledArtifactCache && forceTiledRegeneration
     ? peekAfcSr1CompletedTiledArtifact(tiledCacheKey)
@@ -282,6 +362,9 @@ export async function executeAfcSr1TiledLiveProductAttempt(
   const tiledResolve = useTiledArtifactCache
     ? await getOrGenerateCachedTiledArtifact(tiledArgs, generateTiled, {
         forceRefresh: forceTiledRegeneration,
+        keyParts: {
+          requestedModelId: resolveAfcImageModel(imageModel).modelId,
+        },
       })
     : {
         result: await generateTiled(tiledArgs),
@@ -291,7 +374,10 @@ export async function executeAfcSr1TiledLiveProductAttempt(
   counts.tiledGeneration = tiledResolve.source === "generated" ? 1 : 0;
   const tiled = tiledResolve.result;
   if (tiled.status !== "generated") {
-    return failed("tiled_generation_failed", tiled.code);
+    const detail = tiled.code === "sunburst_generation_failed"
+      ? (tiled.diagnostic?.message ?? tiled.code)
+      : tiled.code;
+    return failed("tiled_generation_failed", detail);
   }
   const tiledBytes = Buffer.from(tiled.tiled.base64, "base64");
   retainAfcSr1LiveAttemptTiledEvidence(
@@ -322,29 +408,71 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     );
   }
 
-  counts.tiledReader = 1;
-  let reader: AfcSr1TiledPerspectiveReaderResponse;
-  try {
-    reader = await (
-      dependencies.readTiledPerspective ?? callCompositorAfcSr1TiledPerspectiveReader
-    )({
-      imageBase64: tiled.tiled.base64,
-      claimedIdentity: lineage.tiledIdentity,
+  const manualPolygon = dependencies.manualSourceQuad
+    ? manualSourceQuadPolygon(dependencies.manualSourceQuad)
+    : null;
+  let sourceNormalizedPolygon: AfcSr1SourcePolygon;
+  let geometryAuthority:
+    | "tiled_perspective_reader"
+    | typeof MANUAL_SOURCE_QUAD_GEOMETRY_AUTHORITY;
+  let tiledPerspective: NonNullable<
+    Extract<AfcSr1LiveProductResult, { status: "authoritative_geometry" }>["geometry"]["tiledPerspective"]
+  >;
+  if (dependencies.manualSourceQuad) {
+    if (!manualPolygon) {
+      return failed("floor_proposal_invalid", "manual_source_quad_invalid");
+    }
+    counts.tiledReader = 0;
+    sourceNormalizedPolygon = manualPolygon;
+    geometryAuthority = MANUAL_SOURCE_QUAD_GEOMETRY_AUTHORITY;
+    tiledPerspective = Object.freeze({
+      tiledBasis: lineage.tiledIdentity,
+      emptyToTiledLineageDigest: lineage.authority.lineageEvidenceDigest,
+      emptyToTiledTransfer: "identity_source_normalized" as const,
+      emptyToOriginalCompatibilityTier: emptyToOriginal.tier,
+      readerVersion: MANUAL_SOURCE_QUAD_GEOMETRY_VERSION,
     });
-  } catch {
-    return failed("tiled_reader_transport_failed", "tiled_reader_transport_or_contract_failed");
-  }
-  if (!matchingIdentity(reader.decodedIdentity, lineage.tiledIdentity)) {
-    return failed("tiled_identity_mismatch", "reader_identity_does_not_bind_generated_tiled");
-  }
-  if (reader.status === "failed") {
-    return reader.reason === "invalid_input_image"
-      ? failed("tiled_reader_transport_failed", reader.reason)
-      : failed(reader.reason, reader.reason);
-  }
-  const sourceNormalizedPolygon = readerPolygon(reader);
-  if (!sourceNormalizedPolygon) {
-    return failed("tiled_reader_transport_failed", "reader_authoritative_quad_invalid");
+  } else {
+    counts.tiledReader = 1;
+    let reader: AfcSr1TiledPerspectiveReaderResponse;
+    try {
+      reader = await (
+        dependencies.readTiledPerspective ?? callCompositorAfcSr1TiledPerspectiveReader
+      )({
+        imageBase64: tiled.tiled.base64,
+        claimedIdentity: lineage.tiledIdentity,
+      });
+    } catch {
+      return failed("tiled_reader_transport_failed", "tiled_reader_transport_or_contract_failed");
+    }
+    if (!matchingIdentity(reader.decodedIdentity, lineage.tiledIdentity)) {
+      return failed("tiled_identity_mismatch", "reader_identity_does_not_bind_generated_tiled");
+    }
+    readerObservation = readerObservationFromResponse(reader);
+    if (reader.status === "failed") {
+      return reader.reason === "invalid_input_image"
+        ? failed("tiled_reader_transport_failed", reader.reason)
+        : failed(reader.reason, reader.reason);
+    }
+    const readerQuad = readerPolygon(reader);
+    if (!readerQuad) {
+      return failed("tiled_reader_transport_failed", "reader_authoritative_quad_invalid");
+    }
+    sourceNormalizedPolygon = readerQuad;
+    geometryAuthority = "tiled_perspective_reader";
+    tiledPerspective = Object.freeze({
+      tiledBasis: lineage.tiledIdentity,
+      emptyToTiledLineageDigest: lineage.authority.lineageEvidenceDigest,
+      emptyToTiledTransfer: "identity_source_normalized" as const,
+      emptyToOriginalCompatibilityTier: emptyToOriginal.tier,
+      readerVersion: reader.readerVersion,
+      core: reader.authoritativeCore,
+      selectedComponentTileCount: reader.selectedComponentTileCount,
+      rawQuadrilateralCount: reader.rawQuadrilateralCount,
+      deduplicatedCellCount: reader.deduplicatedCellCount,
+      reprojectionMeanPx: reader.reprojectionMeanPx,
+      reprojectionMaxPx: reader.reprojectionMaxPx,
+    });
   }
 
   const transferKind = emptyToOriginal.tier === "exact_grid_compatible"
@@ -362,7 +490,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     photoClass: "tiled_perspective_core",
     geometry: Object.freeze({
       mode: "tiled-perspective-core",
-      geometryAuthority: "tiled_perspective_reader",
+      geometryAuthority,
       sourceNormalizedPolygon,
       rawSourceNormalizedPolygon: cloneAfcSr1LivePolygon(sourceNormalizedPolygon),
       fixedAnchor: null,
@@ -379,19 +507,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
       classifierVersion: null,
       anchorAuthorityKind: null,
       onAxisConstruction: null,
-      tiledPerspective: Object.freeze({
-        tiledBasis: lineage.tiledIdentity,
-        emptyToTiledLineageDigest: lineage.authority.lineageEvidenceDigest,
-        emptyToTiledTransfer: "identity_source_normalized",
-        emptyToOriginalCompatibilityTier: emptyToOriginal.tier,
-        readerVersion: reader.readerVersion,
-        core: reader.authoritativeCore,
-        selectedComponentTileCount: reader.selectedComponentTileCount,
-        rawQuadrilateralCount: reader.rawQuadrilateralCount,
-        deduplicatedCellCount: reader.deduplicatedCellCount,
-        reprojectionMeanPx: reader.reprojectionMeanPx,
-        reprojectionMaxPx: reader.reprojectionMaxPx,
-      }),
+      tiledPerspective,
     }),
     metric: Object.freeze({
       perspectiveAuthority: "tiled_perspective_core",

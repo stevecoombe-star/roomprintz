@@ -22,6 +22,8 @@ test("3D scene route is authenticated owner persistence and cannot analyze", () 
   assert.doesNotMatch(route, /runProductionAfcAnalysis/);
   assert.doesNotMatch(route, /observeRoom|generateTiled|readTiledPerspective/);
   assert.doesNotMatch(route, /inheritFromVersionId|parentScene/);
+  assert.match(route, /scheduleVibodeThumbnailAfterSceneSave\(saved\.scene\)/);
+  assert.doesNotMatch(route, /playwright|chromium|my-rooms|room-preview-url/i);
 });
 
 test("3D scene server store uses service-role after owner authorization", () => {

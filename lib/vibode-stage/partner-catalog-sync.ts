@@ -30,6 +30,13 @@ import {
 } from "./catalog";
 import { FORBIDDEN_STAGE_CATALOG_TABLES } from "./catalog-store";
 import {
+  explicitModelDimensions,
+  parseModelDimensionFields,
+  sameModelDimensions,
+  stageVariantModelFields,
+  type ModelDimensions,
+} from "./model-dimensions";
+import {
   collectionSlugFor,
   namespacedId,
   parsePartnerCatalogJson,
@@ -38,6 +45,7 @@ import {
   validatePartnerCollection,
   type PartnerCatalogDocument,
 } from "./partner-catalog";
+import { nextPartnerProductSortOrder } from "./partner-catalog-order";
 import {
   parsePartnerCatalogSnapshotJson,
   planPartnerCatalogSnapshotSync,
@@ -90,6 +98,7 @@ import type {
   PlannedProductStatusTransition,
   PlannedProductUpdate,
   PlannedVariantCreate,
+  PlannedVariantModelDimensions,
   PlannedVariantStatusTransition,
   PlannedVariantUpdate,
 } from "./partner-catalog-sync-types";
@@ -116,6 +125,7 @@ export type {
   PlannedProductStatusTransition,
   PlannedProductUpdate,
   PlannedVariantCreate,
+  PlannedVariantModelDimensions,
   PlannedVariantStatusTransition,
   PlannedVariantUpdate,
 } from "./partner-catalog-sync-types";
@@ -167,6 +177,10 @@ const VARIANT_UPDATE_KEYS = Object.freeze([
   "priceCurrency",
   "productUrl",
   "currentAssetId",
+  "modelWidthM",
+  "modelHeightM",
+  "modelDepthM",
+  "modelSizingMode",
 ]);
 
 const VARIANT_CREATE_KEYS = VARIANT_UPDATE_KEYS;
@@ -472,6 +486,10 @@ export type PartnerCatalogVariantPatch = Readonly<{
   priceCurrency?: string;
   productUrl?: string | null;
   currentAssetId?: string;
+  modelWidthM?: number;
+  modelHeightM?: number;
+  modelDepthM?: number;
+  modelSizingMode?: ModelDimensions["sizingMode"];
 }>;
 
 export type PartnerCatalogVariantCreate = Readonly<{
@@ -483,6 +501,10 @@ export type PartnerCatalogVariantCreate = Readonly<{
   priceCurrency: string;
   productUrl: string | null;
   currentAssetId: string;
+  modelWidthM?: number;
+  modelHeightM?: number;
+  modelDepthM?: number;
+  modelSizingMode?: ModelDimensions["sizingMode"];
 }>;
 
 export type PartnerCatalogProductCreate = Readonly<{
@@ -665,6 +687,45 @@ function parseProductPatch(
   return patch;
 }
 
+function copyParsedModelDimensions<T extends {
+  modelWidthM?: number;
+  modelHeightM?: number;
+  modelDepthM?: number;
+  modelSizingMode?: ModelDimensions["sizingMode"];
+}>(
+  target: T,
+  value: Record<string, unknown>,
+  issues: ProductVariantIssue[],
+  label: string,
+): boolean {
+  const parsed = parseModelDimensionFields(value);
+  if (parsed.state === "invalid") {
+    issues.push(issue("INVALID_MODEL_DIMENSIONS", `${label} ${parsed.message}`));
+    return false;
+  }
+  if (parsed.state === "present") {
+    target.modelWidthM = parsed.dimensions.widthM;
+    target.modelHeightM = parsed.dimensions.heightM;
+    target.modelDepthM = parsed.dimensions.depthM;
+    target.modelSizingMode = parsed.dimensions.sizingMode;
+  }
+  return true;
+}
+
+function variantWithModelDimensions(
+  variant: StageVariant,
+  source: Readonly<{
+    modelWidthM?: number | null;
+    modelHeightM?: number | null;
+    modelDepthM?: number | null;
+    modelSizingMode?: string | null;
+  }>,
+): StageVariant {
+  const dimensions = explicitModelDimensions(source);
+  if (!dimensions) return variant;
+  return { ...variant, ...stageVariantModelFields(dimensions) };
+}
+
 function parseVariantPatch(
   value: unknown,
   index: number,
@@ -700,6 +761,10 @@ function parseVariantPatch(
     priceCurrency?: string;
     productUrl?: string | null;
     currentAssetId?: string;
+    modelWidthM?: number;
+    modelHeightM?: number;
+    modelDepthM?: number;
+    modelSizingMode?: ModelDimensions["sizingMode"];
   } = { variantId };
   if ("productId" in value) {
     const productId = asNonEmptyString(value.productId);
@@ -743,6 +808,7 @@ function parseVariantPatch(
       issues.push(issue("UNKNOWN_ASSET", `variants.update[${index}].currentAssetId must be a non-empty string.`));
     } else patch.currentAssetId = currentAssetId;
   }
+  if (!copyParsedModelDimensions(patch, value, issues, `variants.update[${index}]`)) return null;
   return patch;
 }
 
@@ -798,7 +864,20 @@ function parseVariantCreate(
   if (!variantId || !productId || priceAmount == null || !priceCurrency || !currentAssetId) {
     return null;
   }
-  return {
+  const create: {
+    variantId: string;
+    productId: string;
+    finishLabel: string | null;
+    sku: string | null;
+    priceAmount: number;
+    priceCurrency: string;
+    productUrl: string | null;
+    currentAssetId: string;
+    modelWidthM?: number;
+    modelHeightM?: number;
+    modelDepthM?: number;
+    modelSizingMode?: ModelDimensions["sizingMode"];
+  } = {
     variantId,
     productId,
     finishLabel: finishLabel ?? null,
@@ -808,6 +887,8 @@ function parseVariantCreate(
     productUrl: productUrl ?? null,
     currentAssetId,
   };
+  if (!copyParsedModelDimensions(create, value, issues, `variants.create[${index}]`)) return null;
+  return create;
 }
 
 function parseProductCreate(
@@ -1558,13 +1639,29 @@ export function planPartnerCatalogSync(input: Readonly<{
         `Variant ${patch.variantId} currentAssetId changes require PI-5D2B.`,
       ));
     }
-    const next: StageVariant = {
+    let next: StageVariant = {
       ...current,
       finishLabel: patch.finishLabel !== undefined ? patch.finishLabel : current.finishLabel,
       sku: patch.sku !== undefined ? patch.sku : current.sku,
       priceAmount: patch.priceAmount ?? current.priceAmount,
       productUrl: patch.productUrl !== undefined ? patch.productUrl : current.productUrl,
     };
+    if (
+      patch.modelWidthM !== undefined
+      || patch.modelHeightM !== undefined
+      || patch.modelDepthM !== undefined
+      || patch.modelSizingMode !== undefined
+    ) {
+      const dimensions = explicitModelDimensions(patch);
+      if (!dimensions) {
+        issues.push(issue(
+          "INVALID_MODEL_DIMENSIONS",
+          `Variant ${patch.variantId} product dimensions must be between 0.05 m and 8 m.`,
+        ));
+      } else {
+        next = { ...next, ...stageVariantModelFields(dimensions) };
+      }
+    }
     if (next.priceAmount != null) {
       issues.push(...validateFiniteNonNegativePrice(next.priceAmount, "Variant"));
     }
@@ -1654,7 +1751,7 @@ export function planPartnerCatalogSync(input: Readonly<{
       ...registration.parsed.product,
       collectionIds: [...registration.parsed.product.collectionIds],
     });
-    working.variants.push(registration.parsed.variant);
+    working.variants.push(variantWithModelDimensions(registration.parsed.variant, defaultCreate));
     pendingProductIds.add(create.productId);
     consumedDefaultVariantIds.add(create.defaultVariantId);
     seenVariantCreates.add(create.defaultVariantId);
@@ -1705,7 +1802,7 @@ export function planPartnerCatalogSync(input: Readonly<{
       issues.push(...extraValidation.errors);
       continue;
     }
-    working.variants.push(extraValidation.parsed.variant);
+    working.variants.push(variantWithModelDimensions(extraValidation.parsed.variant, create));
   }
 
   for (const patch of input.document.collections.update) {
@@ -2026,7 +2123,7 @@ export function planPartnerCatalogSync(input: Readonly<{
       if (next.partnerId === partner.partnerId) {
         productCreates.push({
           product: next,
-          sortOrder: input.current.products.length + productCreates.length,
+          sortOrder: nextPartnerProductSortOrder(input.current.products, productCreates.length),
         });
       }
       continue;
@@ -2086,6 +2183,21 @@ export function planPartnerCatalogSync(input: Readonly<{
         changes,
       });
     }
+  }
+
+  const variantModelDimensionUpdates: PlannedVariantModelDimensions[] = [];
+  for (const next of nextState.variants) {
+    const previous = input.current.variants.find((item) => item.variantId === next.variantId);
+    if (!previous) continue;
+    const previousDimensions = explicitModelDimensions(previous);
+    const nextDimensions = explicitModelDimensions(next);
+    if (!nextDimensions || sameModelDimensions(previousDimensions, nextDimensions)) continue;
+    variantModelDimensionUpdates.push({
+      variantId: next.variantId,
+      productId: next.productId,
+      previous: previousDimensions,
+      next: nextDimensions,
+    });
   }
 
   const variantCreates: PlannedVariantCreate[] = nextState.variants
@@ -2186,7 +2298,8 @@ export function planPartnerCatalogSync(input: Readonly<{
     productDeactivations.length === 0 &&
     productReactivations.length === 0 &&
     variantDeactivations.length === 0 &&
-    variantReactivations.length === 0
+    variantReactivations.length === 0 &&
+    variantModelDimensionUpdates.length === 0
   );
 
   const timestamp = input.migrationTimestamp ?? utcTimestamp();
@@ -2212,6 +2325,7 @@ export function planPartnerCatalogSync(input: Readonly<{
         productReactivations,
         variantDeactivations,
         variantReactivations,
+        variantModelDimensionUpdates,
         current: input.current,
       }),
       migration,
@@ -2235,6 +2349,7 @@ export function planPartnerCatalogSync(input: Readonly<{
     productReactivations,
     variantDeactivations,
     variantReactivations,
+    ...(variantModelDimensionUpdates.length > 0 ? { variantModelDimensionUpdates } : {}),
     sqlPlan,
     nextState,
   };
@@ -2277,6 +2392,7 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
   productReactivations?: readonly PlannedProductStatusTransition[];
   variantDeactivations?: readonly PlannedVariantStatusTransition[];
   variantReactivations?: readonly PlannedVariantStatusTransition[];
+  variantModelDimensionUpdates?: readonly PlannedVariantModelDimensions[];
   current: FoldedPartnerCatalogState;
 }>): string {
   const parts: string[] = [];
@@ -2487,27 +2603,88 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
   for (const create of [...input.variantCreates].sort((a, b) => (
     a.variant.variantId.localeCompare(b.variant.variantId)
   ))) {
+    const dimensions = explicitModelDimensions(create.variant);
     parts.push(
-      `insert into public.vibode_stage_variants (\n` +
-      `  variant_id,\n` +
-      `  product_id,\n` +
-      `  current_asset_id,\n` +
-      `  finish_label,\n` +
-      `  sku,\n` +
-      `  price_amount,\n` +
-      `  price_currency,\n` +
-      `  product_url\n` +
-      `) values (\n` +
-      `  ${sqlString(create.variant.variantId)},\n` +
-      `  ${sqlString(create.variant.productId)},\n` +
-      `  ${sqlString(create.variant.assetId ?? "")},\n` +
-      `  ${sqlNullableString(create.variant.finishLabel)},\n` +
-      `  ${sqlNullableString(create.variant.sku)},\n` +
-      `  ${sqlNumber(create.variant.priceAmount ?? 0)},\n` +
-      `  ${sqlString(create.variant.priceCurrency)},\n` +
-      `  ${sqlNullableString(create.variant.productUrl)}\n` +
-      `);`,
+      dimensions
+        ? (
+          `insert into public.vibode_stage_variants (\n` +
+          `  variant_id,\n` +
+          `  product_id,\n` +
+          `  current_asset_id,\n` +
+          `  finish_label,\n` +
+          `  sku,\n` +
+          `  price_amount,\n` +
+          `  price_currency,\n` +
+          `  product_url,\n` +
+          `  model_width_m,\n` +
+          `  model_height_m,\n` +
+          `  model_depth_m,\n` +
+          `  model_sizing_mode\n` +
+          `) values (\n` +
+          `  ${sqlString(create.variant.variantId)},\n` +
+          `  ${sqlString(create.variant.productId)},\n` +
+          `  ${sqlString(create.variant.assetId ?? "")},\n` +
+          `  ${sqlNullableString(create.variant.finishLabel)},\n` +
+          `  ${sqlNullableString(create.variant.sku)},\n` +
+          `  ${sqlNumber(create.variant.priceAmount ?? 0)},\n` +
+          `  ${sqlString(create.variant.priceCurrency)},\n` +
+          `  ${sqlNullableString(create.variant.productUrl)},\n` +
+          `  ${sqlNumber(dimensions.widthM)},\n` +
+          `  ${sqlNumber(dimensions.heightM)},\n` +
+          `  ${sqlNumber(dimensions.depthM)},\n` +
+          `  ${sqlString(dimensions.sizingMode)}\n` +
+          `);`
+        )
+        : (
+          `insert into public.vibode_stage_variants (\n` +
+          `  variant_id,\n` +
+          `  product_id,\n` +
+          `  current_asset_id,\n` +
+          `  finish_label,\n` +
+          `  sku,\n` +
+          `  price_amount,\n` +
+          `  price_currency,\n` +
+          `  product_url\n` +
+          `) values (\n` +
+          `  ${sqlString(create.variant.variantId)},\n` +
+          `  ${sqlString(create.variant.productId)},\n` +
+          `  ${sqlString(create.variant.assetId ?? "")},\n` +
+          `  ${sqlNullableString(create.variant.finishLabel)},\n` +
+          `  ${sqlNullableString(create.variant.sku)},\n` +
+          `  ${sqlNumber(create.variant.priceAmount ?? 0)},\n` +
+          `  ${sqlString(create.variant.priceCurrency)},\n` +
+          `  ${sqlNullableString(create.variant.productUrl)}\n` +
+          `);`
+        ),
     );
+  }
+
+  for (const update of [...(input.variantModelDimensionUpdates ?? [])].sort((a, b) => (
+    a.variantId.localeCompare(b.variantId)
+  ))) {
+    parts.push(renderGuardedUpdate({
+      table: "public.vibode_stage_variants",
+      setClauses: [
+        `model_width_m = ${sqlNumber(update.next.widthM)}`,
+        `model_height_m = ${sqlNumber(update.next.heightM)}`,
+        `model_depth_m = ${sqlNumber(update.next.depthM)}`,
+        `model_sizing_mode = ${sqlString(update.next.sizingMode)}`,
+      ],
+      whereClauses: [
+        `variant_id = ${sqlString(update.variantId)}`,
+        `product_id = ${sqlString(update.productId)}`,
+        sqlIsNotDistinctFrom("model_width_m", update.previous?.widthM ?? null),
+        sqlIsNotDistinctFrom("model_height_m", update.previous?.heightM ?? null),
+        sqlIsNotDistinctFrom("model_depth_m", update.previous?.depthM ?? null),
+        sqlIsNotDistinctFrom("model_sizing_mode", update.previous?.sizingMode ?? null),
+        `exists (\n` +
+          `      select 1 from public.vibode_stage_products products\n` +
+          `      where products.product_id = ${sqlString(update.productId)}\n` +
+          `        and products.partner_id = ${sqlString(input.partner.partnerId)}\n` +
+          `        and products.source = 'partner_catalog'\n` +
+          `    )`,
+      ],
+    }));
   }
 
   for (const update of [...input.collectionUpdates].sort((a, b) => (

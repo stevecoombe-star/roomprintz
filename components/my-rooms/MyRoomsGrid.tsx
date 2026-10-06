@@ -1,6 +1,7 @@
 "use client";
 
 import { RoomCard } from "@/components/my-rooms/RoomCard";
+import { roomCardImageDelivery } from "@/components/my-rooms/preview-batch";
 import type { MyRoomsFolder, MyRoomsRoom } from "@/components/my-rooms/types";
 
 type EmptyState = {
@@ -16,10 +17,12 @@ type MyRoomsGridProps = {
   isLoading: boolean;
   emptyState: EmptyState | null;
   mutatingRoomId: string | null;
+  refreshingRoomIds: ReadonlySet<string>;
   onOpenRoom: (room: MyRoomsRoom) => void;
   onRenameRoom: (room: MyRoomsRoom) => void;
   onMoveRoom: (room: MyRoomsRoom, folderId: string | null) => Promise<void>;
   onDeleteRoom: (room: MyRoomsRoom) => void;
+  onRefreshThumbnail: (room: MyRoomsRoom) => void;
 };
 
 function LoadingSkeletonGrid() {
@@ -69,28 +72,37 @@ export function MyRoomsGrid({
   isLoading,
   emptyState,
   mutatingRoomId,
+  refreshingRoomIds,
   onOpenRoom,
   onRenameRoom,
   onMoveRoom,
   onDeleteRoom,
+  onRefreshThumbnail,
 }: MyRoomsGridProps) {
   if (isLoading) return <LoadingSkeletonGrid />;
   if (emptyState) return <EmptyRoomsState state={emptyState} />;
 
   return (
     <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-      {rooms.map((room) => (
-        <RoomCard
-          key={room.id}
-          room={room}
-          folders={folders}
-          onOpen={() => onOpenRoom(room)}
-          onRename={() => onRenameRoom(room)}
-          onDelete={() => onDeleteRoom(room)}
-          onMoveToFolder={(folderId) => onMoveRoom(room, folderId)}
-          isBusy={mutatingRoomId === room.id}
-        />
-      ))}
+      {rooms.map((room, index) => {
+        const imageDelivery = roomCardImageDelivery(index);
+        return (
+          <RoomCard
+            key={room.id}
+            room={room}
+            folders={folders}
+            imageLoading={imageDelivery.loading}
+            imageFetchPriority={imageDelivery.fetchPriority}
+            onOpen={() => onOpenRoom(room)}
+            onRename={() => onRenameRoom(room)}
+            onDelete={() => onDeleteRoom(room)}
+            onMoveToFolder={(folderId) => onMoveRoom(room, folderId)}
+            onRefreshThumbnail={() => onRefreshThumbnail(room)}
+            isRefreshingThumbnail={refreshingRoomIds.has(room.id)}
+            isBusy={mutatingRoomId === room.id}
+          />
+        );
+      })}
     </div>
   );
 }

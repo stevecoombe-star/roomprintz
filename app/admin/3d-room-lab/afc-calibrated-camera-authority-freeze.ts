@@ -24,6 +24,10 @@ import {
   type CalibratedCameraFreezeReceiptResult,
 } from "./calibrated-camera-freeze-receipt";
 import type { CalibrationImageBasis } from "./calibration-image-basis";
+import {
+  acceptedAfcGeometryAuthority,
+  recordedGeometryReaderVersion,
+} from "@/lib/afc-v2-production/manual-source-quad";
 
 export type AppliedCalibratedCameraSnapshot = Readonly<{
   pose: AuthorityCameraPose;
@@ -97,9 +101,12 @@ export async function freezeAppliedTiledAfcCamera(
     !live ||
     live.status !== "authoritative_geometry" ||
     live.geometry.mode !== "tiled-perspective-core" ||
-    live.geometry.geometryAuthority !== "tiled_perspective_reader" ||
     live.metric.perspectiveAuthority !== "tiled_perspective_core" ||
     !tiled ||
+    !acceptedAfcGeometryAuthority(
+      live.geometry.geometryAuthority,
+      tiled.readerVersion,
+    ) ||
     !readerFloorQuad ||
     !acceptedPolygon
   ) {
@@ -173,7 +180,7 @@ export async function freezeAppliedTiledAfcCamera(
       resultId: live.resultId,
       labLoadGeneration: live.labLoadGeneration,
       geometryMode: "tiled-perspective-core",
-      geometryAuthority: "tiled_perspective_reader",
+      geometryAuthority: live.geometry.geometryAuthority,
       perspectiveAuthority: "tiled_perspective_core",
       metricScaleAuthority: live.metric.metricScaleAuthority,
       referenceDepthM: live.metric.referenceDepthM,
@@ -188,7 +195,9 @@ export async function freezeAppliedTiledAfcCamera(
           decodedHeight: tiled.tiledBasis.decodedHeight,
           orientation: tiled.tiledBasis.orientation,
         },
-        readerVersion: tiled.readerVersion,
+        readerVersion: recordedGeometryReaderVersion(
+          live.geometry.geometryAuthority,
+        ),
         lineageDigest: tiled.emptyToTiledLineageDigest,
         transfer: tiled.emptyToTiledTransfer,
         originalCompatibilityTier:

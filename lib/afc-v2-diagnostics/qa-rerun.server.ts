@@ -19,10 +19,8 @@ import {
   type AfcDiagnosticSelectHead,
   type AfcDiagnosticTableClient,
 } from "./diagnostic-db-client";
-import {
-  resolveAfcQaCapability,
-  type AfcQaCapabilityEnv,
-} from "./qa-capability.server";
+import type { AfcQaAccessConfig } from "./qa-access";
+import { resolveAfcQaCapability } from "./qa-capability.server";
 import {
   AFC_GENERATION_TABLE,
   getAfcDiagnosticRetryEpisodeSignal,
@@ -110,7 +108,7 @@ export type AfcQaReadyRerunStartInput = {
 };
 
 export type AfcQaReadyRerunOptions = {
-  env?: AfcQaCapabilityEnv | NodeJS.ProcessEnv;
+  qaAccess?: AfcQaAccessConfig;
   store?: AfcQaReadyRerunStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
@@ -387,9 +385,9 @@ export async function authorizeAfcQaReadyRerun(
   options: AfcQaReadyRerunOptions = {},
 ): Promise<AfcQaReadyRerunAuthorized> {
   const userId = requireUuid(input.userId, "invalid_user_id", "userId");
-  const capability = resolveAfcQaCapability(
+  const capability = await resolveAfcQaCapability(
     userId,
-    options.env ?? process.env,
+    options.qaAccess,
   );
   if (!capability.enabled) {
     throw new AfcQaReadyRerunQaDisabledError();
@@ -573,7 +571,7 @@ export async function handleAfcQaReadyRerunPost(args: {
   startProductionAnalysis: (
     input: AfcQaReadyRerunStartInput,
   ) => Promise<AfcQaReadyRerunAnalysisResult>;
-  env?: AfcQaCapabilityEnv | NodeJS.ProcessEnv;
+  qaAccess?: AfcQaAccessConfig;
   store?: AfcQaReadyRerunStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
@@ -595,7 +593,7 @@ export async function handleAfcQaReadyRerunPost(args: {
         generationId: record.generationId,
       },
       {
-        env: args.env ?? process.env,
+        qaAccess: args.qaAccess,
         store: args.store,
         retryStore: args.retryStore,
         retrySignal: args.retrySignal,

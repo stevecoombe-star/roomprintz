@@ -18,11 +18,11 @@ async function selectRows(
   table: string,
   columns: string,
   orderBy: string,
+  thenBy?: string,
 ): Promise<{ rows: Record<string, unknown>[] | null; error: string | null }> {
-  const { data, error } = await supabase
-    .from(table)
-    .select(columns)
-    .order(orderBy, { ascending: true });
+  let query = supabase.from(table).select(columns).order(orderBy, { ascending: true });
+  if (thenBy) query = query.order(thenBy, { ascending: true });
+  const { data, error } = await query;
   if (error) return { rows: null, error: error.message };
   const rows = Array.isArray(data)
     ? (data as unknown as Record<string, unknown>[])
@@ -52,7 +52,8 @@ export async function loadDurableStageCatalogRows(
   const variants = await selectRows(
     supabase,
     STAGE_CATALOG_TABLES.variants,
-    "variant_id, product_id, current_asset_id, finish_label, sku, price_amount, price_currency, product_url, status",
+    "variant_id, product_id, current_asset_id, finish_label, sku, price_amount, price_currency, product_url, status, sort_order, model_width_m, model_height_m, model_depth_m, model_sizing_mode",
+    "sort_order",
     "variant_id",
   );
   if (variants.error || !variants.rows) return { rows: null, error: variants.error };

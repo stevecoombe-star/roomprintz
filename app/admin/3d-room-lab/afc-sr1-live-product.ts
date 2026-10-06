@@ -17,6 +17,16 @@ import {
   getOrGenerateEmptyRoomImage,
   type EmptyRoomAssistGenerateResult,
 } from "@/lib/vibodeEmptyRoomAssist";
+import { readAfcImageModelSettings } from "@/lib/afc-image-model-settings.server";
+import {
+  resolveAfcImageModel,
+  type AfcImageModelChoice,
+} from "@/lib/afc-image-models";
+import {
+  editAfcImageWithOpenAi,
+  type AfcOpenAiImageEditDependencies,
+  type AfcOpenAiImageEditInput,
+} from "@/lib/afc-openai-image-edit.server";
 import {
   AFC_SR1_LIVE_PRODUCT_VERSION,
   type AfcSr1LiveAnalyzeRequest,
@@ -125,6 +135,8 @@ export type AfcSr1LiveAttemptEvidence = {
 
 const attemptEvidence = new Map<string, AfcSr1LiveAttemptEvidence>();
 const inFlightEmpty = new Map<string, Promise<EmptyRoomAssistGenerateResult>>();
+const sunburstEmptyCache = new Map<string, AfcSr1ResolvedEmpty>();
+const SUNBURST_EMPTY_CACHE_MAX = 8;
 const LIVE_EMPTY_DIAGNOSTIC_ROUTE =
   "/api/admin/3d-room-lab/afc-sr1/live-attempt-empty";
 const LIVE_TILED_DIAGNOSTIC_ROUTE =
@@ -282,9 +294,105 @@ export async function qualifyAfcSr1LiveOriginalDefault(
   });
 }
 
+export type ResolveAfcSr1LiveEmptyOptions = Readonly<{
+  imageModel?: AfcImageModelChoice;
+  editImage?: (
+    input: AfcOpenAiImageEditInput,
+    dependencies?: AfcOpenAiImageEditDependencies,
+  ) => ReturnType<typeof editAfcImageWithOpenAi>;
+  loadSourceBytes?: (
+    sourceImageUrl: string,
+  ) => Promise<{ bytes: Uint8Array; mimeType: AfcSr1LiveBasis["mimeType"] } | null>;
+}>;
+
+async function loadQualifiedEmptySource(
+  sourceImageUrl: string,
+): Promise<{ bytes: Uint8Array; mimeType: AfcSr1LiveBasis["mimeType"] } | null> {
+  const fetched = await fetchRoomImageSafely(sourceImageUrl, {
+    allowedHosts: getAutoFloorVisionAllowedImageHosts(),
+    maxBytes: getAutoFloorVisionImageMaxBytes(),
+    timeoutMs: getAutoFloorVisionImageFetchTimeoutMs(),
+    allowLocalhostHttp: isAutoFloorVisionAllowLocalhostHttp(),
+  });
+  if (!fetched.ok) return null;
+  const mime = detectMime(fetched.buffer);
+  if (!mime || mime !== fetched.mime) return null;
+  return { bytes: Uint8Array.from(fetched.buffer), mimeType: mime };
+}
+
+function rememberSunburstEmpty(hash: string, image: AfcSr1ResolvedEmpty): void {
+  if (sunburstEmptyCache.has(hash)) sunburstEmptyCache.delete(hash);
+  sunburstEmptyCache.set(hash, image);
+  while (sunburstEmptyCache.size > SUNBURST_EMPTY_CACHE_MAX) {
+    const oldest = sunburstEmptyCache.keys().next().value;
+    if (oldest === undefined) break;
+    sunburstEmptyCache.delete(oldest);
+  }
+}
+
+async function resolveEmptyWithSunburst(
+  original: AfcSr1QualifiedOriginal,
+  options: ResolveAfcSr1LiveEmptyOptions,
+): Promise<AfcSr1ResolvedEmpty> {
+  const cached = sunburstEmptyCache.get(original.basis.sha256);
+  if (cached) {
+    return Object.freeze({
+      basis: cached.basis,
+      bytes: cached.bytes,
+      generated: false,
+    });
+  }
+  const loaded = await (options.loadSourceBytes ?? loadQualifiedEmptySource)(
+    original.sourceImageUrl,
+  );
+  if (!loaded || hash(loaded.bytes) !== original.basis.sha256) {
+    throw new Error(
+      "GPT Image 2.5 Sunburst High EMPTY generation failed: source image could not be loaded.",
+    );
+  }
+  const edited = await (options.editImage ?? editAfcImageWithOpenAi)({
+    stage: "empty",
+    imageBytes: loaded.bytes,
+    mimeType: loaded.mimeType,
+    width: original.basis.decodedWidth,
+    height: original.basis.decodedHeight,
+  });
+  if (!edited.ok) {
+    throw new Error(
+      `GPT Image 2.5 Sunburst High EMPTY generation failed: ${edited.reason}`,
+    );
+  }
+  const mime = detectMime(edited.bytes);
+  const metadata = await inspectImageMetadata(edited.bytes);
+  if (!mime || mime !== "image/png" || !metadata.ok || metadata.orientation !== 1) {
+    throw new Error(
+      "GPT Image 2.5 Sunburst High EMPTY generation failed: output image was not a valid PNG.",
+    );
+  }
+  const resolved = Object.freeze({
+    basis: Object.freeze({
+      sha256: hash(edited.bytes),
+      byteCount: edited.bytes.byteLength,
+      decodedWidth: metadata.width,
+      decodedHeight: metadata.height,
+      mimeType: mime,
+      orientation: 1 as const,
+    }),
+    bytes: Uint8Array.from(edited.bytes),
+    generated: true,
+  });
+  rememberSunburstEmpty(original.basis.sha256, resolved);
+  return resolved;
+}
+
 export async function resolveAfcSr1LiveEmptyDefault(
-  original: AfcSr1QualifiedOriginal
+  original: AfcSr1QualifiedOriginal,
+  options: ResolveAfcSr1LiveEmptyOptions = {},
 ): Promise<AfcSr1ResolvedEmpty | null> {
+  const imageModel = options.imageModel ?? (await readAfcImageModelSettings()).empty;
+  if (resolveAfcImageModel(imageModel).provider === "openai") {
+    return resolveEmptyWithSunburst(original, options);
+  }
   const existing = inFlightEmpty.get(original.basis.sha256);
   let ownsGeneration = false;
   let promise = existing;
@@ -603,7 +711,8 @@ export type AfcSr1LiveProductDependencies = Readonly<{
     request: AfcSr1LiveAnalyzeRequest
   ) => Promise<AfcSr1QualifiedOriginal | null>;
   resolveEmpty?: (
-    original: AfcSr1QualifiedOriginal
+    original: AfcSr1QualifiedOriginal,
+    options?: ResolveAfcSr1LiveEmptyOptions,
   ) => Promise<AfcSr1ResolvedEmpty | null>;
   resolveCanonicalFloor?: (
     request: AfcSr1LiveAnalyzeRequest,

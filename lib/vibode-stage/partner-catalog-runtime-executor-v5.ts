@@ -54,9 +54,21 @@ export function partnerRuntimePlanNeedsV5(
 }
 
 export function partnerRuntimePlanVersionFor(
-  plan: Pick<PartnerCatalogSyncPlan, "noOp" | "productCreates" | "variantCreates" | "collectionCreates">,
-): 1 | 4 | 5 {
+  plan: Pick<
+    PartnerCatalogSyncPlan,
+    | "noOp"
+    | "productCreates"
+    | "variantCreates"
+    | "collectionCreates"
+    | "productDeactivations"
+    | "productReactivations"
+    | "variantDeactivations"
+    | "variantReactivations"
+  >,
+): 1 | 4 | 5 | 6 | 7 {
   if (plan.noOp) return 1;
+  if (plan.variantDeactivations.length > 0 || plan.variantReactivations.length > 0) return 7;
+  if (plan.productDeactivations.length > 0 || plan.productReactivations.length > 0) return 6;
   if (partnerRuntimePlanNeedsV5(plan)) return 5;
   if (plan.collectionCreates.length > 0) return 4;
   return 1;

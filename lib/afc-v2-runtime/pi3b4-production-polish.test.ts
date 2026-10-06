@@ -101,7 +101,7 @@ test("PI-3B4 mode control stays local with distinct 2D/3D state and no route nav
     editor.indexOf("<EditorViewportModeControl"),
     editor.indexOf("<EditorViewportModeControl") + 280,
   );
-  assert.match(modeMount, /onChange=\{setViewportMode\}/);
+  assert.match(modeMount, /onChange=\{selectEditorViewportMode\}/);
   assert.match(modeMount, /busy=\{integrated3dBusy\}/);
   assert.doesNotMatch(modeMount, /href=/);
   assert.doesNotMatch(modeMount, /router\./);
@@ -200,9 +200,13 @@ test("PI-3B4 stale Room A prepare/runtime responses cannot become Room B authori
     editor.indexOf("const previousEditorRoomIdRef"),
     editor.indexOf("usePrepare3dRoom(editorRoomId)"),
   );
-  assert.match(roomSwitch, /setViewportMode\(createInitialEditorViewportMode\(\)\)/);
+  assert.match(
+    roomSwitch,
+    /resolvePersistedEditorViewportMode\(editorViewportModeStorage\(\), editorRoomId\)/,
+  );
   assert.match(roomSwitch, /setRuntimeTransformMode\("move"\)/);
   assert.doesNotMatch(roomSwitch, /useEffect/);
+  assert.doesNotMatch(roomSwitch, /setViewportMode\(viewportMode\)/);
   assert.equal(createInitialEditorViewportMode(), "2d");
 });
 

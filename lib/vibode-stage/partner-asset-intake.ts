@@ -125,6 +125,13 @@ export type PartnerAssetIntakeDto = Readonly<{
   errorCode: string | null;
   error: string | null;
   assetId: string | null;
+  /**
+   * Declared upload size in bytes.
+   * Read-only presentation field already stored on the Partner-scoped intake row.
+   * Listing stays filtered by the authenticated Partner. This does not change
+   * auth, storage, registration, or who can read the intake.
+   */
+  byteSize: number;
   createdAt: string;
   updatedAt: string;
 }>;
@@ -481,6 +488,7 @@ export function toPartnerAssetIntakeDto(row: PartnerAssetIntakeRow): PartnerAsse
     errorCode: row.errorCode,
     error: row.errorCode ? merchantMessageForIntakeErrorCode(row.errorCode) : null,
     assetId: row.assetId ?? null,
+    byteSize: row.byteSize,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

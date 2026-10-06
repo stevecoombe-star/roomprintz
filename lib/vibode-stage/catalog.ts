@@ -428,15 +428,34 @@ export function stageVariantsForProduct(
     if (variant.productId === productId) byId.set(variant.variantId, variant);
   }
   for (const variant of extraVariants) {
-    if (variant.productId === productId) byId.set(variant.variantId, variant);
+    if (variant.productId !== productId) continue;
+    const existing = byId.get(variant.variantId);
+    byId.set(variant.variantId, existing
+      ? { ...existing, ...variant, sortOrder: variant.sortOrder ?? existing.sortOrder }
+      : variant);
   }
   const variants = [...byId.values()];
-  const defaultId = product?.defaultVariantId;
-  const preferred = variants.filter((variant) => variant.variantId === defaultId);
-  const rest = variants
-    .filter((variant) => variant.variantId !== defaultId)
-    .sort((a, b) => a.variantId.localeCompare(b.variantId));
-  return [...preferred, ...rest];
+  const hasManualOrder = variants.some((variant) => (
+    typeof variant.sortOrder === "number" && Number.isFinite(variant.sortOrder)
+  ));
+  if (!hasManualOrder) {
+    const defaultId = product?.defaultVariantId;
+    const preferred = variants.filter((variant) => variant.variantId === defaultId);
+    const rest = variants
+      .filter((variant) => variant.variantId !== defaultId)
+      .sort((a, b) => a.variantId.localeCompare(b.variantId));
+    return [...preferred, ...rest];
+  }
+  return [...variants].sort((left, right) => {
+    const leftOrder = typeof left.sortOrder === "number" && Number.isFinite(left.sortOrder)
+      ? left.sortOrder
+      : Number.MAX_SAFE_INTEGER;
+    const rightOrder = typeof right.sortOrder === "number" && Number.isFinite(right.sortOrder)
+      ? right.sortOrder
+      : Number.MAX_SAFE_INTEGER;
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return left.variantId.localeCompare(right.variantId, "en");
+  });
 }
 
 export function stageCommercialStatus(

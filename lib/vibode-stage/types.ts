@@ -64,6 +64,16 @@ export type StageVariant = Readonly<{
   priceCurrency: string;
   productUrl: string | null;
   status?: StageCommercialStatus;
+  /** Durable manual position within the product. Absent on fixtures with no stored variant order. */
+  sortOrder?: number;
+  /**
+   * Partner physical size for this Variant. Absent means STAGE uses the
+   * Asset's authored GLB measurement. Width is X, height is Y, depth is Z.
+   */
+  modelWidthM?: number;
+  modelHeightM?: number;
+  modelDepthM?: number;
+  modelSizingMode?: "uniform" | "exact";
 }>;
 
 export type StageProduct = Readonly<{
@@ -82,6 +92,8 @@ export type StageProduct = Readonly<{
   source: StageProductSource;
   partnerId: string | null;
   status?: StageCommercialStatus;
+  /** Durable manual catalog position. Absent on in-memory fixtures that have no row order. */
+  sortOrder?: number;
 }>;
 
 export type StageCollection = Readonly<{

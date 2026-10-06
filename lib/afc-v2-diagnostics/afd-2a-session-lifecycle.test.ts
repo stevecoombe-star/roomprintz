@@ -22,7 +22,7 @@ import {
   type AfcDiagnosticMembershipResult,
   type AfcDiagnosticSessionStore,
 } from "./session-lifecycle.server";
-import type { AfcQaCapabilityEnv } from "./qa-capability.server";
+import { afcQaAccessConfig, type AfcQaAccessConfig } from "./qa-access";
 
 const ROOT = process.cwd();
 const USER_A = "22222222-2222-4222-8222-222222222222";
@@ -43,14 +43,9 @@ const SHA_B = "b".repeat(64);
 const SHA_C = "c".repeat(64);
 const YESTERDAY = "2026-09-18T12:00:00.000Z";
 
-const QA_ALL: AfcQaCapabilityEnv = { VIBODE_AFC_QA_MODE: "all" };
-const QA_OFF: AfcQaCapabilityEnv = { VIBODE_AFC_QA_MODE: "off" };
-const QA_INVALID: AfcQaCapabilityEnv = { VIBODE_AFC_QA_MODE: "enabled" };
-const QA_MISSING: AfcQaCapabilityEnv = {};
-const QA_ALLOW: AfcQaCapabilityEnv = {
-  VIBODE_AFC_QA_MODE: "allowlist",
-  VIBODE_AFC_QA_USER_IDS: USER_A,
-};
+const QA_ALL: AfcQaAccessConfig = afcQaAccessConfig(true, USER_A, USER_B);
+const QA_OFF: AfcQaAccessConfig = afcQaAccessConfig(false, USER_A, USER_B);
+const QA_ALLOW: AfcQaAccessConfig = afcQaAccessConfig(true, USER_A);
 
 type SessionRow = {
   id: string;
@@ -423,7 +418,7 @@ function enabledResult(
 async function run(
   store: AfcDiagnosticSessionStore,
   input: Record<string, unknown> = {},
-  env: AfcQaCapabilityEnv = QA_ALL,
+  qaAccess: AfcQaAccessConfig = QA_ALL,
 ) {
   return ensureAfcDiagnosticSessionMembership(
     {
@@ -434,7 +429,7 @@ async function run(
       intent: "analyze",
       ...input,
     },
-    { store, env },
+    { store, qaAccess },
   );
 }
 
@@ -454,24 +449,26 @@ test("1) QA off → no DB writes", async () => {
         generationId: GEN_1,
         intent: "analyze",
       },
-      { store: throwingStore(), env: QA_OFF },
+      { store: throwingStore(), qaAccess: QA_OFF },
     ),
   );
 });
 
-test("2) invalid/missing QA mode → no DB writes", async () => {
-  const missing = harness();
-  assert.deepEqual(await run(missing.store, {}, QA_MISSING), { enabled: false });
-  assert.equal(missing.db.ops.length, 0);
-  const invalid = harness();
-  assert.deepEqual(await run(invalid.store, {}, QA_INVALID), { enabled: false });
-  assert.equal(invalid.db.ops.length, 0);
-  const junk = harness();
-  assert.deepEqual(
-    await run(junk.store, {}, { VIBODE_AFC_QA_MODE: "true" }),
-    { enabled: false },
-  );
-  assert.equal(junk.db.ops.length, 0);
+test("2) disabled QA mode does not write even when legacy env would allow", async () => {
+  const previousMode = process.env.VIBODE_AFC_QA_MODE;
+  const previousIds = process.env.VIBODE_AFC_QA_USER_IDS;
+  process.env.VIBODE_AFC_QA_MODE = "all";
+  process.env.VIBODE_AFC_QA_USER_IDS = USER_A;
+  try {
+    const junk = harness();
+    assert.deepEqual(await run(junk.store, {}, QA_OFF), { enabled: false });
+    assert.equal(junk.db.ops.length, 0);
+  } finally {
+    if (previousMode === undefined) delete process.env.VIBODE_AFC_QA_MODE;
+    else process.env.VIBODE_AFC_QA_MODE = previousMode;
+    if (previousIds === undefined) delete process.env.VIBODE_AFC_QA_USER_IDS;
+    else process.env.VIBODE_AFC_QA_USER_IDS = previousIds;
+  }
 });
 
 test("3) allowlist matching user → writes allowed", async () => {
@@ -492,7 +489,7 @@ test("4) allowlist non-matching user → no writes", async () => {
   assert.equal(db.ops.length, 0);
 });
 
-test("5) all mode → authenticated valid UUID enabled", async () => {
+test("5) enabled allowlisted user → membership writes", async () => {
   const { store } = harness();
   const result = enabledResult(await run(store, { userId: USER_B }, QA_ALL));
   assert.equal(result.membershipCreated, true);
@@ -1150,7 +1147,7 @@ test("capability HTTP endpoint is not called and caller enabled flags are ignore
       intent: "analyze",
       enabled: true,
     } as never,
-    { store, env: QA_OFF },
+    { store, qaAccess: QA_OFF },
   );
   assert.deepEqual(result, { enabled: false });
   assert.equal(db.ops.length, 0);

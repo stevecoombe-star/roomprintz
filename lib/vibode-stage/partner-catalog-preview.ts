@@ -15,7 +15,7 @@ import {
   planPartnerCatalogSync,
 } from "./partner-catalog-sync";
 import type { PartnerCommercialEligibilityContext } from "./partner-commercial-assets";
-import { partnerRuntimePlanVersionFor } from "./partner-catalog-runtime-executor-v5";
+import { partnerRuntimePlanVersionForPublish } from "./partner-catalog-runtime-executor-v8";
 import type {
   PartnerCatalogSyncPlan,
   PlannedCollectionCreate,
@@ -44,7 +44,7 @@ export type PartnerCatalogPreviewDto = Readonly<{
   ok: boolean;
   noOp: boolean;
   partnerId: string | null;
-  planVersion: 1 | 4 | 5 | null;
+  planVersion: 1 | 4 | 5 | 6 | 7 | 8 | null;
   issues: readonly ProductVariantIssue[];
   partnerStatusTransition: PlannedPartnerStatusTransition | null;
   productCreates: readonly PlannedProductCreate[];
@@ -93,13 +93,14 @@ export function presentPartnerCatalogSyncPlan(
     | "productReactivations"
     | "variantDeactivations"
     | "variantReactivations"
+    | "variantModelDimensionUpdates"
   >,
 ): PartnerCatalogPreviewDto {
   return {
     ok: plan.ok,
     noOp: plan.noOp,
     partnerId: plan.partnerId,
-    planVersion: plan.ok && plan.issues.length === 0 ? partnerRuntimePlanVersionFor(plan) : null,
+    planVersion: plan.ok && plan.issues.length === 0 ? partnerRuntimePlanVersionForPublish(plan) : null,
     issues: plan.issues,
     partnerStatusTransition: plan.partnerStatusTransition,
     productCreates: plan.productCreates,

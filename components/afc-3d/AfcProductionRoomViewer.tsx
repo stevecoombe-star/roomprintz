@@ -2,10 +2,17 @@
 
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 import { resolveSceneObjectCollision } from "@/lib/afc-v2-runtime/collision-resolver";
+import {
+  idlePushAlignSession,
+  planCanonicalMoveDrag,
+  resolveExplicitYaw,
+  type PushAlignSession,
+  type ShiftRotateBaseline,
+} from "@/lib/afc-v2-runtime/move-gesture";
 import { containFitRect, nextFrameBox } from "@/lib/afc-v2-runtime/frame-layout";
 import {
   createFurnitureAssetResolver,
@@ -66,6 +73,13 @@ import {
   type LiveRuntimeSceneObject,
 } from "@/lib/afc-v2-runtime/scene-runtime";
 import { realizeProductionWorld } from "@/lib/afc-v2-runtime/production-world";
+import { ROOM_SCALE_DEFAULT } from "@/lib/vibode-stage/room-scale";
+import type { TrustedPathBaseline } from "@/lib/vibode-stage/trusted-path";
+import { createTrustedPathOverlay } from "@/lib/vibode-stage/trusted-path-overlay";
+import {
+  createStageLightingRig,
+  syncStageContactShadow,
+} from "@/lib/vibode-stage/stage-lighting";
 import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
 import type {
   FurnitureAssetDefinition,
@@ -89,7 +103,6 @@ import {
   shouldBeginObjectBodyDrag,
   shouldSuppressSceneSelection,
   viewportModeToControlsMode,
-  wrapSceneRotationDeg,
   worldPositionXZ,
   worldTransformFromObject3D,
   type SceneSelectionPresentation,
@@ -100,6 +113,14 @@ import {
   productionViewerWorldLifecycleKey,
   resolveViewerBackgroundImageUrl,
 } from "@/lib/afc-v2-runtime/viewer-presentation";
+import {
+  bodyDragSampleTranslatedObject,
+  objectPositionTranslated,
+} from "@/lib/vibode-stage/selection-transform-session";
+import {
+  createStageSelectionOutlinePass,
+  stageOutlineTargets,
+} from "@/lib/vibode-stage/stage-selection-outline";
 import {
   customerMessageForStageRuntimePlacementError,
   returnedAssetMatchesExpected,
@@ -115,6 +136,7 @@ type Props = Readonly<{
   transformMode?: RuntimeTransformMode;
   onTransformModeChange?: (mode: RuntimeTransformMode) => void;
   showInternalControls?: boolean;
+  showTransformGizmos?: boolean;
   sceneObjects?: readonly SceneObjectDefinition[];
   sceneInstanceId?: string;
   sceneReady?: boolean;
@@ -123,11 +145,15 @@ type Props = Readonly<{
   onLiveSceneHostChange?: (host: ProductionSceneCrudHost | null) => void;
   onLiveSceneSnapshotChange?: (snapshot: LiveSceneCrudSnapshot) => void;
   onSelectionPresentationChange?: (presentation: SceneSelectionPresentation | null) => void;
+  onSelectedObjectTranslated?: (objectId: string) => void;
   runtimeAssetOverlay?: ReadonlyMap<string, FurnitureAssetDefinition> | null;
   refreshRuntimeAsset?: (
     assetId: string,
   ) => Promise<FurnitureAssetDefinition | null>;
   ensureCommercialPlacement?: EnsureStageCommercialPlacement;
+  roomScaleMultiplier?: number;
+  trustedPath?: TrustedPathBaseline | null;
+  trustedPathVisible?: boolean;
 }>;
 
 type ReadyProps = Readonly<{
@@ -138,6 +164,7 @@ type ReadyProps = Readonly<{
   transformMode?: RuntimeTransformMode;
   onTransformModeChange?: (mode: RuntimeTransformMode) => void;
   showInternalControls?: boolean;
+  showTransformGizmos?: boolean;
   sceneObjects?: readonly SceneObjectDefinition[];
   sceneInstanceId?: string;
   sceneReady?: boolean;
@@ -146,11 +173,15 @@ type ReadyProps = Readonly<{
   onLiveSceneHostChange?: (host: ProductionSceneCrudHost | null) => void;
   onLiveSceneSnapshotChange?: (snapshot: LiveSceneCrudSnapshot) => void;
   onSelectionPresentationChange?: (presentation: SceneSelectionPresentation | null) => void;
+  onSelectedObjectTranslated?: (objectId: string) => void;
   runtimeAssetOverlay?: ReadonlyMap<string, FurnitureAssetDefinition> | null;
   refreshRuntimeAsset?: (
     assetId: string,
   ) => Promise<FurnitureAssetDefinition | null>;
   ensureCommercialPlacement?: EnsureStageCommercialPlacement;
+  roomScaleMultiplier?: number;
+  trustedPath?: TrustedPathBaseline | null;
+  trustedPathVisible?: boolean;
 }>;
 
 export function AfcProductionRoomViewer({
@@ -161,6 +192,7 @@ export function AfcProductionRoomViewer({
   transformMode,
   onTransformModeChange,
   showInternalControls = true,
+  showTransformGizmos = false,
   sceneObjects,
   sceneInstanceId,
   sceneReady = true,
@@ -169,9 +201,13 @@ export function AfcProductionRoomViewer({
   onLiveSceneHostChange,
   onLiveSceneSnapshotChange,
   onSelectionPresentationChange,
+  onSelectedObjectTranslated,
   runtimeAssetOverlay,
   refreshRuntimeAsset,
   ensureCommercialPlacement,
+  roomScaleMultiplier = ROOM_SCALE_DEFAULT,
+  trustedPath = null,
+  trustedPathVisible = false,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -209,6 +245,7 @@ export function AfcProductionRoomViewer({
       transformMode={transformMode}
       onTransformModeChange={onTransformModeChange}
       showInternalControls={showInternalControls}
+      showTransformGizmos={showTransformGizmos}
       sceneObjects={sceneObjects}
       sceneInstanceId={sceneInstanceId}
       sceneReady={sceneReady}
@@ -217,9 +254,13 @@ export function AfcProductionRoomViewer({
       onLiveSceneHostChange={onLiveSceneHostChange}
       onLiveSceneSnapshotChange={onLiveSceneSnapshotChange}
       onSelectionPresentationChange={onSelectionPresentationChange}
+      onSelectedObjectTranslated={onSelectedObjectTranslated}
       runtimeAssetOverlay={runtimeAssetOverlay}
       refreshRuntimeAsset={refreshRuntimeAsset}
       ensureCommercialPlacement={ensureCommercialPlacement}
+      roomScaleMultiplier={roomScaleMultiplier}
+      trustedPath={trustedPath}
+      trustedPathVisible={trustedPathVisible}
     />
   );
 }
@@ -232,6 +273,7 @@ function AfcProductionRoomViewerReady({
   transformMode: transformModeProp,
   onTransformModeChange,
   showInternalControls = true,
+  showTransformGizmos = false,
   sceneObjects: sceneObjectsProp,
   sceneInstanceId: sceneInstanceIdProp,
   sceneReady = true,
@@ -240,9 +282,13 @@ function AfcProductionRoomViewerReady({
   onLiveSceneHostChange,
   onLiveSceneSnapshotChange,
   onSelectionPresentationChange,
+  onSelectedObjectTranslated,
   runtimeAssetOverlay,
   refreshRuntimeAsset,
   ensureCommercialPlacement,
+  roomScaleMultiplier = ROOM_SCALE_DEFAULT,
+  trustedPath = null,
+  trustedPathVisible = false,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -269,6 +315,20 @@ function AfcProductionRoomViewerReady({
   }>) => void)>(null);
 
   const world = useMemo(() => realizeProductionWorld(authority), [authority]);
+  const roomScaleRef = useRef(roomScaleMultiplier);
+  const trustedPathRef = useRef(trustedPath);
+  const trustedPathVisibleRef = useRef(trustedPathVisible);
+  const pathLabelRef = useRef<HTMLDivElement | null>(null);
+  const syncTrustedPathRef = useRef<(() => void) | null>(null);
+  const applyRoomScaleRef = useRef<((multiplier: number) => void) | null>(null);
+  useLayoutEffect(() => {
+    roomScaleRef.current = roomScaleMultiplier;
+  }, [roomScaleMultiplier]);
+  useLayoutEffect(() => {
+    trustedPathRef.current = trustedPath;
+    trustedPathVisibleRef.current = trustedPathVisible;
+    syncTrustedPathRef.current?.();
+  }, [trustedPath, trustedPathVisible]);
   const furniture = useMemo(
     () => createPi4aFurnitureObjectFromAuthority(roomId, authority),
     [authority, roomId],
@@ -296,6 +356,8 @@ function AfcProductionRoomViewerReady({
   const onLiveHostChangeRef = useRef(onLiveSceneHostChange);
   const onLiveSnapshotChangeRef = useRef(onLiveSceneSnapshotChange);
   const onPresentationRef = useRef(onSelectionPresentationChange);
+  const onSelectedObjectTranslatedRef = useRef(onSelectedObjectTranslated);
+  const showTransformGizmosRef = useRef(showTransformGizmos);
   const overlayRef = useRef(runtimeAssetOverlay ?? null);
   const refreshRuntimeAssetRef = useRef(refreshRuntimeAsset);
   const ensureCommercialPlacementRef = useRef(ensureCommercialPlacement);
@@ -308,6 +370,8 @@ function AfcProductionRoomViewerReady({
   onLiveHostChangeRef.current = onLiveSceneHostChange;
   onLiveSnapshotChangeRef.current = onLiveSceneSnapshotChange;
   onPresentationRef.current = onSelectionPresentationChange;
+  onSelectedObjectTranslatedRef.current = onSelectedObjectTranslated;
+  showTransformGizmosRef.current = showTransformGizmos;
   overlayRef.current = runtimeAssetOverlay ?? null;
   refreshRuntimeAssetRef.current = refreshRuntimeAsset;
   ensureCommercialPlacementRef.current = ensureCommercialPlacement;
@@ -344,7 +408,10 @@ function AfcProductionRoomViewerReady({
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
-    const built = buildProductionPerspectiveCamera(world.camera);
+    let activeWorld = roomScaleRef.current === ROOM_SCALE_DEFAULT
+      ? world
+      : realizeProductionWorld(authority, roomScaleRef.current);
+    const built = buildProductionPerspectiveCamera(activeWorld.camera);
     if (!built.ok) return;
     const camera = built.camera;
 
@@ -366,6 +433,8 @@ function AfcProductionRoomViewerReady({
     keyLight.position.set(3, 6, 5);
     scene.add(ambient);
     scene.add(keyLight);
+    const lighting = createStageLightingRig({ scene, renderer, mainLight: keyLight });
+    lighting.syncWorld(activeWorld);
 
     const objectLayer = new THREE.Group();
     scene.add(objectLayer);
@@ -395,6 +464,10 @@ function AfcProductionRoomViewerReady({
     controls.setSpace("world");
     controls.setSize(0.85);
     controls.setMode("translate");
+    controlsHelper.visible = showTransformGizmosRef.current === true;
+    controls.enabled = showTransformGizmosRef.current === true;
+    const outlinePass = createStageSelectionOutlinePass();
+    let hoveredObjectId: string | null = null;
     let furnitureReady = false;
 
     const raycaster = new THREE.Raycaster();
@@ -402,6 +475,7 @@ function AfcProductionRoomViewerReady({
     let disposed = false;
     let animationFrame = 0;
     let gizmoDragging = false;
+    let shiftHeld = false;
     let pointerGesture: {
       clientX: number;
       clientY: number;
@@ -415,21 +489,30 @@ function AfcProductionRoomViewerReady({
       offsetZ: number;
       startClientX: number;
       startClientY: number;
+      lastClientX: number;
+      lastClientY: number;
       pointerId: number;
       active: boolean;
+      translated: boolean;
+      shiftActive: boolean;
+      shiftBaseline: ShiftRotateBaseline | null;
+      assist: PushAlignSession;
+      lastDesiredX: number | null;
+      lastDesiredZ: number | null;
     } | null = null;
 
     const resizeRenderer = () => {
       const width = Math.max(1, Math.floor(mount.clientWidth));
       const height = Math.max(1, Math.floor(mount.clientHeight));
       renderer.setSize(width, height, false);
-      applyRealizedFrozenCamera(camera, world.camera);
+      applyRealizedFrozenCamera(camera, activeWorld.camera);
     };
     resizeRenderer();
     const frameObserver = new ResizeObserver(resizeRenderer);
     frameObserver.observe(mount);
 
-    const realizedWalls = world.collisionWalls;
+    let realizedWalls = world.collisionWalls;
+    if (activeWorld !== world) realizedWalls = activeWorld.collisionWalls;
 
     const reportCanonical = (
       object: LiveRuntimeSceneObject,
@@ -437,7 +520,7 @@ function AfcProductionRoomViewerReady({
     ) => {
       object.canonicalTransform = canonicalizeObjectWorldTransform(
         realized,
-        world.metricScale,
+        activeWorld.metricScale,
       );
     };
 
@@ -474,6 +557,13 @@ function AfcProductionRoomViewerReady({
     };
 
     const syncGizmo = () => {
+      const gizmos = showTransformGizmosRef.current === true;
+      controlsHelper.visible = gizmos;
+      if (!gizmos) {
+        controls.enabled = false;
+        if (controls.object) controls.detach();
+        return;
+      }
       if (!sceneReadyRef.current || !furnitureReady) {
         if (controls.object) controls.detach();
         return;
@@ -516,6 +606,15 @@ function AfcProductionRoomViewerReady({
       pointerNdc.set(ndc.x, ndc.y);
       raycaster.setFromCamera(pointerNdc, camera);
       return intersectRayWithHorizontalPlane(raycaster.ray, planeY);
+    };
+
+    const updateHover = (clientX: number, clientY: number) => {
+      if (bodyDrag?.active || gizmoDragging) {
+        hoveredObjectId = null;
+        return;
+      }
+      const id = pickSceneObjectId(pickHitsAt(clientX, clientY));
+      hoveredObjectId = id && sceneObjects.has(id) ? id : null;
     };
 
     const releaseBodyDragCapture = (pointerId: number) => {
@@ -604,7 +703,7 @@ function AfcProductionRoomViewerReady({
       const session = bodyDrag;
       if (!session) return;
       bodyDrag = null;
-      controls.enabled = true;
+      controls.enabled = showTransformGizmosRef.current === true;
       releaseBodyDragCapture(session.pointerId);
       if (!session.active) return;
       const object = liveSceneObjectForBodyDrag(sceneObjects, session);
@@ -615,6 +714,120 @@ function AfcProductionRoomViewerReady({
       object.realizedTransform = worldTransformFromObject3D(object.placement);
       reportCanonical(object, object.realizedTransform);
       emitCommittedScene();
+      if (session.translated) {
+        onSelectedObjectTranslatedRef.current?.(session.objectId);
+      }
+    };
+
+    const recaptureBodyGrab = (
+      session: NonNullable<typeof bodyDrag>,
+      object: LiveRuntimeSceneObject,
+      hit: { x: number; z: number },
+    ) => {
+      const placed = worldPositionXZ(object.placement);
+      const grab = bodyDragGrabOffset(hit, placed);
+      session.offsetX = grab.offsetX;
+      session.offsetZ = grab.offsetZ;
+    };
+
+    const applyResolvedDrag = (
+      object: LiveRuntimeSceneObject,
+      session: NonNullable<typeof bodyDrag>,
+      transform: WorldTransform,
+    ) => {
+      const next = {
+        ...transform,
+        position: { ...transform.position, y: session.placementY },
+        uniformScale: 1,
+      };
+      applyWorldTransform(object.placement, next);
+      object.placement.position.y = session.placementY;
+      object.placement.scale.setScalar(1);
+      object.realizedTransform = next;
+      reportCanonical(object, object.realizedTransform);
+    };
+
+    const applyMoveModeDrag = (
+      object: LiveRuntimeSceneObject,
+      session: NonNullable<typeof bodyDrag>,
+      hit: { x: number; z: number },
+      clientX: number,
+    ) => {
+      const before = {
+        x: object.realizedTransform.position.x,
+        z: object.realizedTransform.position.z,
+      };
+      const shift = shiftHeld;
+      if (session.shiftActive && !shift) {
+        recaptureBodyGrab(session, object, hit);
+        session.shiftBaseline = null;
+        session.assist = idlePushAlignSession();
+        session.lastDesiredX = null;
+        session.lastDesiredZ = null;
+      }
+      session.shiftActive = shift;
+      const desired = objectBodyDragWorldPosition({
+        hitX: hit.x,
+        hitZ: hit.z,
+        offsetX: session.offsetX,
+        offsetZ: session.offsetZ,
+        placementY: session.placementY,
+      });
+      const pointerDelta = session.lastDesiredX === null || session.lastDesiredZ === null
+        ? null
+        : {
+          x: desired.x - session.lastDesiredX,
+          z: desired.z - session.lastDesiredZ,
+        };
+      const planned = planCanonicalMoveDrag({
+        mode: "move",
+        shiftHeld: shift,
+        current: object.realizedTransform,
+        desiredPosition: desired,
+        pointerX: clientX,
+        pointerWorld: { x: hit.x, z: hit.z },
+        pointerDelta,
+        shiftBaseline: session.shiftBaseline,
+        localAabb: object.localAabb,
+        walls: realizedWalls,
+        assist: session.assist,
+      });
+      session.assist = planned.assist;
+      session.shiftBaseline = planned.shiftBaseline;
+      if (planned.kind === "translate") {
+        applyPlacementWorldPosition(object.placement, {
+          x: planned.transform.position.x,
+          y: session.placementY,
+          z: planned.transform.position.z,
+        });
+        object.placement.position.y = session.placementY;
+        object.placement.scale.setScalar(1);
+        object.realizedTransform = {
+          ...planned.transform,
+          position: {
+            ...planned.transform.position,
+            y: session.placementY,
+          },
+          uniformScale: 1,
+        };
+        reportCanonical(object, object.realizedTransform);
+      } else {
+        applyResolvedDrag(object, session, planned.transform);
+      }
+      if (bodyDragSampleTranslatedObject(planned.kind, before, {
+        x: object.realizedTransform.position.x,
+        z: object.realizedTransform.position.z,
+      })) {
+        session.translated = true;
+      }
+      if (planned.releaseGrab) {
+        recaptureBodyGrab(session, object, hit);
+        session.lastDesiredX = object.realizedTransform.position.x;
+        session.lastDesiredZ = object.realizedTransform.position.z;
+      } else {
+        session.lastDesiredX = desired.x;
+        session.lastDesiredZ = desired.z;
+      }
     };
 
     const applyBodyDragAt = (clientX: number, clientY: number) => {
@@ -624,6 +837,14 @@ function AfcProductionRoomViewerReady({
       if (!object) return;
       const hit = planeHitAt(clientX, clientY, session.grabPlaneY);
       if (!hit) return;
+      if (transformModeRef.current === "move") {
+        applyMoveModeDrag(object, session, hit, clientX);
+        return;
+      }
+      const before = {
+        x: object.realizedTransform.position.x,
+        z: object.realizedTransform.position.z,
+      };
       const next = objectBodyDragWorldPosition({
         hitX: hit.x,
         hitZ: hit.z,
@@ -664,10 +885,17 @@ function AfcProductionRoomViewerReady({
         uniformScale: 1,
       };
       reportCanonical(object, object.realizedTransform);
+      if (bodyDragSampleTranslatedObject("translate", before, {
+        x: object.realizedTransform.position.x,
+        z: object.realizedTransform.position.z,
+      })) {
+        session.translated = true;
+      }
     };
 
     const pointerDownListener = (event: PointerEvent) => {
       if (event.isPrimary === false) return;
+      shiftHeld = event.shiftKey;
       const pointerDownOnGizmo = controls.axis !== null || gizmoDragging;
       pointerGesture = {
         clientX: event.clientX,
@@ -710,9 +938,18 @@ function AfcProductionRoomViewerReady({
         offsetZ: grab.offsetZ,
         startClientX: event.clientX,
         startClientY: event.clientY,
+        lastClientX: event.clientX,
+        lastClientY: event.clientY,
         pointerId: event.pointerId,
         active: false,
+        translated: false,
+        shiftActive: false,
+        shiftBaseline: null,
+        assist: idlePushAlignSession(),
+        lastDesiredX: null,
+        lastDesiredZ: null,
       };
+      hoveredObjectId = null;
       controls.enabled = false;
       emitPresentation();
       try {
@@ -724,7 +961,10 @@ function AfcProductionRoomViewerReady({
 
     const pointerMoveListener = (event: PointerEvent) => {
       const session = bodyDrag;
-      if (!session || event.pointerId !== session.pointerId) return;
+      if (!session || event.pointerId !== session.pointerId) {
+        updateHover(event.clientX, event.clientY);
+        return;
+      }
       if (gizmoDragging || pointerGesture?.pointerDownOnGizmo) {
         endBodyDrag();
         return;
@@ -737,6 +977,9 @@ function AfcProductionRoomViewerReady({
         if (!shouldActivateObjectBodyDrag(movement)) return;
         session.active = true;
       }
+      shiftHeld = event.shiftKey;
+      session.lastClientX = event.clientX;
+      session.lastClientY = event.clientY;
       applyBodyDragAt(event.clientX, event.clientY);
     };
 
@@ -746,6 +989,7 @@ function AfcProductionRoomViewerReady({
       pointerGesture = null;
       const dragWasActive = bodyDrag?.active === true;
       endBodyDrag();
+      updateHover(event.clientX, event.clientY);
       if (dragWasActive) return;
       if (!gesture) return;
       const movement = Math.hypot(
@@ -769,18 +1013,47 @@ function AfcProductionRoomViewerReady({
       selectObject(next);
     };
 
+    const pointerLeaveListener = () => {
+      if (bodyDrag?.active || gizmoDragging) return;
+      hoveredObjectId = null;
+    };
+
     const pointerCancelListener = (event: PointerEvent) => {
       if (bodyDrag && event.pointerId !== bodyDrag.pointerId) return;
       pointerGesture = null;
       endBodyDrag();
     };
 
+    let gizmoTranslateOrigin: { objectId: string; x: number; z: number } | null = null;
     const draggingChangedListener = (event: { value?: unknown }) => {
-      gizmoDragging = event.value === true;
-      if (gizmoDragging && bodyDrag) endBodyDrag();
+      const starting = event.value === true;
+      gizmoDragging = starting;
+      if (starting) {
+        if (bodyDrag) endBodyDrag();
+        const objectId = selectedObjectIdRef.current;
+        const object = objectId ? getLiveSceneObject(sceneObjects, objectId) : null;
+        gizmoTranslateOrigin = object && controls.getMode() === "translate"
+          ? {
+            objectId: object.objectId,
+            x: object.realizedTransform.position.x,
+            z: object.realizedTransform.position.z,
+          }
+          : null;
+      }
       emitPresentation();
       if (!gizmoDragging) {
         writeAttachedTransform();
+        const origin = gizmoTranslateOrigin;
+        gizmoTranslateOrigin = null;
+        if (origin && controls.getMode() === "translate") {
+          const object = getLiveSceneObject(sceneObjects, origin.objectId);
+          if (
+            object
+            && objectPositionTranslated(origin, object.realizedTransform.position)
+          ) {
+            onSelectedObjectTranslatedRef.current?.(origin.objectId);
+          }
+        }
         emitCommittedScene();
       }
     };
@@ -800,7 +1073,7 @@ function AfcProductionRoomViewerReady({
       if (!object) return;
       if (bodyDrag?.objectId === objectId) {
         bodyDrag = null;
-        controls.enabled = true;
+        controls.enabled = showTransformGizmosRef.current === true;
       }
       if (controls.object === object.placement) controls.detach();
       objectLayer.remove(object.placement);
@@ -841,18 +1114,23 @@ function AfcProductionRoomViewerReady({
       if (!descriptor) return null;
       const realized = realizeObjectWorldTransform(
         descriptor.transform,
-        world.metricScale,
+        activeWorld.metricScale,
       );
       const live = mountLiveRuntimeSceneObject({
         descriptor,
         imported: cloneFurnitureGlbScene(template),
-        metricScale: world.metricScale,
+        metricScale: activeWorld.metricScale,
       });
       live.localAabb = measurePlacementLocalAabb(
         live.placement,
         live.importPlacement,
       );
-      commitLiveSceneObjectTransform(live, realized, world.metricScale);
+      commitLiveSceneObjectTransform(live, realized, activeWorld.metricScale);
+      syncStageContactShadow(
+        live.placement,
+        live.localAabb,
+        lighting.contactResources,
+      );
       setLiveSceneObject(sceneObjects, live);
       objectLayer.add(live.placement);
       unmountedPersisted.delete(definition.objectId);
@@ -1050,7 +1328,7 @@ function AfcProductionRoomViewerReady({
               selectedObjectId: selectedObjectIdRef.current,
               resolver,
               placement: {
-                metricScale: world.metricScale,
+                metricScale: activeWorld.metricScale,
                 realizedWalls,
               },
             });
@@ -1178,7 +1456,7 @@ function AfcProductionRoomViewerReady({
             selectedObjectId: selectedObjectIdRef.current,
             resolver: resolveAsset,
             placement: {
-              metricScale: world.metricScale,
+              metricScale: activeWorld.metricScale,
               realizedWalls,
             },
           });
@@ -1225,25 +1503,16 @@ function AfcProductionRoomViewerReady({
       commitRotationYDeg: (objectId, degrees) => {
         const object = getLiveSceneObject(sceneObjects, objectId);
         if (!object || !furnitureReady || !sceneReadyRef.current) return false;
-        const proposed = {
-          ...object.realizedTransform,
-          rotationDeg: {
-            ...object.realizedTransform.rotationDeg,
-            y: wrapSceneRotationDeg(degrees),
-          },
-          uniformScale: 1,
-        };
-        const resolved = resolveSceneObjectCollision({
+        const resolved = resolveExplicitYaw({
           current: object.realizedTransform,
-          proposed,
+          yawDeg: degrees,
           localAabb: object.localAabb,
           walls: realizedWalls,
-          mode: "pose",
         });
         commitLiveSceneObjectTransform(
           object,
           { ...resolved.transform, uniformScale: 1 },
-          world.metricScale,
+          activeWorld.metricScale,
         );
         emitCommittedScene();
         emitPresentation();
@@ -1253,6 +1522,11 @@ function AfcProductionRoomViewerReady({
         const object = getLiveSceneObject(sceneObjects, objectId);
         if (!object || !furnitureReady || !sceneReadyRef.current) return false;
         applyLiveUserSizeMultiplier(object, multiplier);
+        syncStageContactShadow(
+          object.placement,
+          object.localAabb,
+          lighting.contactResources,
+        );
         emitCommittedScene();
         emitPresentation();
         return true;
@@ -1266,17 +1540,44 @@ function AfcProductionRoomViewerReady({
       ready: sceneReadyRef.current,
     });
 
+    const replayBodyDrag = () => {
+      const session = bodyDrag;
+      if (!session?.active) return;
+      applyBodyDragAt(session.lastClientX, session.lastClientY);
+    };
+    const setShiftHeld = (next: boolean) => {
+      if (shiftHeld === next) return;
+      shiftHeld = next;
+      replayBodyDrag();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Shift") setShiftHeld(true);
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Shift" || !event.shiftKey) setShiftHeld(false);
+    };
+    const onBlur = () => setShiftHeld(false);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") setShiftHeld(false);
+    };
+
     controls.addEventListener("dragging-changed", draggingChangedListener);
     controls.addEventListener("objectChange", objectChangeListener);
     renderer.domElement.addEventListener("pointerdown", pointerDownListener);
     renderer.domElement.addEventListener("pointermove", pointerMoveListener);
     renderer.domElement.addEventListener("pointerup", pointerUpListener);
     renderer.domElement.addEventListener("pointercancel", pointerCancelListener);
+    renderer.domElement.addEventListener("pointerleave", pointerLeaveListener);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibility);
 
     const animate = () => {
       if (disposed) return;
       animationFrame = window.requestAnimationFrame(animate);
-      applyRealizedFrozenCamera(camera, world.camera);
+      applyRealizedFrozenCamera(camera, activeWorld.camera);
+      syncTrustedPath();
       if (controls.getMode() === "scale") controls.setMode("translate");
       objectLayer.visible = sceneReadyRef.current;
       const skipObjectId = bodyDrag?.active
@@ -1294,12 +1595,84 @@ function AfcProductionRoomViewerReady({
       }
       syncGizmo();
       renderer.render(scene, camera);
+      if (sceneReadyRef.current) {
+        const outlines = stageOutlineTargets({
+          selectedObjectId: selectedObjectIdRef.current,
+          hoveredObjectId,
+        }).flatMap((target) => {
+          const object = getLiveSceneObject(sceneObjects, target.objectId);
+          return object ? [{ object: object.placement, role: target.role }] : [];
+        });
+        outlinePass.render(renderer, camera, outlines);
+      }
       emitPresentation();
     };
+
+    const trustedPathOverlay = createTrustedPathOverlay();
+    scene.add(trustedPathOverlay.object);
+    const syncTrustedPath = () => {
+      const presentation = trustedPathOverlay.sync({
+        visible: trustedPathVisibleRef.current,
+        baseline: trustedPathRef.current,
+        roomScaleMultiplier: activeWorld.roomScaleMultiplier,
+        camera,
+        metricScale: activeWorld.metricScale,
+        intrinsic: {
+          width: authority.original.decodedWidth,
+          height: authority.original.decodedHeight,
+        },
+        frame: {
+          width: authority.frozenCamera.frame.width,
+          height: authority.frozenCamera.frame.height,
+        },
+        viewportWidth: renderer.domElement.clientWidth,
+        viewportHeight: renderer.domElement.clientHeight,
+      });
+      const label = pathLabelRef.current;
+      if (!label) return;
+      if (!presentation.shown || !presentation.label) {
+        label.style.display = "none";
+        return;
+      }
+      label.style.display = "block";
+      label.textContent = presentation.label;
+      label.style.left = `${presentation.screenX}px`;
+      label.style.top = `${presentation.screenY}px`;
+    };
+    syncTrustedPathRef.current = syncTrustedPath;
+
+    const applyRoomScale = (multiplier: number) => {
+      if (disposed) return;
+      const next = realizeProductionWorld(authority, multiplier);
+      activeWorld = next;
+      realizedWalls = next.collisionWalls;
+      applyRealizedFrozenCamera(camera, next.camera);
+      lighting.syncWorld(next);
+      for (const object of sceneObjects.values()) {
+        const realized = realizeObjectWorldTransform(
+          object.canonicalTransform,
+          next.metricScale,
+        );
+        applyWorldTransform(object.placement, {
+          ...realized,
+          uniformScale: 1,
+        });
+        object.realizedTransform = {
+          ...realized,
+          uniformScale: 1,
+        };
+      }
+      syncTrustedPath();
+    };
+    applyRoomScaleRef.current = applyRoomScale;
     animate();
 
     return () => {
       disposed = true;
+      applyRoomScaleRef.current = null;
+      syncTrustedPathRef.current = null;
+      scene.remove(trustedPathOverlay.object);
+      trustedPathOverlay.dispose();
       applyGeneration += 1;
       applyLiveSceneRef.current = null;
       onLiveHostChangeRef.current?.(null);
@@ -1319,6 +1692,13 @@ function AfcProductionRoomViewerReady({
       renderer.domElement.removeEventListener("pointermove", pointerMoveListener);
       renderer.domElement.removeEventListener("pointerup", pointerUpListener);
       renderer.domElement.removeEventListener("pointercancel", pointerCancelListener);
+      renderer.domElement.removeEventListener("pointerleave", pointerLeaveListener);
+      lighting.dispose();
+      outlinePass.dispose();
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
       controls.detach();
       controls.dispose();
       scene.remove(controlsHelper);
@@ -1333,6 +1713,10 @@ function AfcProductionRoomViewerReady({
     // Certified History continuity: do not add visualImageUrl or version identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- PI-3B/PI-4A frozen world deps
   }, [authority.generationId, furniture.objectId, furniture.transform, world]);
+
+  useEffect(() => {
+    applyRoomScaleRef.current?.(roomScaleMultiplier);
+  }, [roomScaleMultiplier]);
 
   useEffect(() => {
     applyLiveSceneRef.current?.({
@@ -1384,6 +1768,12 @@ function AfcProductionRoomViewerReady({
               image.dataset.presentationFallback = "applied";
               image.src = fallback;
             }}
+          />
+          <div
+            ref={pathLabelRef}
+            data-trusted-path-label="true"
+            style={{ display: "none" }}
+            className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-[140%] whitespace-pre text-center leading-tight rounded bg-neutral-950/80 px-1.5 py-0.5 text-[11px] tabular-nums text-cyan-100"
           />
           <div
             ref={mountRef}

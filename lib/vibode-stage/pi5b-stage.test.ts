@@ -142,8 +142,28 @@ test("PI-5B favorites are product/variant keys, not scene objects", () => {
 });
 
 test("PI-5B catalog browse filters by category without requiring scene presence", () => {
+  const partnerChairId = "prod-partner-browse-chair";
   const living = filterStageCatalogProducts({
-    products: STAGE_SEED_PRODUCTS,
+    products: [
+      ...STAGE_SEED_PRODUCTS,
+      {
+        productId: partnerChairId,
+        brand: "Partner",
+        name: "Partner Chair",
+        retailer: "Partner",
+        categoryId: "living-room",
+        subcategoryId: "chairs",
+        productUrl: null,
+        imageUrl: "/partner-chair.jpg",
+        priceAmount: 100,
+        priceCurrency: "USD",
+        defaultVariantId: `${partnerChairId}-default`,
+        collectionIds: [],
+        source: "partner_catalog",
+        partnerId: null,
+        status: "active",
+      },
+    ],
     mode: "browse",
     query: "",
     categoryId: "living-room",
@@ -153,7 +173,8 @@ test("PI-5B catalog browse filters by category without requiring scene presence"
     favoriteKeyFor: (product) => favoriteKey(product.productId, product.defaultVariantId),
   });
   assert.equal(living.length, 1);
-  assert.equal(living[0]?.productId, STAGE_STUDIO_CHAIR_PRODUCT_ID);
+  assert.equal(living[0]?.productId, partnerChairId);
+  assert.equal(living.some((product) => product.productId === STAGE_STUDIO_CHAIR_PRODUCT_ID), false);
   const bedroom = filterStageCatalogProducts({
     products: STAGE_SEED_PRODUCTS,
     mode: "browse",

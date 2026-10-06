@@ -7,6 +7,7 @@ import { Suspense, useEffect } from "react";
 import { AfcProductionRoomViewer } from "@/components/afc-3d/AfcProductionRoomViewer";
 import { useAfcProductionRuntime } from "@/lib/afc-v2-runtime/use-afc-production-runtime";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
+import { useStageTransformGizmos } from "@/lib/vibode-stage/use-stage-transform-gizmos";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -24,6 +25,7 @@ function AfcProductionRuntimePageInner() {
     searchParams.get("roomId") ?? searchParams.get("vibodeRoomId"),
   );
   const { user, loading: authLoading } = useSupabaseUser();
+  const showTransformGizmos = useStageTransformGizmos();
   const runtime = useAfcProductionRuntime(roomId, {
     enabled: Boolean(roomId && user),
   });
@@ -80,6 +82,7 @@ function AfcProductionRuntimePageInner() {
             roomId={roomId}
             authority={runtime.authority}
             originalImageUrl={runtime.originalImageUrl}
+            showTransformGizmos={showTransformGizmos}
           />
         )}
       </main>

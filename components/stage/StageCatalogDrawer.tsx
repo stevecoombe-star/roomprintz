@@ -68,15 +68,19 @@ export function StageCatalogDrawer() {
 
   return (
     <aside
-      className={`flex h-full shrink-0 flex-col overflow-hidden border-r border-neutral-800 bg-neutral-950/95 transition-[width] duration-200 ${
-        stage.catalogOpen ? "opacity-100" : "pointer-events-none opacity-0"
+      className={`flex h-full shrink-0 flex-col overflow-hidden border-r border-neutral-800 bg-neutral-950/95 ${
+        stage.catalogMotion === "smooth" ? "transition-[width] duration-200" : ""
+      } ${
+        stage.catalogSettled && stage.catalogOpen ? "opacity-100" : "pointer-events-none opacity-0"
       }`}
-      style={{ width: stage.catalogOpen ? STAGE_CATALOG_WIDTH_PX : 0 }}
-      data-stage-catalog={stage.catalogOpen ? "open" : "closed"}
+      style={{ width: stage.catalogSettled && stage.catalogOpen ? STAGE_CATALOG_WIDTH_PX : 0 }}
+      data-stage-catalog={
+        stage.catalogSettled ? (stage.catalogOpen ? "open" : "closed") : "pending"
+      }
       data-stage-catalog-pinned={stage.catalogPinned ? "true" : "false"}
       data-stage-catalog-authority={stage.catalogAuthority}
       data-stage-catalog-mode={stage.catalogMode}
-      aria-hidden={!stage.catalogOpen}
+      aria-hidden={!stage.catalogSettled || !stage.catalogOpen}
     >
       <div className="flex min-h-0 w-[340px] flex-1 flex-col px-3 py-3">
         <div className="flex items-center justify-between gap-2">

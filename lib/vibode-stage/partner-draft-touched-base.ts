@@ -8,6 +8,7 @@
  */
 
 import type { PartnerCatalogSyncDocument } from "./partner-catalog-sync";
+import { canonicalModelDimensions, explicitModelDimensions } from "./model-dimensions";
 import { isPlainObject } from "./product-variant-register";
 import type { StageCatalogSnapshot, StageCollection, StageProduct, StageVariant } from "./types";
 
@@ -23,6 +24,7 @@ export type PartnerDraftTouchedVariantBase = Readonly<{
   sku?: string | null;
   price_amount?: number | null;
   product_url?: string | null;
+  model_dimensions?: string | null;
 }>;
 
 export type PartnerDraftTouchedCollectionBase = Readonly<{
@@ -48,6 +50,7 @@ export const PARTNER_DRAFT_VARIANT_TOUCH_FIELDS = Object.freeze([
   "sku",
   "price_amount",
   "product_url",
+  "model_dimensions",
 ] as const);
 
 type ProductTouchField = (typeof PARTNER_DRAFT_PRODUCT_TOUCH_FIELDS)[number];
@@ -155,6 +158,7 @@ function parseVariantEntry(value: unknown): PartnerDraftTouchedVariantBase | nul
     sku?: string | null;
     price_amount?: number | null;
     product_url?: string | null;
+    model_dimensions?: string | null;
   } = {};
   if ("finish_label" in record) {
     const finish = asNullableString(record.finish_label);
@@ -171,6 +175,10 @@ function parseVariantEntry(value: unknown): PartnerDraftTouchedVariantBase | nul
   if ("product_url" in record) {
     const productUrl = asNullableString(record.product_url);
     if (productUrl !== undefined) next.product_url = productUrl;
+  }
+  if ("model_dimensions" in record) {
+    const dimensions = asNullableString(record.model_dimensions);
+    if (dimensions !== undefined) next.model_dimensions = dimensions;
   }
   return next;
 }
@@ -235,6 +243,7 @@ function liveVariantField(variant: StageVariant, field: VariantTouchField): stri
   if (field === "finish_label") return variant.finishLabel;
   if (field === "sku") return variant.sku;
   if (field === "price_amount") return variant.priceAmount;
+  if (field === "model_dimensions") return canonicalModelDimensions(explicitModelDimensions(variant));
   return variant.productUrl;
 }
 
@@ -263,6 +272,14 @@ function pendingVariantFields(
     if (patch.sku !== undefined) fields.push("sku");
     if (patch.priceAmount !== undefined) fields.push("price_amount");
     if (patch.productUrl !== undefined) fields.push("product_url");
+    if (
+      patch.modelWidthM !== undefined
+      || patch.modelHeightM !== undefined
+      || patch.modelDepthM !== undefined
+      || patch.modelSizingMode !== undefined
+    ) {
+      fields.push("model_dimensions");
+    }
     if (fields.length > 0) pending.set(patch.variantId, fields);
   }
   return pending;
@@ -325,6 +342,7 @@ export function nextPartnerDraftTouchedBase(input: Readonly<{
       sku?: string | null;
       price_amount?: number | null;
       product_url?: string | null;
+      model_dimensions?: string | null;
     } = {};
     for (const field of fields) {
       if (field in previous) {

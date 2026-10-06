@@ -15,6 +15,17 @@ import {
   settleAfcFixedSeamCalibrationWithRatioExtension,
 } from "@/app/admin/3d-room-lab/afc-fixed-seam-calibration";
 import {
+  afcV2CameraRealizabilityAspectBasisFromSettle,
+  afcV2CameraRealizabilityNotEvaluated,
+  evaluateAfcV2CameraRealizability,
+  type AfcV2CameraRealizabilityPersistedValue,
+} from "@/lib/afc-v2-production/camera-realizability-diagnostic";
+import {
+  afcV2SettleDecisionNotReached,
+  projectAfcV2SettleDecisionDiagnostic,
+  type AfcV2SettleDecisionPersistedValue,
+} from "@/lib/afc-v2-production/settle-decision-diagnostic";
+import {
   validatePendingAfcLabCameraApply,
 } from "@/app/admin/3d-room-lab/afc-lab-apply-transaction";
 import {
@@ -151,6 +162,34 @@ import { fetchRoomImageSafely } from "@/lib/vibodeAutoFloorImageFetch";
 
 export const AFC_V2_REFERENCE_DEPTH_M = 4;
 
+export const AFC_V2_OBSERVED_SPAN_LAUNCH_DISPOSITION = {
+  suppressedCompleteBackGeometry: "suppressed_complete_back_geometry",
+  notLaunchedNoCandidate: "not_launched_no_candidate",
+  notLaunchedEmptyBytesMissing: "not_launched_empty_bytes_missing",
+  notLaunchedEmptyMimeInvalid: "not_launched_empty_mime_invalid",
+  notLaunchedControlledFixture: "not_launched_controlled_fixture",
+  launched: "launched",
+  launchFailed: "launch_failed",
+  notReached: "not_reached",
+} as const;
+
+export type AfcV2ObservedSpanLaunchDisposition =
+  (typeof AFC_V2_OBSERVED_SPAN_LAUNCH_DISPOSITION)[keyof typeof AFC_V2_OBSERVED_SPAN_LAUNCH_DISPOSITION];
+
+/**
+ * Observational label only. A launched call that settles to null is
+ * `launch_failed`. The estimate value itself is unchanged.
+ */
+export function resolveObservedSpanLaunchDisposition(
+  launchDisposition: AfcV2ObservedSpanLaunchDisposition,
+  estimate: ObservedSpanPhysicalEstimateReceipt | null,
+): AfcV2ObservedSpanLaunchDisposition {
+  if (launchDisposition === "launched" && estimate == null) {
+    return "launch_failed";
+  }
+  return launchDisposition;
+}
+
 export type AfcV2AnalyzeInput = Readonly<{
   attemptId: string;
   sourceImageUrl: string;
@@ -189,7 +228,7 @@ type AfcV2LivePipelineEvidence = Readonly<{
       requestedModelId: typeof AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID;
     }>;
     floorReaderContract: Readonly<{
-      authority: "tiled_perspective_reader";
+      authority: "tiled_perspective_reader" | "manual_source_quad";
       input: "full_tiled_raster";
       inputIdentitySha256: string;
       sourceNormalizedTransfer: "identity_source_normalized";
@@ -243,6 +282,11 @@ type AfcV2LivePipelineEvidence = Readonly<{
   metricCorrespondenceEstimate: MetricCorrespondenceEstimateReceipt | null;
   observedSpanMetricSelection: ObservedSpanMetricSelection | null;
   observedSpanPhysicalEstimate: ObservedSpanPhysicalEstimateReceipt | null;
+  observedSpanLaunchDisposition: AfcV2ObservedSpanLaunchDisposition;
+  observedSpanFloorAuthorityKey: string | null;
+  observedSpanFreezeReceiptVersion: string | null;
+  observedSpanFreezePayloadSha256: string | null;
+  observedSpanSuppressWhenCompleteBackGeometryExists: boolean | null;
 }>;
 
 export type AfcV2AnalyzeResult =
@@ -250,9 +294,13 @@ export type AfcV2AnalyzeResult =
       status: "failed";
       reason: string;
       product: AfcSr1LiveProductResult;
+      settleDecision: AfcV2SettleDecisionPersistedValue;
+      cameraRealizability: AfcV2CameraRealizabilityPersistedValue;
     }>
   | Readonly<AfcV2LivePipelineEvidence & {
       status: "applied";
+      settleDecision: AfcV2SettleDecisionPersistedValue;
+      cameraRealizability: AfcV2CameraRealizabilityPersistedValue;
       product: AfcSr1LiveAuthoritativeGeometry;
       floor: Readonly<{
         authorityKey: string;
@@ -508,11 +556,17 @@ function livePipelineEvidence(
         requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
       }),
       floorReaderContract: Object.freeze({
-        authority: "tiled_perspective_reader" as const,
+        authority: product.status === "authoritative_geometry" &&
+            product.geometry.geometryAuthority === "manual_source_quad"
+          ? "manual_source_quad" as const
+          : "tiled_perspective_reader" as const,
         input: "full_tiled_raster" as const,
         inputIdentitySha256: evidence.tiledPerspective.tiledBasis.sha256,
         sourceNormalizedTransfer: "identity_source_normalized" as const,
-        readerVersion: perspective?.readerVersion ?? null,
+        readerVersion: product.status === "authoritative_geometry" &&
+            product.geometry.geometryAuthority === "manual_source_quad"
+          ? null
+          : perspective?.readerVersion ?? null,
       }),
     })
     : null;
@@ -569,6 +623,11 @@ function livePipelineEvidence(
     metricCorrespondenceEstimate: null,
     observedSpanMetricSelection: null,
     observedSpanPhysicalEstimate: null,
+    observedSpanLaunchDisposition: "not_reached",
+    observedSpanFloorAuthorityKey: null,
+    observedSpanFreezeReceiptVersion: null,
+    observedSpanFreezePayloadSha256: null,
+    observedSpanSuppressWhenCompleteBackGeometryExists: null,
   });
 }
 
@@ -792,33 +851,65 @@ export function launchObservedSpanPhysicalEstimate(args: Readonly<{
 }>): {
   selection: ObservedSpanMetricSelection;
   estimatePromise: Promise<ObservedSpanPhysicalEstimateReceipt | null>;
+  launchDisposition: AfcV2ObservedSpanLaunchDisposition;
+  floorAuthorityKey: string;
+  freezeReceiptVersion: string | null;
+  freezePayloadSha256: string | null;
+  suppressWhenCompleteBackGeometryExists: true;
 } {
+  const suppressWhenCompleteBackGeometryExists = true as const;
   const selection = selectObservedSpanMetricCandidate({
     roomBoundary: args.roomBoundaries,
     roomCollision: args.roomCollision,
     observation: args.roomObservation,
-    suppressWhenCompleteBackGeometryExists: true,
+    suppressWhenCompleteBackGeometryExists,
+  });
+  const noFreeze = { receiptVersion: null, payloadSha256: null } as const;
+  const observe = (
+    selectionValue: ObservedSpanMetricSelection,
+    estimatePromise: Promise<ObservedSpanPhysicalEstimateReceipt | null>,
+    launchDisposition: AfcV2ObservedSpanLaunchDisposition,
+    freeze: Readonly<{
+      receiptVersion: string | null;
+      payloadSha256: string | null;
+    }>,
+  ) => ({
+    selection: selectionValue,
+    estimatePromise,
+    launchDisposition,
+    floorAuthorityKey: args.floorAuthorityKey,
+    freezeReceiptVersion: freeze.receiptVersion,
+    freezePayloadSha256: freeze.payloadSha256,
+    suppressWhenCompleteBackGeometryExists,
   });
   if (selection.pathAGeometry.exists || !selection.selected) {
-    return {
-      selection: markObservedSpanEstimatorLaunched(selection, false),
-      estimatePromise: Promise.resolve(null),
-    };
+    return observe(
+      markObservedSpanEstimatorLaunched(selection, false),
+      Promise.resolve(null),
+      selection.pathAGeometry.exists
+        ? "suppressed_complete_back_geometry"
+        : "not_launched_no_candidate",
+      noFreeze,
+    );
   }
   if (!args.emptyBytes) {
-    return {
-      selection: markObservedSpanEstimatorLaunched(selection, false),
-      estimatePromise: Promise.resolve(null),
-    };
+    return observe(
+      markObservedSpanEstimatorLaunched(selection, false),
+      Promise.resolve(null),
+      "not_launched_empty_bytes_missing",
+      noFreeze,
+    );
   }
   const freeze = freezeLineageIdentity(args.freezeReceipt);
   const emptyMime = asOriginalMime(args.product.emptyBasis.mimeType);
   const originalMime = asOriginalMime(args.product.originalBasis.mimeType);
   if (!emptyMime) {
-    return {
-      selection: markObservedSpanEstimatorLaunched(selection, false),
-      estimatePromise: Promise.resolve(null),
-    };
+    return observe(
+      markObservedSpanEstimatorLaunched(selection, false),
+      Promise.resolve(null),
+      "not_launched_empty_mime_invalid",
+      freeze,
+    );
   }
   const estimateInput: ObservedSpanPhysicalEstimateInput = {
     attemptId: args.input.attemptId,
@@ -854,16 +945,17 @@ export function launchObservedSpanPhysicalEstimate(args: Readonly<{
   };
   const launched = markObservedSpanEstimatorLaunched(selection, true);
   if (args.dependencies.estimateObservedSpanPhysical) {
-    return {
-      selection: launched,
-      estimatePromise: args.dependencies.estimateObservedSpanPhysical(estimateInput)
-        .catch(() => null),
-    };
+    return observe(
+      launched,
+      args.dependencies.estimateObservedSpanPhysical(estimateInput).catch(() => null),
+      "launched",
+      freeze,
+    );
   }
   if (isControlledMetricPriorFixture(args.dependencies)) {
-    return {
-      selection: markObservedSpanEstimatorLaunched(selection, false),
-      estimatePromise: Promise.resolve(
+    return observe(
+      markObservedSpanEstimatorLaunched(selection, false),
+      Promise.resolve(
         buildObservedSpanPhysicalEstimateReceipt({
           lineage: {
             attemptId: args.input.attemptId,
@@ -915,12 +1007,16 @@ export function launchObservedSpanPhysicalEstimate(args: Readonly<{
           estimatorLaunched: false,
         }),
       ),
-    };
+      "not_launched_controlled_fixture",
+      freeze,
+    );
   }
-  return {
-    selection: launched,
-    estimatePromise: estimateObservedSpanPhysicalLength(estimateInput).catch(() => null),
-  };
+  return observe(
+    launched,
+    estimateObservedSpanPhysicalLength(estimateInput).catch(() => null),
+    "launched",
+    freeze,
+  );
 }
 
 function finalizeObservedSpanEstimate(
@@ -1144,6 +1240,10 @@ export async function executeAfcV2Analysis(
       roomObservation,
     };
   };
+  let settleDecision: AfcV2SettleDecisionPersistedValue =
+    afcV2SettleDecisionNotReached();
+  let cameraRealizability: AfcV2CameraRealizabilityPersistedValue =
+    afcV2CameraRealizabilityNotEvaluated();
   const failedResult = async (reason: string): Promise<AfcV2AnalyzeResult> => {
     const joined = await joinObservation();
     const metricRoomPrior = await metricPriorPromise;
@@ -1159,6 +1259,8 @@ export async function executeAfcV2Analysis(
       status: "failed",
       reason,
       product,
+      settleDecision,
+      cameraRealizability,
     };
   };
   if (product.status !== "authoritative_geometry") {
@@ -1192,6 +1294,35 @@ export async function executeAfcV2Analysis(
     frameSize: input.frame,
     referenceDepthM: product.metric.referenceDepthM,
   });
+  try {
+    settleDecision = projectAfcV2SettleDecisionDiagnostic({
+      settle,
+      sourceNormalizedPolygon: product.geometry.sourceNormalizedPolygon,
+    });
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "afc_v2_settle_decision_capture_failed",
+      category: error instanceof Error ? error.name : "capture_threw",
+    }));
+    settleDecision = null;
+  }
+  try {
+    cameraRealizability = evaluateAfcV2CameraRealizability({
+      sourceNormalizedPolygon: product.geometry.sourceNormalizedPolygon,
+      sourceImageSize: {
+        width: product.originalBasis.decodedWidth,
+        height: product.originalBasis.decodedHeight,
+      },
+      frameSize: input.frame,
+      aspectBasis: afcV2CameraRealizabilityAspectBasisFromSettle(settle),
+    });
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "afc_v2_camera_realizability_capture_failed",
+      category: error instanceof Error ? error.name : "capture_threw",
+    }));
+    cameraRealizability = null;
+  }
   if (!settle.ok || !settle.applyObservability.available) {
     return failedResult(
       settle.ok
@@ -1496,6 +1627,10 @@ export async function executeAfcV2Analysis(
 
   const metricRoomPrior = await metricPriorPromise;
   const observedSpanPhysicalRaw = await observedSpanLaunch.estimatePromise;
+  const observedSpanLaunchDisposition = resolveObservedSpanLaunchDisposition(
+    observedSpanLaunch.launchDisposition,
+    observedSpanPhysicalRaw,
+  );
   const freezeIdentity = freezeLineageIdentity(freeze.value);
   const observedSpanPhysicalEstimate = finalizeObservedSpanEstimate(
     observedSpanLaunch.selection,
@@ -1536,6 +1671,14 @@ export async function executeAfcV2Analysis(
     metricCorrespondenceEstimate: null,
     observedSpanMetricSelection: observedSpanLaunch.selection,
     observedSpanPhysicalEstimate,
+    observedSpanLaunchDisposition,
+    observedSpanFloorAuthorityKey: observedSpanLaunch.floorAuthorityKey,
+    observedSpanFreezeReceiptVersion: observedSpanLaunch.freezeReceiptVersion,
+    observedSpanFreezePayloadSha256: observedSpanLaunch.freezePayloadSha256,
+    observedSpanSuppressWhenCompleteBackGeometryExists:
+      observedSpanLaunch.suppressWhenCompleteBackGeometryExists,
+    settleDecision,
+    cameraRealizability,
   };
 }
 
@@ -1596,6 +1739,8 @@ export async function executeAfcV2ControlledReplay(
       status: "failed",
       reason: "Controlled replay evidence did not satisfy exact identity and lineage bindings.",
       product: rejectedProduct,
+      settleDecision: afcV2SettleDecisionNotReached(),
+      cameraRealizability: afcV2CameraRealizabilityNotEvaluated(),
     };
   }
   return executeAfcV2Analysis(input, {

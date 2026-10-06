@@ -1,8 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { formatPartnerIntakeMetresTriple, formatSha256Prefix } from "@/lib/vibode-stage/partner-asset-intake-display";
+import { putPartnerGlbToSignedUrl } from "@/lib/vibode-stage/partner-glb-signed-upload";
+import {
+  buildPartnerModelLibrary,
+  type PartnerModelLibraryStatusFilter,
+} from "@/lib/vibode-stage/partner-model-library";
+import { PartnerModelLibrary } from "./PartnerModelLibrary";
 
 type IntakeWarning = Readonly<{
   code: string;
@@ -25,6 +31,7 @@ type IntakeDto = Readonly<{
   errorCode: string | null;
   error: string | null;
   assetId: string | null;
+  byteSize?: number | null;
   createdAt: string;
   updatedAt: string;
 }>;
@@ -61,6 +68,7 @@ type RegisteredAssetDto = Readonly<{
   sha256: string | null;
   registeredAt: string;
   origin: "partner_intake" | "catalog_linked";
+  thumbnailUrl?: string | null;
 }>;
 
 type RegisteredListResponse = Readonly<{
@@ -87,32 +95,6 @@ function metresField(value: string): number | null {
   if (value.trim() === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-async function uploadToSignedUrl(
-  signedUrl: string,
-  file: File,
-  onProgress: (percent: number) => void,
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("PUT", signedUrl);
-    xhr.setRequestHeader("Content-Type", "model/gltf-binary");
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable || event.total <= 0) return;
-      onProgress(Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100))));
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress(100);
-        resolve();
-        return;
-      }
-      reject(new Error("Upload failed."));
-    };
-    xhr.onerror = () => reject(new Error("Upload failed."));
-    xhr.send(file);
-  });
 }
 
 function statusLabel(intake: IntakeDto): string {
@@ -165,22 +147,51 @@ export function PartnerAssetWorkspaceClient() {
   const [lastIntake, setLastIntake] = useState<IntakeDto | null>(null);
   const [registeringId, setRegisteringId] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [thumbnailBusy, setThumbnailBusy] = useState(false);
+  const [thumbnailStatus, setThumbnailStatus] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<unknown>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [libraryStatus, setLibraryStatus] = useState<PartnerModelLibraryStatusFilter>("all");
+
+  const library = useMemo(
+    () => buildPartnerModelLibrary({
+      assets: registeredAssets,
+      intakes,
+      catalog,
+    }),
+    [catalog, intakes, registeredAssets],
+  );
 
   const refresh = useCallback(async () => {
-    const [intakeResponse, assetResponse] = await Promise.all([
-      fetch("/api/vibode/partner/assets/intakes", { cache: "no-store" }),
-      fetch("/api/vibode/partner/assets", { cache: "no-store" }),
-    ]);
-    const intakeBody = await intakeResponse.json() as ListResponse;
-    if (!intakeResponse.ok || !intakeBody.ok || !Array.isArray(intakeBody.intakes)) {
-      setLoadError(intakeBody.error ?? "Asset intakes could not be loaded.");
-      return;
-    }
-    const assetBody = await assetResponse.json() as RegisteredListResponse;
-    setLoadError(null);
-    setIntakes(intakeBody.intakes);
-    if (assetResponse.ok && assetBody.ok && Array.isArray(assetBody.assets)) {
-      setRegisteredAssets(assetBody.assets);
+    try {
+      const [intakeResponse, assetResponse, catalogResponse] = await Promise.all([
+        fetch("/api/vibode/partner/assets/intakes", { cache: "no-store" }),
+        fetch("/api/vibode/partner/assets", { cache: "no-store" }),
+        fetch("/api/vibode/partner/catalog", { cache: "no-store" }),
+      ]);
+      const intakeBody = await intakeResponse.json() as ListResponse;
+      if (!intakeResponse.ok || !intakeBody.ok || !Array.isArray(intakeBody.intakes)) {
+        setLoadError(intakeBody.error ?? "3D models could not be loaded.");
+        return;
+      }
+      const assetBody = await assetResponse.json() as RegisteredListResponse;
+      const catalogBody = await catalogResponse.json() as { ok?: boolean };
+      setLoadError(null);
+      setIntakes(intakeBody.intakes);
+      if (assetResponse.ok && assetBody.ok && Array.isArray(assetBody.assets)) {
+        setRegisteredAssets(assetBody.assets);
+      }
+      if (catalogResponse.ok && catalogBody.ok === true) {
+        setCatalog(catalogBody);
+      } else {
+        setCatalog(null);
+      }
+    } catch {
+      setLoadError("3D models could not be loaded.");
+    } finally {
+      setLoaded(true);
     }
   }, []);
 
@@ -235,7 +246,7 @@ export function PartnerAssetWorkspaceClient() {
         setProgress(null);
         return;
       }
-      await uploadToSignedUrl(createdBody.signedUrl, file, setProgress);
+      await putPartnerGlbToSignedUrl(createdBody.signedUrl, file, setProgress);
       setPhase("validating");
       const finalized = await fetch(
         `/api/vibode/partner/assets/intakes/${createdBody.intakeId}/finalize`,
@@ -265,6 +276,8 @@ export function PartnerAssetWorkspaceClient() {
       const body = await response.json() as RegisterResponse;
       if (!response.ok || !body.ok) {
         setActionError(body.error ?? "The Asset could not be registered.");
+      } else if (body.asset?.assetId) {
+        await createThumbnail(body.asset.assetId);
       }
       await refresh();
     } catch {
@@ -294,7 +307,64 @@ export function PartnerAssetWorkspaceClient() {
     }
   }
 
-  const busy = phase !== "idle" || registeringId != null || activatingId != null;
+  async function createThumbnail(assetId: string) {
+    setThumbnailBusy(true);
+    setThumbnailStatus("Creating thumbnail…");
+    try {
+      const { generatePartnerModelThumbnail } = await import(
+        "@/lib/vibode-model-thumbnail/generate-client"
+      );
+      const generated = await generatePartnerModelThumbnail({ assetId });
+      setThumbnailStatus(generated.ok ? "Thumbnail saved." : "Thumbnail could not be created. The model is still registered.");
+      if (generated.ok && generated.thumbnailUrl) {
+        setRegisteredAssets((current) => current.map((asset) => (
+          asset.assetId === assetId ? { ...asset, thumbnailUrl: generated.thumbnailUrl } : asset
+        )));
+      }
+    } catch {
+      setThumbnailStatus("Thumbnail could not be created. The model is still registered.");
+    } finally {
+      setThumbnailBusy(false);
+    }
+  }
+
+  async function onGenerateMissing() {
+    const assetIds = registeredAssets
+      .filter((asset) => !asset.thumbnailUrl)
+      .map((asset) => asset.assetId);
+    if (assetIds.length === 0) {
+      setThumbnailStatus("Every model already has a thumbnail.");
+      return;
+    }
+    setThumbnailBusy(true);
+    setThumbnailStatus(`Generating thumbnail 1 of ${assetIds.length}…`);
+    try {
+      const { generateMissingPartnerModelThumbnails } = await import(
+        "@/lib/vibode-model-thumbnail/generate-client"
+      );
+      const result = await generateMissingPartnerModelThumbnails({
+        assetIds,
+        onProgress: ({ index, total }) => {
+          setThumbnailStatus(`Generating thumbnail ${index} of ${total}…`);
+        },
+      });
+      setRegisteredAssets((current) => current.map((asset) => {
+        const thumbnailUrl = result.urls[asset.assetId];
+        return thumbnailUrl ? { ...asset, thumbnailUrl } : asset;
+      }));
+      setThumbnailStatus(
+        result.failed === 0
+          ? `Created ${result.completed} thumbnail${result.completed === 1 ? "" : "s"}.`
+          : `Created ${result.completed} thumbnail${result.completed === 1 ? "" : "s"}. ${result.failed} could not be created.`,
+      );
+    } catch {
+      setThumbnailStatus("Thumbnails could not be created. The models are still registered.");
+    } finally {
+      setThumbnailBusy(false);
+    }
+  }
+
+  const busy = phase !== "idle" || registeringId != null || activatingId != null || thumbnailBusy;
   const phaseCopy = phase === "uploading"
     ? `Uploading${progress == null ? "…" : `… ${progress}%`}`
     : phase === "validating"
@@ -307,6 +377,50 @@ export function PartnerAssetWorkspaceClient() {
 
   return (
     <div className="space-y-8">
+      <PartnerModelLibrary
+        items={library.items}
+        loaded={loaded}
+        loadError={loadError}
+        associationsKnown={library.associationsKnown}
+        query={query}
+        status={libraryStatus}
+        onQueryChange={setQuery}
+        onStatusChange={setLibraryStatus}
+        onClearFilters={() => {
+          setQuery("");
+          setLibraryStatus("all");
+        }}
+      />
+      <section className="rounded-xl border border-slate-800 p-4">
+        <button
+          type="button"
+          className="text-sm text-slate-300 underline"
+          aria-expanded={advancedOpen}
+          onClick={() => setAdvancedOpen((current) => !current)}
+        >
+          Advanced / Technical tools
+        </button>
+        {advancedOpen ? (
+          <div className="mt-4 space-y-8">
+            <div className="space-y-2">
+              <button
+                type="button"
+                disabled={busy || registeredAssets.every((asset) => Boolean(asset.thumbnailUrl))}
+                className="rounded-md border border-slate-700 px-3 py-1.5 text-sm"
+                onClick={() => void onGenerateMissing()}
+              >
+                Generate missing thumbnails
+              </button>
+              {thumbnailStatus ? <p className="text-xs text-slate-400">{thumbnailStatus}</p> : null}
+            </div>
+            <p className="text-xs text-slate-500">
+              Manual upload, registration, and runtime activation for beta fallback.
+              Enter the actual product dimensions in metres, or use the GLB measurement shortcut.
+              A validated intake is not a runtime-ready Asset. Register Asset creates an
+              immutable technical Asset whose runtime activation is still pending.
+              Product placement size is set on the product variant. This technical
+              upload measures the GLB and does not automatically resize the file.
+            </p>
       <section className="rounded-xl border border-slate-800 p-4 space-y-4">
         <h3 className="font-medium">Upload GLB</h3>
         <label className="block space-y-1 text-sm">
@@ -333,8 +447,8 @@ export function PartnerAssetWorkspaceClient() {
             those product dimensions.
           </p>
           <p className="text-xs text-slate-500">
-            The GLB should already be modeled at real-world scale. Vibode does not automatically
-            resize uploaded furniture.
+            This check compares the GLB measurement with the dimensions entered here.
+            Vibode does not automatically resize the file. Placement size is set on the product variant.
           </p>
           <label className="flex items-start gap-2 text-sm text-slate-300">
             <input
@@ -586,6 +700,9 @@ export function PartnerAssetWorkspaceClient() {
           </ul>
         </section>
       ) : null}
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }

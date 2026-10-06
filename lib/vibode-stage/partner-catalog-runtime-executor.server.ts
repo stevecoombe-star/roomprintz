@@ -6,6 +6,9 @@ import { PARTNER_RUNTIME_PLAN_VERSION_2 } from "./partner-catalog-runtime-execut
 import { PARTNER_RUNTIME_PLAN_VERSION_3 } from "./partner-catalog-runtime-executor-v3";
 import { PARTNER_RUNTIME_PLAN_VERSION_4 } from "./partner-catalog-runtime-executor-v4";
 import { PARTNER_RUNTIME_PLAN_VERSION_5 } from "./partner-catalog-runtime-executor-v5";
+import { PARTNER_RUNTIME_PLAN_VERSION_6 } from "./partner-catalog-runtime-executor-v6";
+import { PARTNER_RUNTIME_PLAN_VERSION_7 } from "./partner-catalog-runtime-executor-v7";
+import { PARTNER_RUNTIME_PLAN_VERSION_8 } from "./partner-catalog-runtime-executor-v8";
 import {
   parseRuntimeApplyRpcError,
   STAGE_PARTNER_APPLY_RPC,
@@ -13,6 +16,9 @@ import {
   STAGE_PARTNER_APPLY_RPC_V3,
   STAGE_PARTNER_APPLY_RPC_V4,
   STAGE_PARTNER_APPLY_RPC_V5,
+  STAGE_PARTNER_APPLY_RPC_V6,
+  STAGE_PARTNER_APPLY_RPC_V7,
+  STAGE_PARTNER_APPLY_RPC_V8,
   type PartnerRuntimeApplyFn,
   type PartnerRuntimeApplyResult,
 } from "./partner-catalog-publish";
@@ -64,6 +70,30 @@ export function createSupabasePartnerPublishAuditStore(supabase: SupabaseClient)
 
 export function createSupabasePartnerRuntimeApply(supabase: SupabaseClient): PartnerRuntimeApplyFn {
   return async (payload) => {
+    if (payload.planVersion === PARTNER_RUNTIME_PLAN_VERSION_8) {
+      const { data, error } = await supabase.rpc(STAGE_PARTNER_APPLY_RPC_V8, { p_apply: payload });
+      if (error) {
+        const errorCode = parseRuntimeApplyRpcError(error.message) ?? "FAILED";
+        return { ok: false, errorCode };
+      }
+      return parseRuntimeApplyResult(data);
+    }
+    if (payload.planVersion === PARTNER_RUNTIME_PLAN_VERSION_7) {
+      const { data, error } = await supabase.rpc(STAGE_PARTNER_APPLY_RPC_V7, { p_apply: payload });
+      if (error) {
+        const errorCode = parseRuntimeApplyRpcError(error.message) ?? "FAILED";
+        return { ok: false, errorCode };
+      }
+      return parseRuntimeApplyResult(data);
+    }
+    if (payload.planVersion === PARTNER_RUNTIME_PLAN_VERSION_6) {
+      const { data, error } = await supabase.rpc(STAGE_PARTNER_APPLY_RPC_V6, { p_apply: payload });
+      if (error) {
+        const errorCode = parseRuntimeApplyRpcError(error.message) ?? "FAILED";
+        return { ok: false, errorCode };
+      }
+      return parseRuntimeApplyResult(data);
+    }
     if (payload.planVersion === PARTNER_RUNTIME_PLAN_VERSION_5) {
       const { data, error } = await supabase.rpc(STAGE_PARTNER_APPLY_RPC_V5, { p_apply: payload });
       if (error) {

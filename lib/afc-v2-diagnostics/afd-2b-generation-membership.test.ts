@@ -32,6 +32,7 @@ import {
 } from "@/lib/afc-v2-production/production-store";
 
 import { AFC_DIAGNOSTIC_CASE_TABLE } from "./contracts";
+import { afcQaAccessConfig, type AfcQaAccessConfig } from "./qa-access";
 import { handleAfcQaCapabilityGet } from "./qa-capability.server";
 import {
   AFC_DIAGNOSTIC_SESSION_ASSOCIATION_FAILED_EVENT,
@@ -350,7 +351,7 @@ async function analyzeWithAttach(args: Readonly<{
   spy: AttachSpy;
   intent?: ProductionAfcIntent;
   failReader?: boolean;
-  env?: NodeJS.ProcessEnv;
+  qaAccess?: AfcQaAccessConfig;
   originalBytes?: Uint8Array;
   originalIdentity?: typeof originalBasis;
   analyze?: typeof executeAfcV2Analysis;
@@ -373,7 +374,7 @@ async function analyzeWithAttach(args: Readonly<{
       return executeAfcV2Analysis(input, deps);
     }),
     onGenerationCreated: (created) => attachAfcDiagnosticSessionBestEffort(created, {
-      env: args.env,
+      qaAccess: args.qaAccess,
       ensureMembership: args.spy.ensure,
       log: args.logs ? (entry) => args.logs!.push(entry) : undefined,
     }),
@@ -457,7 +458,7 @@ test("QA off is a true no-op: AFC unchanged, no diagnostic error log, public res
       },
       analysisDependencies: analysisDependencies(),
       onGenerationCreated: (created) => attachAfcDiagnosticSessionBestEffort(created, {
-        env: { VIBODE_AFC_QA_MODE: "off" },
+        qaAccess: afcQaAccessConfig(false, USER_ID),
         store: throwingDiagnosticStore(),
         log: (entry) => logs.push(entry),
       }),
@@ -729,7 +730,7 @@ test("analyze, restore, runtime, and QA capability public surfaces stay unchange
   const capability = await handleAfcQaCapabilityGet({
     request: new Request("http://test/api/vibode/afc/qa/capability"),
     authorize: async (): Promise<ProductionAfcAuth> => ({ ok: true, userId: USER_ID }),
-    env: { VIBODE_AFC_QA_MODE: "all" },
+    qaAccess: afcQaAccessConfig(true, USER_ID),
   });
   const body = await capability.json() as Record<string, unknown>;
   assert.deepEqual(Object.keys(body), ["enabled"]);
@@ -802,7 +803,7 @@ test("attach helper does not log for enabled:false and swallows primitive throws
     generationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     intent: "analyze",
   }, {
-    env: { VIBODE_AFC_QA_MODE: "off" },
+    qaAccess: afcQaAccessConfig(false, USER_ID),
     store: throwingDiagnosticStore(),
     log: (entry) => logs.push(entry),
   });

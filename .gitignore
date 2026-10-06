@@ -4,6 +4,8 @@
 # Dependencies
 # ----------------------------------------
 /node_modules
+/worker/node_modules
+/worker/dist
 /supabase/functions/node_modules
 /.pnp
 .pnp.*

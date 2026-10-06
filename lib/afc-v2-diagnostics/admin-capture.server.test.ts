@@ -139,6 +139,11 @@ function adminGeneration(
     analysisStatus: "applied",
     analysisReason: null,
     recoverySafeFailureState: "none",
+    metricDecision: null,
+    settleDecision: null,
+    cameraRealizability: null,
+    artifactLineage: null,
+    legacyMetricConclusion: null,
     engineFingerprint: fingerprint(),
     original: Object.freeze({
       originalSha256: SHA_A,
@@ -371,6 +376,9 @@ function world(options: WorldOptions = {}) {
     },
     async listGenerationsByIds() {
       throw new Error("listGenerationsByIds should not run during capture POST");
+    },
+    async listCaseViewportArtifacts() {
+      throw new Error("listCaseViewportArtifacts should not run during capture POST");
     },
   };
 

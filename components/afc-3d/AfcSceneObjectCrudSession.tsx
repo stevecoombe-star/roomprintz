@@ -11,6 +11,10 @@ import {
 } from "react";
 
 import { defaultFurnitureAssetId } from "@/lib/afc-v2-runtime/furniture-assets";
+import {
+  beginPlacementFootprint,
+  scenePlacementFootprint,
+} from "@/lib/afc-v2-runtime/model-axis-scale";
 import { PI4C_MAX_SCENE_OBJECTS } from "@/lib/afc-v2-runtime/persisted-scene";
 import {
   PI5A_MISSING_OBJECT_MESSAGE,
@@ -130,14 +134,22 @@ export function AfcSceneObjectCrudSessionProvider({
       return;
     }
     void (async () => {
-      const result = await Promise.resolve(host.duplicateSceneObject(selectedObjectId));
-      setObjectCount(host.objectCount());
-      if (!result.ok) {
-        setActionError(result.message);
-        return;
+      const source = scenePlacementFootprint(selectedObjectId);
+      const endPlacementFootprint = source
+        ? beginPlacementFootprint(source)
+        : null;
+      try {
+        const result = await Promise.resolve(host.duplicateSceneObject(selectedObjectId));
+        setObjectCount(host.objectCount());
+        if (!result.ok) {
+          setActionError(result.message);
+          return;
+        }
+        setActionError(null);
+        setSelectedObjectId(result.selectedObjectId);
+      } finally {
+        endPlacementFootprint?.();
       }
-      setActionError(null);
-      setSelectedObjectId(result.selectedObjectId);
     })();
   }, [selectedObjectId]);
 

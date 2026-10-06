@@ -13,6 +13,13 @@ import {
   AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
 } from "@/app/admin/3d-room-lab/research/afc-sr1-tile-grid-scaffold";
 import { AFC_V2_ROOM_OBSERVATION_DEFAULT_MODEL } from "@/app/admin/3d-room-lab-v2/room-observation.server";
+import {
+  afcImageGenerationProvenance,
+  parseAfcImageGenerationProvenance,
+  resolveAfcImageModel,
+  type AfcImageGenerationProvenance,
+  type AfcImageModelChoice,
+} from "@/lib/afc-image-models";
 
 import {
   AFC_V2_PRODUCTION_ROOM_AUTHORITY_VERSION,
@@ -45,6 +52,7 @@ export type AfcV2EngineFingerprintV1 = Readonly<{
   tiled: AfcV2EngineFingerprintTiledV1;
   observationModelId: string;
   gitSha: string | null;
+  imageGeneration?: AfcImageGenerationProvenance;
 }>;
 
 export const AFC_V2_ENGINE_FINGERPRINT_KEYS = [
@@ -125,6 +133,9 @@ export function productionTiledEngineIdentity(): Readonly<{
 export function cloneAfcV2EngineFingerprint(
   fingerprint: AfcV2EngineFingerprintV1,
 ): AfcV2EngineFingerprintV1 {
+  const imageGeneration = fingerprint.imageGeneration
+    ? parseAfcImageGenerationProvenance(fingerprint.imageGeneration)
+    : null;
   return Object.freeze({
     fingerprintSchemaVersion: fingerprint.fingerprintSchemaVersion,
     productionSchemaVersion: fingerprint.productionSchemaVersion,
@@ -132,6 +143,7 @@ export function cloneAfcV2EngineFingerprint(
     tiled: Object.freeze({ ...fingerprint.tiled }),
     observationModelId: fingerprint.observationModelId,
     gitSha: fingerprint.gitSha,
+    ...(imageGeneration ? { imageGeneration } : {}),
   });
 }
 
@@ -159,6 +171,47 @@ export function buildAfcV2EngineFingerprint(
     }),
     observationModelId: resolveAfcV2ObservationModelId(env),
     gitSha: resolveAfcV2EngineGitSha(env),
+  });
+}
+
+/**
+ * Copies image-generation provenance from the generation that created reused
+ * bytes. Current admin model settings are not an input.
+ */
+export function inheritAfcImageGenerationProvenance(
+  fingerprint: AfcV2EngineFingerprintV1,
+  recorded: unknown,
+): AfcV2EngineFingerprintV1 | null {
+  const imageGeneration = parseAfcImageGenerationProvenance(recorded);
+  if (!imageGeneration) return null;
+  const cloned = cloneAfcV2EngineFingerprint(fingerprint);
+  return Object.freeze({
+    ...cloned,
+    tiled: Object.freeze({
+      ...cloned.tiled,
+      requestedModelId: imageGeneration.tiled.modelId,
+    }),
+    imageGeneration,
+  });
+}
+
+/**
+ * Records the selected EMPTY and TILED image models on a new fingerprint.
+ * Historical fingerprints omit `imageGeneration` and stay valid.
+ */
+export function withAfcImageGenerationProvenance(
+  fingerprint: AfcV2EngineFingerprintV1,
+  settings: Readonly<{ empty: AfcImageModelChoice; tiled: AfcImageModelChoice }>,
+): AfcV2EngineFingerprintV1 {
+  const cloned = cloneAfcV2EngineFingerprint(fingerprint);
+  const imageGeneration = afcImageGenerationProvenance(settings);
+  return Object.freeze({
+    ...cloned,
+    tiled: Object.freeze({
+      ...cloned.tiled,
+      requestedModelId: resolveAfcImageModel(settings.tiled).modelId,
+    }),
+    imageGeneration,
   });
 }
 

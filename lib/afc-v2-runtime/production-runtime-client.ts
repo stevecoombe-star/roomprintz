@@ -7,6 +7,10 @@
  */
 
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
+import {
+  parseTrustedPathBaseline,
+  type TrustedPathBaseline,
+} from "@/lib/vibode-stage/trusted-path";
 
 export const AFC_PRODUCTION_RUNTIME_PATH = "/api/vibode/afc/runtime";
 
@@ -16,6 +20,7 @@ export type AfcProductionRuntimeLoadState = Readonly<{
   authority: AfcV2ProductionRoomAuthority | null;
   originalImageUrl: string | null;
   generationId: string | null;
+  trustedPath: TrustedPathBaseline | null;
 }>;
 
 export const IDLE_AFC_PRODUCTION_RUNTIME_STATE: AfcProductionRuntimeLoadState = {
@@ -24,6 +29,7 @@ export const IDLE_AFC_PRODUCTION_RUNTIME_STATE: AfcProductionRuntimeLoadState = 
   authority: null,
   originalImageUrl: null,
   generationId: null,
+  trustedPath: null,
 };
 
 export type InterpretedProductionRuntimeResponse =
@@ -32,6 +38,7 @@ export type InterpretedProductionRuntimeResponse =
       authority: AfcV2ProductionRoomAuthority;
       originalImageUrl: string;
       generationId: string | null;
+      trustedPath: TrustedPathBaseline | null;
     }
   | {
       status: "error";
@@ -87,6 +94,7 @@ export function interpretProductionRuntimeResponse(input: Readonly<{
     authority: authority as AfcV2ProductionRoomAuthority,
     originalImageUrl,
     generationId,
+    trustedPath: parseTrustedPathBaseline(payload?.trustedPath),
   };
 }
 

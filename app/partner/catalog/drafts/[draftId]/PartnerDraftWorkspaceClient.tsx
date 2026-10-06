@@ -14,6 +14,7 @@ import {
   type PartnerCommercialAssetOption,
 } from "@/lib/vibode-stage/partner-commercial-assets";
 import type { StageCategory, StageCollection, StageProduct, StageVariant } from "@/lib/vibode-stage/types";
+import { PartnerCatalogOrderEditor } from "../../PartnerCatalogOrderEditor";
 
 type DraftDocument = {
   products: {
@@ -175,10 +176,9 @@ function DraftPreviewResult(props: Readonly<{
     <section id="draft-preview-result" className="space-y-3 rounded-xl border border-slate-700 bg-slate-900/60 p-4">
       <h3 className="font-medium">Preview result</h3>
       <p className="text-sm text-slate-200">
-        {view.ok ? "Plan is valid" : "Plan has issues"}
+        {view.ok ? "These changes can be published." : "These changes need attention."}
         {" · "}
-        {view.noOp ? "no catalog changes" : "changes planned"}
-        {view.planVersion != null ? ` · planVersion ${view.planVersion}` : ""}
+        {view.noOp ? "No catalog changes." : "Changes ready to review."}
       </p>
       {view.issues.length > 0 ? (
         <div>
@@ -190,7 +190,7 @@ function DraftPreviewResult(props: Readonly<{
           </ul>
         </div>
       ) : (
-        <p className="text-xs text-slate-500">No planner issues.</p>
+        <p className="text-xs text-slate-500">No issues.</p>
       )}
       <div>
         <h4 className="text-xs uppercase tracking-wide text-slate-500">Create Product</h4>
@@ -349,10 +349,12 @@ function DraftPreviewResult(props: Readonly<{
         </div>
       ) : null}
       {!hasChanges && view.noOp ? (
-        <p className="text-sm text-slate-300">This draft plans no commercial changes.</p>
+        <p className="text-sm text-slate-300">No catalog changes.</p>
       ) : null}
       <details className="text-xs text-slate-500">
-        <summary className="cursor-pointer text-slate-400">Raw preview JSON</summary>
+        <summary className="cursor-pointer text-slate-400">Technical details</summary>
+        {view.planVersion != null ? <p className="mt-2">planVersion {view.planVersion}</p> : null}
+        <p className="mt-2 text-slate-400">Raw preview JSON</p>
         <pre className="mt-2 overflow-auto rounded-md bg-slate-950 p-3 text-[11px] text-slate-300">
           {JSON.stringify(props.raw, null, 2)}
         </pre>
@@ -461,9 +463,13 @@ function CommercialAssetSelect(props: Readonly<{
         ))}
       </select>
       {selection.invalid && selection.selectedAssetId ? (
-        <p className="mt-1 text-[11px] text-rose-300">
-          Selected Asset {selection.selectedAssetId} is no longer mapped and ready for this Partner. The stored Asset ID was preserved and was not cleared.
-        </p>
+        <div className="mt-1 text-[11px] text-rose-300">
+          <p>This 3D model is no longer ready. The previous choice was kept.</p>
+          <details className="mt-1 text-slate-500">
+            <summary>Technical details</summary>
+            <p className="mt-1 break-all font-mono">Asset ID {selection.selectedAssetId}</p>
+          </details>
+        </div>
       ) : null}
     </>
   );
@@ -515,6 +521,17 @@ function blankToNull(value: string): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+const PAGE_CHANGED = "This page has changed since you opened it. Reload before saving.";
+
+function partnerDraftNotice(error: string | null | undefined, fallback: string): string {
+  const message = error?.trim() ?? "";
+  if (!message) return fallback;
+  if (/revision is stale|stale draft|\brevision\b/i.test(message)) return PAGE_CHANGED;
+  if (/planVersion|PI-5|sqlPlan|canonical patch|current_asset/i.test(message)) return fallback;
+  if (message.length > 180) return fallback;
+  return message;
+}
+
 export function PartnerDraftWorkspaceClient(props: Readonly<{
   partnerName: string;
   partnerId: string;
@@ -526,6 +543,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   categories: readonly StageCategory[];
   catalogCurrency: string | null;
   focusProductId: string | null;
+  openProductCreate: boolean;
 }>) {
   const router = useRouter();
   const [draft, setDraft] = useState(props.draft);
@@ -558,7 +576,8 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   const [newUrl, setNewUrl] = useState("");
   const [newAssetId, setNewAssetId] = useState(props.commercialAssetOptions[0]?.assetId ?? "");
   const [newSlug, setNewSlug] = useState("");
-  const [addingProduct, setAddingProduct] = useState(false);
+  const canCreateProduct = props.commercialAssetOptions.length > 0 && Boolean(props.catalogCurrency);
+  const [addingProduct, setAddingProduct] = useState(props.openProductCreate && canCreateProduct);
   const [newProductName, setNewProductName] = useState("");
   const [newProductSlug, setNewProductSlug] = useState("");
   const [newProductImage, setNewProductImage] = useState("");
@@ -658,6 +677,15 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
     document.getElementById(`product-${props.focusProductId}`)?.scrollIntoView({ behavior: "smooth" });
   }, [props.focusProductId]);
 
+  useEffect(() => {
+    if (!props.openProductCreate) return;
+    const section = document.getElementById("partner-add-product");
+    section?.scrollIntoView({ behavior: "smooth" });
+    if (!canCreateProduct) return;
+    const field = section?.querySelector("input, select, textarea");
+    if (field instanceof HTMLElement) field.focus();
+  }, [canCreateProduct, props.openProductCreate]);
+
   async function save(mutations: DraftMutation[]): Promise<boolean> {
     if (conflict) return false;
     setPending(true);
@@ -672,18 +700,18 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
       const body = await response.json() as { error?: string; draft?: PartnerDraft };
       if (response.status === 409) {
         setConflict(true);
-        setError(body.error ?? "Draft revision is stale. Reload before saving.");
+        setError(partnerDraftNotice(body.error, PAGE_CHANGED));
         return false;
       }
       if (!response.ok || !body.draft) {
-        setError(body.error ?? "Draft could not be saved.");
+        setError(partnerDraftNotice(body.error, "Save failed. Reload and try again."));
         return false;
       }
       setDraft(body.draft);
       syncForms(body.draft);
       return true;
     } catch {
-      setError("Draft could not be saved.");
+      setError("Save failed. Reload and try again.");
       return false;
     } finally {
       setPending(false);
@@ -698,21 +726,21 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
       const response = await fetch(`/api/vibode/partner/drafts/${draft.draftId}`);
       const body = await response.json() as { error?: string; draft?: PartnerDraft };
       if (!response.ok || !body.draft) {
-        setError(body.error ?? "Draft could not be reloaded.");
+        setError(partnerDraftNotice(body.error, "This page could not be reloaded."));
         return;
       }
       setDraft(body.draft);
       syncForms(body.draft);
       setConflict(false);
     } catch {
-      setError("Draft could not be reloaded.");
+      setError("This page could not be reloaded.");
     } finally {
       setPending(false);
     }
   }
 
   async function abandon() {
-    if (!window.confirm("Abandon this draft? It will stay on file but can no longer be edited.")) return;
+    if (!window.confirm("Discard these unpublished catalog changes? They can no longer be edited.")) return;
     setPending(true);
     setError(null);
     setConflicts(null);
@@ -725,16 +753,16 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
       const body = await response.json() as { error?: string };
       if (response.status === 409) {
         setConflict(true);
-        setError(body.error ?? "Draft revision is stale. Reload before saving.");
+        setError(partnerDraftNotice(body.error, PAGE_CHANGED));
         return;
       }
       if (!response.ok) {
-        setError(body.error ?? "Draft could not be abandoned.");
+        setError(partnerDraftNotice(body.error, "These changes could not be discarded."));
         return;
       }
       router.push("/partner/catalog");
     } catch {
-      setError("Draft could not be abandoned.");
+      setError("These changes could not be discarded.");
     } finally {
       setPending(false);
     }
@@ -758,7 +786,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
         document.getElementById("draft-preview-result")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       });
     } catch {
-      setPreview({ error: "Preview request failed." });
+      setPreview({ error: "Changes could not be reviewed. Try again." });
       setPreviewRaw(null);
     } finally {
       setPending(false);
@@ -796,37 +824,37 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
       };
       if (response.status === 409 && body.code === "STALE_DRAFT_REVISION") {
         setConflict(true);
-        setError(body.error ?? "Draft revision is stale. Reload before publishing.");
+        setError(partnerDraftNotice(body.error, PAGE_CHANGED));
         return;
       }
       if (response.status === 409 && (body.code === "STALE_LIVE_FIELD" || body.code === "STALE_CATALOG_BASE")) {
         setConflicts(body.conflicts ?? []);
-        setError(body.error ?? "Live catalog changed since this draft edit. Reload and review before publishing.");
+        setError(partnerDraftNotice(body.error, "The live catalog changed. Reload and review before publishing."));
         return;
       }
       if (response.status === 409) {
         if (body.code === "DRAFT_PUBLISHED") {
-          setError(body.error ?? "This draft is published and can no longer be changed.");
+          setError(partnerDraftNotice(body.error, "These changes are already published."));
           return;
         }
         setConflict(true);
-        setError(body.error ?? "Draft revision is stale. Reload before publishing.");
+        setError(partnerDraftNotice(body.error, PAGE_CHANGED));
         return;
       }
       if (response.status === 400 && (body.code === "PLANNER_ISSUE" || body.code === "INVALID_DOCUMENT")) {
         const presented = presentPartnerDraftPreview({ ...body, error: undefined });
         setPreview(presented);
         setPreviewRaw(body);
-        setError(body.error ?? "This draft cannot be published until catalog issues are resolved.");
+        setError(partnerDraftNotice(body.error, "These changes need attention before they can be published."));
         return;
       }
       if (!response.ok || body.ok !== true) {
-        setError(body.error ?? "Draft could not be published.");
+        setError(partnerDraftNotice(body.error, "The changes could not be published."));
         return;
       }
       router.push("/partner/catalog");
     } catch {
-      setError("Draft could not be published.");
+      setError("The changes could not be published.");
     } finally {
       setPending(false);
     }
@@ -837,21 +865,30 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   return (
     <main className="space-y-8">
       <section className="space-y-2">
-        <p className="text-xs uppercase tracking-wide text-slate-500">Catalog draft</p>
-        <h2 className="text-lg font-semibold">{props.partnerName}</h2>
-        <p className="text-xs text-slate-400">
-          {props.partnerId}
-          {" · "}
-          status {draft.status}
-          {" · "}
-          revision {draft.revision}
-          {" · "}
-          {pendingChanges === 0 ? "no pending changes" : `${pendingChanges} pending change${pendingChanges === 1 ? "" : "s"}`}
+        <p className="text-xs uppercase tracking-wide text-slate-500">Older catalog editor</p>
+        <h2 className="break-words text-lg font-semibold">{props.partnerName}</h2>
+        <p className="text-sm text-slate-300">
+          {pendingChanges === 0
+            ? "No unpublished changes."
+            : `${pendingChanges} unpublished ${pendingChanges === 1 ? "change" : "changes"}.`}
         </p>
-        <p className="text-xs text-slate-500">
-          Saves persist the canonical PI-5F patch only. Live catalog rows are not written.
-          Inactive Collections are not shown here because the durable assembler omits them.
+        <p className="max-w-2xl text-sm text-slate-400">
+          Add and edit products from the catalog. This page is only for older catalog-wide changes.
         </p>
+        <details className="text-xs text-slate-500">
+          <summary className="cursor-pointer text-slate-400">Technical details</summary>
+          <p className="mt-2 break-all">
+            {props.partnerId}
+            {" · "}
+            status {draft.status}
+            {" · "}
+            revision {draft.revision}
+          </p>
+          <p className="mt-1">
+            Saves persist the canonical PI-5F patch only. Live catalog rows are not written.
+            Inactive Collections are not shown here because the durable assembler omits them.
+          </p>
+        </details>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -859,7 +896,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
             className="rounded-md border border-slate-700 px-3 py-1 text-xs"
             onClick={() => void runPreview()}
           >
-            {pending ? "Planning…" : "Preview"}
+            {pending ? "Checking…" : "Review changes"}
           </button>
           <button
             type="button"
@@ -875,46 +912,61 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
             className="rounded-md border border-slate-700 px-3 py-1 text-xs"
             onClick={() => void abandon()}
           >
-            Abandon draft
+            Discard unpublished changes
           </button>
           <a className="rounded-md border border-slate-700 px-3 py-1 text-xs" href="/partner/catalog">
-            Live catalog
+            Back to Catalog
           </a>
         </div>
         {conflict ? (
           <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
-            This draft was changed in another session. Reload before saving again.
+            {PAGE_CHANGED}
             <button
               type="button"
               className="ml-3 rounded-md border border-amber-600 px-2 py-0.5 text-xs"
               onClick={() => void reload()}
             >
-              Reload draft
+              Reload
             </button>
           </div>
         ) : null}
-        {error ? <p className="text-xs text-rose-300">{error}</p> : null}
+        {error ? <p role="alert" className="text-xs text-rose-300">{error}</p> : null}
         {conflicts && conflicts.length > 0 ? (
           <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
-            <p>Live catalog changed since this draft edit. Reload and review before publishing.</p>
-            <ul className="mt-2 space-y-1 text-xs">
-              {conflicts.map((item) => (
-                <li key={`${item.entity}:${item.id}:${item.field}`}>
-                  {item.entity} {item.id} · {item.field}: {String(item.expected ?? "—")} → live {String(item.live ?? "—")}
-                </li>
-              ))}
-            </ul>
+            <p>The live catalog changed. Reload and review before publishing.</p>
+            <details className="mt-2 text-xs">
+              <summary>Technical details</summary>
+              <ul className="mt-2 space-y-1">
+                {conflicts.map((item) => (
+                  <li key={`${item.entity}:${item.id}:${item.field}`}>
+                    {item.entity} {item.id} · {item.field}: {String(item.expected ?? "—")} → live {String(item.live ?? "—")}
+                  </li>
+                ))}
+              </ul>
+            </details>
           </div>
         ) : null}
         {pending && !preview ? (
-          <p id="draft-preview-result" className="text-sm text-slate-300">Planning…</p>
+          <p id="draft-preview-result" className="text-sm text-slate-300">Checking…</p>
         ) : preview ? (
           <DraftPreviewResult preview={preview} raw={previewRaw} />
         ) : null}
       </section>
 
-      <section className="space-y-3 rounded-xl border border-slate-800 p-4">
-        <div className="flex items-center justify-between gap-3">
+      <PartnerCatalogOrderEditor
+        products={props.products}
+        refreshCatalog={() => router.refresh()}
+      />
+
+      {/* Superseded for Partner navigation by /partner/catalog/new. Retained for fallback and source-lock tests. */}
+      <section id="partner-add-product" className="space-y-3 rounded-xl border border-slate-800 p-4">
+        <p className="text-sm text-slate-300">
+          Superseded. Add a product from the catalog instead.
+        </p>
+        <a href="/partner/catalog/new" className="inline-flex text-sm text-slate-200 underline">
+          Add product
+        </a>
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="font-medium">Add Product</h3>
           {!addingProduct ? (
             <button
@@ -929,16 +981,16 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
         </div>
         {props.commercialAssetOptions.length === 0 ? (
           <p className="text-[11px] text-slate-500">
-            Product creation requires a mapped, ready Partner Asset. Uploaded ready Assets and existing catalog Assets both appear here. Runtime activation stays on Partner Assets.
+            A ready 3D model is needed before a product can be saved here.
           </p>
         ) : null}
         {!props.catalogCurrency ? (
           <p className="text-[11px] text-slate-500">
-            Product creation is disabled until this Partner catalog has a resolvable currency.
+            New products can’t be added here until this catalog uses one currency.
           </p>
         ) : (
           <p className="text-[11px] text-slate-500">
-            Inherited currency {props.catalogCurrency}. Image URL must be HTTPS or an allowed same-origin public path. Product URL must be absolute HTTPS.
+            Price uses {props.catalogCurrency}. Image and product page links must start with https://.
           </p>
         )}
         {addingProduct ? (
@@ -953,13 +1005,13 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
               />
             </label>
             <label className="text-xs text-slate-400">
-              Product identity slug
+              Short name
               <input
                 className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
                 value={newProductSlug}
                 disabled={pending || conflict}
                 onChange={(event) => setNewProductSlug(event.target.value)}
-                placeholder="Optional if the name slugs cleanly"
+                placeholder="Only if the name needs a shorter form"
               />
             </label>
             <label className="text-xs text-slate-400">
@@ -1029,13 +1081,13 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
               />
             </label>
             <label className="text-xs text-slate-400">
-              Variant identity slug
+              Variant short name
               <input
                 className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
                 value={newProductVariantSlug}
                 disabled={pending || conflict}
                 onChange={(event) => setNewProductVariantSlug(event.target.value)}
-                placeholder="Required if finish is blank"
+                placeholder="Only if the finish is blank"
               />
             </label>
             <label className="text-xs text-slate-400">
@@ -1057,7 +1109,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
               />
             </label>
             <label className="text-xs text-slate-400 sm:col-span-2">
-              Default variant asset
+              3D model
               <CommercialAssetSelect
                 options={props.commercialAssetOptions}
                 value={newProductAssetId}
@@ -1180,14 +1232,16 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                 <div className="h-16 w-16 rounded-md bg-slate-900" />
               )}
               <div>
-                <p className="text-xs text-sky-200">New Product — pending publish</p>
-                <h3 className="font-medium">{names[create.productId] ?? create.name}</h3>
-                <p className="text-xs text-slate-500">{create.productId}</p>
+                <p className="text-xs text-sky-200">New product — not published yet</p>
+                <h3 className="break-words font-medium">{names[create.productId] ?? create.name}</h3>
                 <p className="text-[11px] text-slate-500">
                   {categoryLabel(props.categories, create.categoryId, create.subcategoryId)}
-                  {" · "}
-                  default {create.defaultVariantId}
                 </p>
+                <details className="text-[11px] text-slate-500">
+                  <summary>Technical details</summary>
+                  <p className="mt-1 break-all">{create.productId}</p>
+                  <p className="break-all">Default variant {create.defaultVariantId}</p>
+                </details>
               </div>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -1292,13 +1346,16 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
             </div>
             {defaultVariant ? (
               <div className="rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3">
-                <p className="text-xs text-emerald-200">Default Variant — pending publish</p>
-                <p className="text-[11px] text-slate-500">{defaultVariant.variantId}</p>
+                <p className="text-xs text-emerald-200">Default variant — not published yet</p>
                 <p className="text-[11px] text-slate-500">
-                  Inherited currency {defaultVariant.priceCurrency}
+                  Price uses {defaultVariant.priceCurrency}
                   {" · "}
-                  Asset {assetLabel(props.commercialAssetOptions, defaultVariant.currentAssetId)}
+                  3D model {assetLabel(props.commercialAssetOptions, defaultVariant.currentAssetId)}
                 </p>
+                <details className="text-[11px] text-slate-500">
+                  <summary>Technical details</summary>
+                  <p className="mt-1 break-all">{defaultVariant.variantId}</p>
+                </details>
                 <div className="mt-2 grid gap-3 sm:grid-cols-2">
                   <label className="text-xs text-slate-400">
                     Finish
@@ -1343,7 +1400,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                     />
                   </label>
                   <label className="text-xs text-slate-400 sm:col-span-2">
-                    Asset
+                    3D model
                     <CommercialAssetSelect
                       options={props.commercialAssetOptions}
                       value={defaultVariant.currentAssetId}
@@ -1431,21 +1488,22 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                 <div className="h-16 w-16 rounded-md bg-slate-900" />
               )}
               <div>
-                <h3 className="font-medium">{names[product.productId] ?? product.name}</h3>
-                <p className="text-xs text-slate-500">{product.productId}</p>
+                <h3 className="break-words font-medium">{names[product.productId] ?? product.name}</h3>
                 <p className="text-[11px] text-slate-500">
-                  status {product.status ?? "active"}
+                  {product.status === "inactive" ? "Inactive" : "Active"}
                   {" · "}
-                  {product.categoryId}
-                  {product.subcategoryId ? ` / ${product.subcategoryId}` : ""}
-                  {" · "}
-                  default {product.defaultVariantId}
+                  {categoryLabel(props.categories, product.categoryId, product.subcategoryId)}
                 </p>
-                <p className="text-[11px] text-slate-500">
-                  {product.brand} · {product.retailer}
-                  {product.partnerId ? ` · ${product.partnerId}` : ""}
-                  {product.source ? ` · ${product.source}` : ""}
-                </p>
+                <details className="text-[11px] text-slate-500">
+                  <summary>Technical details</summary>
+                  <p className="mt-1 break-all">{product.productId}</p>
+                  <p className="break-all">Default variant {product.defaultVariantId}</p>
+                  <p>
+                    {product.brand} · {product.retailer}
+                    {product.partnerId ? ` · ${product.partnerId}` : ""}
+                    {product.source ? ` · ${product.source}` : ""}
+                  </p>
+                </details>
               </div>
             </div>
 
@@ -1595,13 +1653,16 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
             <ul className="space-y-3">
               {pendingCreates(draft.document, product.productId).map((create) => (
                 <li key={create.variantId} className="rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3">
-                  <p className="text-xs text-emerald-200">New Variant — pending publish</p>
-                  <p className="text-[11px] text-slate-500">{create.variantId}</p>
+                  <p className="text-xs text-emerald-200">New variant — not published yet</p>
                   <p className="text-[11px] text-slate-500">
-                    Inherited currency {create.priceCurrency}
+                    Price uses {create.priceCurrency}
                     {" · "}
-                    Asset {assetLabel(props.commercialAssetOptions, create.currentAssetId)}
+                    3D model {assetLabel(props.commercialAssetOptions, create.currentAssetId)}
                   </p>
+                  <details className="text-[11px] text-slate-500">
+                    <summary>Technical details</summary>
+                    <p className="mt-1 break-all">{create.variantId}</p>
+                  </details>
                   <div className="mt-2 grid gap-3 sm:grid-cols-2">
                     <label className="text-xs text-slate-400">
                       Finish
@@ -1661,7 +1722,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                       />
                     </label>
                     <label className="text-xs text-slate-400 sm:col-span-2">
-                      Asset
+                      3D model
                       <CommercialAssetSelect
                         options={props.commercialAssetOptions}
                         value={create.currentAssetId}
@@ -1701,13 +1762,13 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                     />
                   </label>
                   <label className="text-xs text-slate-400">
-                    Identity slug
+                    Short name
                     <input
                       className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
                       value={newSlug}
                       disabled={pending || conflict}
                       onChange={(event) => setNewSlug(event.target.value)}
-                      placeholder="Required if finish is blank"
+                      placeholder="Only if the finish is blank"
                     />
                   </label>
                   <label className="text-xs text-slate-400">
@@ -1738,7 +1799,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                     />
                   </label>
                   <label className="text-xs text-slate-400">
-                    Asset
+                    3D model
                     <CommercialAssetSelect
                       options={props.commercialAssetOptions}
                       value={newAssetId}
@@ -1759,13 +1820,13 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                         return;
                       }
                       if (!newAssetId) {
-                        setError("Select a certified Partner asset.");
+                        setError("Choose a ready 3D model.");
                         return;
                       }
                       const finishLabel = blankToNull(newFinish);
                       const creationSlug = blankToNull(newSlug);
                       if (!finishLabel && !creationSlug) {
-                        setError("Enter a finish label or identity slug.");
+                        setError("Enter a finish.");
                         return;
                       }
                       void (async () => {
@@ -1858,13 +1919,13 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
               />
             </label>
             <label className="text-xs text-slate-400 sm:col-span-2">
-              Collection identity slug
+              Collection short name
               <input
                 className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
                 value={newCollectionSlug}
                 disabled={pending || conflict}
                 onChange={(event) => setNewCollectionSlug(event.target.value)}
-                placeholder="Optional if the name slugs cleanly"
+                placeholder="Only if the name needs a shorter form"
               />
             </label>
             <fieldset className="sm:col-span-2 space-y-1">
@@ -1948,7 +2009,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
           const selected = membership[create.collectionId] ?? pendingCollectionProductIds(draft.document, create.collectionId);
           return (
             <article key={create.collectionId} className="space-y-3 rounded-xl border border-violet-900/60 p-4">
-              <p className="text-xs text-violet-200">New Collection — pending publish</p>
+              <p className="text-xs text-violet-200">New collection — not published yet</p>
               <label className="text-xs text-slate-400">
                 Name
                 <input

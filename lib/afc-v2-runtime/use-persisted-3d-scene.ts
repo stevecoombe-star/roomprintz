@@ -4,8 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
 
-import { createPi4bSceneObjectDefinitions } from "./furniture-runtime";
-import type { FurnitureAssetDefinition } from "./types";
 import {
   furnitureAssetDefinitionFromRuntime,
   interpretRuntimeAssetResolveResponse,
@@ -36,10 +34,16 @@ import {
 import {
   interpretVersionSceneLoadResponse,
   interpretVersionSceneSaveResponse,
+  resolveProductionFurnitureSnapshot,
   versionScenePutBody,
   versionSceneUrl,
 } from "./scene-persistence-client";
-import type { SceneObjectDefinition, SerializedRuntimeScene } from "./types";
+import type { StageFurnitureBaseline } from "@/lib/vibode-stage/catalog-drawer-preference";
+import type {
+  FurnitureAssetDefinition,
+  SceneObjectDefinition,
+  SerializedRuntimeScene,
+} from "./types";
 
 export const PI4C_SCENE_SAVE_ERROR_MESSAGE =
   "Couldn't save this 3D scene. Your layout is still here.";
@@ -55,6 +59,8 @@ export type Persisted3dSceneState = Readonly<{
   loadRevision: number;
   saveError: string | null;
   origin: "default" | "persisted";
+  /** Missing means this generation has no scene row yet. */
+  furnitureBaseline: StageFurnitureBaseline;
   assetDefinitions: readonly RuntimeFurnitureAssetDefinition[];
   assetIssues: readonly RuntimeAssetIssue[];
   runtimeAssetOverlay: ReadonlyMap<string, FurnitureAssetDefinition>;
@@ -75,17 +81,13 @@ type LoadedVersionScene = Readonly<{
   objects: readonly SceneObjectDefinition[];
   origin: "default" | "persisted";
   dirty: boolean;
+  furnitureBaseline: Exclude<StageFurnitureBaseline, "unresolved" | "unavailable">;
 }>;
 
 type PendingSave = Readonly<{
   identity: PersistedSceneIdentity;
   serialized: SerializedRuntimeScene;
 }>;
-
-function defaultObjects(): SceneObjectDefinition[] {
-  // Missing scene row only. A persisted objects:[] snapshot is restored as-is.
-  return persistenceSafeSceneObjects(createPi4bSceneObjectDefinitions());
-}
 
 const SCENE_UNDO_LIMIT = 40;
 
@@ -117,6 +119,8 @@ export function usePersisted3dScene(input: Readonly<{
     EMPTY_PERSISTED_SCENE_OBJECTS,
   );
   const [origin, setOrigin] = useState<"default" | "persisted">("default");
+  const [furnitureBaseline, setFurnitureBaseline] =
+    useState<StageFurnitureBaseline>("unresolved");
   const [loading, setLoading] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [loadedIdentity, setLoadedIdentity] = useState<PersistedSceneIdentity | null>(null);
@@ -191,10 +195,12 @@ export function usePersisted3dScene(input: Readonly<{
                 objects: persistenceSafeSceneObjects(job.serialized.objects),
                 origin: "persisted",
                 dirty: false,
+                furnitureBaseline: "persisted",
               };
             }
             if (sceneIdentitiesEqual(identityRef.current, job.identity)) {
               setOrigin("persisted");
+              setFurnitureBaseline("persisted");
               setSaveError(null);
             }
           } catch {
@@ -220,6 +226,7 @@ export function usePersisted3dScene(input: Readonly<{
   const restoreCachedScene = useCallback((cached: LoadedVersionScene) => {
     setObjects(cached.objects);
     setOrigin(cached.origin);
+    setFurnitureBaseline(cached.furnitureBaseline);
     setLoadedIdentity(cached.identity);
     setLoading(false);
   }, []);
@@ -228,6 +235,7 @@ export function usePersisted3dScene(input: Readonly<{
     requestIdentity: PersistedSceneIdentity,
     nextObjects: readonly SceneObjectDefinition[],
     nextOrigin: "default" | "persisted",
+    nextBaseline: Exclude<StageFurnitureBaseline, "unresolved" | "unavailable">,
     nextDefinitions: readonly RuntimeFurnitureAssetDefinition[] = [],
     nextIssues: readonly RuntimeAssetIssue[] = [],
   ) => {
@@ -237,11 +245,13 @@ export function usePersisted3dScene(input: Readonly<{
       objects: nextObjects,
       origin: nextOrigin,
       dirty: false,
+      furnitureBaseline: nextBaseline,
     };
     overlayRef.current = new Map(overlayFromRuntimeDefinitions(nextDefinitions));
     setLoadRevision(loadRevisionRef.current);
     setObjects(nextObjects);
     setOrigin(nextOrigin);
+    setFurnitureBaseline(nextBaseline);
     setLoadedIdentity(requestIdentity);
     setAssetDefinitions(nextDefinitions);
     setAssetIssues(nextIssues);
@@ -255,6 +265,7 @@ export function usePersisted3dScene(input: Readonly<{
       overlayRef.current = new Map();
       setAssetDefinitions([]);
       setAssetIssues([]);
+      setFurnitureBaseline("unresolved");
       clearUndoStack();
       void flushLoadedIfDirty();
       return;
@@ -271,6 +282,7 @@ export function usePersisted3dScene(input: Readonly<{
     latestLoadIdRef.current = requestId;
     let cancelled = false;
     setLoading(true);
+    setFurnitureBaseline("unresolved");
     setSaveError(null);
 
     async function load() {
@@ -329,26 +341,29 @@ export function usePersisted3dScene(input: Readonly<{
               : null,
           });
         }
-        let nextObjects: readonly SceneObjectDefinition[] = defaultObjects();
-        let nextOrigin: "default" | "persisted" = "default";
-        let nextDefinitions: readonly RuntimeFurnitureAssetDefinition[] = [];
-        let nextIssues: readonly RuntimeAssetIssue[] = [];
-        if (interpreted.status === "ready") {
-          const parsed = validatePersistedVersionScene(interpreted.scene);
-          if (
-            parsed.ok &&
-            parsed.scene.roomId === requestIdentity.roomId &&
-            parsed.scene.versionId === requestIdentity.versionId &&
-            parsed.scene.afcGenerationId === requestIdentity.afcGenerationId
-          ) {
-            nextObjects = parsed.scene.objects;
-            nextOrigin = "persisted";
-            nextDefinitions = interpreted.assetDefinitions ?? [];
-            nextIssues = interpreted.assetIssues ?? [];
-          } else {
-            warnSceneRestore(parsed.ok ? "scene identity mismatch" : parsed.reason);
-          }
+        const resolution = resolveProductionFurnitureSnapshot({
+          interpreted,
+          requestIdentity,
+        });
+        if (resolution.status !== "authoritative") {
+          setFurnitureBaseline("unavailable");
+          setLoading(false);
+          return;
         }
+        const snapshot = resolution.snapshot;
+        const nextBaseline = interpreted.status === "none"
+          ? "missing"
+          : interpreted.status === "incompatible"
+            ? "incompatible"
+            : "persisted";
+        if (interpreted.status === "ready" && snapshot.origin !== "persisted") {
+          const parsed = validatePersistedVersionScene(interpreted.scene);
+          warnSceneRestore(parsed.ok ? "scene identity mismatch" : parsed.reason);
+        }
+        const nextObjects = snapshot.objects;
+        const nextOrigin = snapshot.origin;
+        const nextDefinitions = snapshot.assetDefinitions;
+        const nextIssues = snapshot.assetIssues;
         if (nextIssues.length > 0 && typeof console !== "undefined") {
           for (const issue of nextIssues) {
             console.warn("[afc-3d-scene] runtime asset issue", {
@@ -361,6 +376,7 @@ export function usePersisted3dScene(input: Readonly<{
           requestIdentity,
           nextObjects,
           nextOrigin,
+          nextBaseline,
           nextDefinitions,
           nextIssues,
         );
@@ -377,7 +393,8 @@ export function usePersisted3dScene(input: Readonly<{
           return;
         }
         warnSceneRestore(error);
-        commitResolvedSnapshot(requestIdentity, defaultObjects(), "default");
+        setFurnitureBaseline("unavailable");
+        setLoading(false);
       }
     }
 
@@ -428,6 +445,7 @@ export function usePersisted3dScene(input: Readonly<{
       objects: next.objects,
       origin: loaded.origin,
       dirty: true,
+      furnitureBaseline: loaded.furnitureBaseline,
     };
     setObjects(next.objects);
     void persistIdentity(current, scene);
@@ -448,6 +466,7 @@ export function usePersisted3dScene(input: Readonly<{
       objects: previous,
       origin: loaded.origin,
       dirty: true,
+      furnitureBaseline: loaded.furnitureBaseline,
     };
     setLoadRevision(loadRevisionRef.current);
     setObjects(previous);
@@ -624,6 +643,7 @@ export function usePersisted3dScene(input: Readonly<{
     loadRevision,
     saveError,
     origin,
+    furnitureBaseline,
     assetDefinitions: sceneReady ? assetDefinitions : [],
     assetIssues: sceneReady ? assetIssues : [],
     runtimeAssetOverlay: overlayRef.current,

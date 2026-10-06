@@ -17,7 +17,25 @@ import {
   type AfcDiagnosticSessionIntent,
   type AfcDiagnosticSessionStatus,
 } from "./contracts";
+import {
+  mapAfcDiagnosticAdminLegacyMetricConclusion,
+  mapAfcDiagnosticAdminMetricDecision,
+} from "./admin-metric-decision";
+import type {
+  AfcDiagnosticAdminLegacyMetricConclusion,
+  AfcDiagnosticAdminMetricDecision,
+} from "./admin-metric-decision-dto";
+import { mapAfcDiagnosticAdminArtifactLineage } from "./admin-artifact-lineage";
+import type { AfcDiagnosticAdminArtifactLineage } from "./admin-artifact-lineage-dto";
+import { mapAfcDiagnosticAdminCameraRealizability } from "./admin-camera-realizability";
+import type { AfcDiagnosticAdminCameraRealizability } from "./admin-camera-realizability-dto";
+import { mapAfcDiagnosticAdminSettleDecision } from "./admin-settle-decision";
+import type { AfcDiagnosticAdminSettleDecision } from "./admin-settle-decision-dto";
 import { isAfcQaIssueCode } from "./taxonomy";
+import {
+  parseAfcImageGenerationProvenance,
+  type AfcImageGenerationProvenance,
+} from "@/lib/afc-image-models";
 
 export const AFC_DIAGNOSTIC_ADMIN_CASE_LIST_DEFAULT_LIMIT = 25;
 export const AFC_DIAGNOSTIC_ADMIN_CASE_LIST_MAX_LIMIT = 50;
@@ -109,6 +127,7 @@ export type AfcDiagnosticAdminEngineFingerprint = Readonly<{
     requestedModelId: string;
     readerVersion: string | null;
   }>;
+  imageGeneration?: AfcImageGenerationProvenance;
 }>;
 
 export type AfcDiagnosticAdminArtifactSummary = Readonly<{
@@ -143,12 +162,39 @@ export type AfcDiagnosticAdminGenerationEvidence = Readonly<{
 
   recoverySafeFailureState: AfcDiagnosticAdminRecoverySafeFailureState | null;
 
+  metricDecision: AfcDiagnosticAdminMetricDecision;
+  settleDecision: AfcDiagnosticAdminSettleDecision;
+  cameraRealizability: AfcDiagnosticAdminCameraRealizability;
+  artifactLineage: AfcDiagnosticAdminArtifactLineage;
+  legacyMetricConclusion: AfcDiagnosticAdminLegacyMetricConclusion | null;
+
   engineFingerprint: AfcDiagnosticAdminEngineFingerprint | null;
 
   original: AfcDiagnosticAdminSourceSummary | null;
 
   empty: AfcDiagnosticAdminArtifactSummary;
   tiled: AfcDiagnosticAdminArtifactSummary;
+}>;
+
+export const AFC_DIAGNOSTIC_ADMIN_VIEWPORT_ARTIFACT_KINDS = [
+  "original",
+  "empty",
+  "tiled",
+] as const;
+
+export type AfcDiagnosticAdminViewportArtifactKind =
+  (typeof AFC_DIAGNOSTIC_ADMIN_VIEWPORT_ARTIFACT_KINDS)[number];
+
+export type AfcDiagnosticAdminViewportFrame = Readonly<{
+  width: number;
+  height: number;
+}>;
+
+export type AfcDiagnosticAdminViewportArtifact = Readonly<{
+  id: string;
+  emptyPresent: boolean;
+  tiledPresent: boolean;
+  frame: AfcDiagnosticAdminViewportFrame | null;
 }>;
 
 export type AfcDiagnosticAdminCaseSummary = Readonly<{
@@ -163,6 +209,9 @@ export type AfcDiagnosticAdminCaseSummary = Readonly<{
   issueCodes: readonly string[];
   taxonomyVersion: string;
   hasNotes: boolean;
+  notes: string | null;
+  viewportArtifactKind: AfcDiagnosticAdminViewportArtifactKind | null;
+  viewportFrame: AfcDiagnosticAdminViewportFrame | null;
 
   roomId: string;
   sessionId: string;
@@ -287,6 +336,65 @@ export function afcDiagnosticAdminHasNotes(
   notes: string | null | undefined,
 ): boolean {
   return typeof notes === "string" && notes.trim().length > 0;
+}
+
+function presentArtifactSha(value: unknown): boolean | null {
+  if (value == null) return false;
+  if (typeof value !== "string") return null;
+  return value.length > 0;
+}
+
+function parseViewportFrame(
+  width: unknown,
+  height: unknown,
+): AfcDiagnosticAdminViewportFrame | null {
+  if (typeof width !== "number" || typeof height !== "number") return null;
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  if (!(width > 0) || !(height > 0)) return null;
+  return Object.freeze({ width, height });
+}
+
+export function parseAfcDiagnosticAdminViewportArtifact(
+  row: unknown,
+): AfcDiagnosticAdminViewportArtifact | null {
+  if (!isRecord(row)) return null;
+  const id = parseAfcDiagnosticAdminUuid(row.id);
+  if (!id) return null;
+  const emptyPresent = presentArtifactSha(row.empty_sha256);
+  const tiledPresent = presentArtifactSha(row.tiled_sha256);
+  if (emptyPresent == null || tiledPresent == null) return null;
+  const frame = parseViewportFrame(row.frame_width, row.frame_height);
+  return Object.freeze({
+    id,
+    emptyPresent,
+    tiledPresent,
+    frame,
+  });
+}
+
+/**
+ * Same preference as the case inspector's default Visual Evidence source:
+ * empty, then tiled, then the captured original.
+ */
+export function afcDiagnosticAdminCaseViewport(
+  artifact: AfcDiagnosticAdminViewportArtifact | null,
+): Readonly<{
+  viewportArtifactKind: AfcDiagnosticAdminViewportArtifactKind | null;
+  viewportFrame: AfcDiagnosticAdminViewportFrame | null;
+}> {
+  if (!artifact) {
+    return Object.freeze({
+      viewportArtifactKind: null,
+      viewportFrame: null,
+    });
+  }
+  let viewportArtifactKind: AfcDiagnosticAdminViewportArtifactKind = "original";
+  if (artifact.emptyPresent) viewportArtifactKind = "empty";
+  else if (artifact.tiledPresent) viewportArtifactKind = "tiled";
+  return Object.freeze({
+    viewportArtifactKind,
+    viewportFrame: artifact.frame,
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -491,6 +599,7 @@ export function mapAfcDiagnosticAdminEngineFingerprint(
   ) {
     return null;
   }
+  const imageGeneration = parseAfcImageGenerationProvenance(value.imageGeneration);
   return Object.freeze({
     fingerprintSchemaVersion: value.fingerprintSchemaVersion,
     productionSchemaVersion: value.productionSchemaVersion,
@@ -515,6 +624,7 @@ export function mapAfcDiagnosticAdminEngineFingerprint(
           ? value.tiled.readerVersion
           : null,
     }),
+    ...(imageGeneration ? { imageGeneration } : {}),
   });
 }
 
@@ -596,6 +706,10 @@ export type AfcDiagnosticAdminGenerationRecord = Readonly<{
   diagnosticPayload: unknown;
   engineFingerprint: unknown;
   productionAuthority: unknown;
+  metricDecision: unknown;
+  settleDecision: unknown;
+  cameraRealizability: unknown;
+  artifactLineage: unknown;
   originalSha256: string | null;
   originalDecodedWidth: number | null;
   originalDecodedHeight: number | null;
@@ -656,6 +770,18 @@ export function parseAfcDiagnosticAdminGenerationRecord(
     diagnosticPayload: row.diagnostic_payload ?? null,
     engineFingerprint: row.engine_fingerprint ?? null,
     productionAuthority: row.production_authority ?? null,
+    metricDecision: Object.prototype.hasOwnProperty.call(row, "metric_decision")
+      ? row.metric_decision ?? null
+      : null,
+    settleDecision: Object.prototype.hasOwnProperty.call(row, "settle_decision")
+      ? row.settle_decision ?? null
+      : null,
+    cameraRealizability: Object.prototype.hasOwnProperty.call(row, "camera_realizability_decision")
+      ? row.camera_realizability_decision ?? null
+      : null,
+    artifactLineage: Object.prototype.hasOwnProperty.call(row, "artifact_lineage_decision")
+      ? row.artifact_lineage_decision ?? null
+      : null,
     originalSha256: optionalString(row.original_sha256),
     originalDecodedWidth: optionalFiniteNumber(row.original_decoded_width),
     originalDecodedHeight: optionalFiniteNumber(row.original_decoded_height),
@@ -667,6 +793,48 @@ export function parseAfcDiagnosticAdminGenerationRecord(
     tiledSha256: optionalString(row.tiled_sha256),
     tiledArtifactSource: optionalString(row.tiled_artifact_source),
   });
+}
+
+function mapMetricDecision(value: unknown): AfcDiagnosticAdminMetricDecision {
+  try {
+    return mapAfcDiagnosticAdminMetricDecision(value);
+  } catch {
+    return Object.freeze({ kind: "unreadable" });
+  }
+}
+
+function mapSettleDecision(value: unknown): AfcDiagnosticAdminSettleDecision {
+  try {
+    return mapAfcDiagnosticAdminSettleDecision(value);
+  } catch {
+    return Object.freeze({ kind: "unreadable" });
+  }
+}
+
+function mapCameraRealizability(value: unknown): AfcDiagnosticAdminCameraRealizability {
+  try {
+    return mapAfcDiagnosticAdminCameraRealizability(value);
+  } catch {
+    return Object.freeze({ kind: "unreadable" });
+  }
+}
+
+function mapArtifactLineage(value: unknown): AfcDiagnosticAdminArtifactLineage {
+  try {
+    return mapAfcDiagnosticAdminArtifactLineage(value);
+  } catch {
+    return Object.freeze({ kind: "unreadable" });
+  }
+}
+
+function mapLegacyMetricConclusion(
+  authority: unknown,
+): AfcDiagnosticAdminLegacyMetricConclusion | null {
+  try {
+    return mapAfcDiagnosticAdminLegacyMetricConclusion(authority);
+  } catch {
+    return null;
+  }
 }
 
 export function mapAfcDiagnosticAdminGenerationEvidence(
@@ -712,6 +880,11 @@ export function mapAfcDiagnosticAdminGenerationEvidence(
     recoverySafeFailureState: mapRecoverySafeFailureState(
       record.productionAuthority,
     ),
+    metricDecision: mapMetricDecision(record.metricDecision),
+    settleDecision: mapSettleDecision(record.settleDecision),
+    cameraRealizability: mapCameraRealizability(record.cameraRealizability),
+    artifactLineage: mapArtifactLineage(record.artifactLineage),
+    legacyMetricConclusion: mapLegacyMetricConclusion(record.productionAuthority),
     engineFingerprint: mapAfcDiagnosticAdminEngineFingerprint(
       record.engineFingerprint,
     ),
@@ -774,7 +947,9 @@ export function mapAfcDiagnosticAdminCaseSummary(input: {
   caseRow: AfcDiagnosticAdminCaseListRecord;
   sessionStatus: AfcDiagnosticSessionStatus;
   sessionAttemptCount: number;
+  viewportArtifact: AfcDiagnosticAdminViewportArtifact | null;
 }): AfcDiagnosticAdminCaseSummary {
+  const viewport = afcDiagnosticAdminCaseViewport(input.viewportArtifact);
   return Object.freeze({
     caseId: input.caseRow.id,
     submittedAt: input.caseRow.submittedAt,
@@ -784,6 +959,11 @@ export function mapAfcDiagnosticAdminCaseSummary(input: {
     issueCodes: Object.freeze([...input.caseRow.issueCodes]),
     taxonomyVersion: input.caseRow.taxonomyVersion,
     hasNotes: afcDiagnosticAdminHasNotes(input.caseRow.notes),
+    notes: afcDiagnosticAdminHasNotes(input.caseRow.notes)
+      ? input.caseRow.notes
+      : null,
+    viewportArtifactKind: viewport.viewportArtifactKind,
+    viewportFrame: viewport.viewportFrame,
     roomId: input.caseRow.roomId,
     sessionId: input.caseRow.sessionId,
     sessionStatus: input.sessionStatus,
@@ -1081,6 +1261,26 @@ const FORBIDDEN_TEXT = [
 
 const FREE_TEXT_KEYS = new Set(["notes", "reviewNotes"]);
 
+const SETTLE_DECISION_KEY_EXCEPTIONS = new Set([
+  "reason",
+  "sourceNormalizedPolygon",
+]);
+
+const IMAGE_GENERATION_LABEL_EXCEPTIONS = new Set(["displayName"]);
+
+function insideSettleDecision(path: string): boolean {
+  return path === "settleDecision"
+    || path.endsWith(".settleDecision")
+    || path.includes(".settleDecision.");
+}
+
+function insideImageGenerationStage(path: string): boolean {
+  return path === "imageGeneration.empty"
+    || path === "imageGeneration.tiled"
+    || path.endsWith(".imageGeneration.empty")
+    || path.endsWith(".imageGeneration.tiled");
+}
+
 function walkForbiddenKeys(
   value: unknown,
   path: string,
@@ -1095,7 +1295,15 @@ function walkForbiddenKeys(
   if (!isRecord(value)) return;
   for (const [key, child] of Object.entries(value)) {
     const next = path ? `${path}.${key}` : key;
-    if (FORBIDDEN_OBJECT_KEYS.has(key)) found.push(next);
+    const settleDiagnosticKey = SETTLE_DECISION_KEY_EXCEPTIONS.has(key)
+      && insideSettleDecision(path);
+    const imageGenerationLabel = IMAGE_GENERATION_LABEL_EXCEPTIONS.has(key)
+      && insideImageGenerationStage(path);
+    if (
+      FORBIDDEN_OBJECT_KEYS.has(key)
+      && !settleDiagnosticKey
+      && !imageGenerationLabel
+    ) found.push(next);
     if (FREE_TEXT_KEYS.has(key)) continue;
     walkForbiddenKeys(child, next, found);
   }

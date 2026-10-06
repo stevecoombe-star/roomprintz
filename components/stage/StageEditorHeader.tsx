@@ -1,5 +1,6 @@
 "use client";
 
+import { RoomScaleControl } from "@/components/stage/RoomScaleControl";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
 
 const FOCUS =
@@ -26,6 +27,7 @@ export function StageEditorHeader() {
         Catalog
       </button>
       <div className="flex items-center gap-2">
+        <RoomScaleControl />
         <button
           type="button"
           aria-label="Undo"

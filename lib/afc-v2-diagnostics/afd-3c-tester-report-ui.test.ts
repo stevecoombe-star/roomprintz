@@ -446,7 +446,7 @@ test("security: UI copy is human-facing and does not interpolate internals", () 
   assert.doesNotMatch(ui, /value=\{option\.code\}/);
   assert.doesNotMatch(ui, /reportGenerationId|sessionId|attemptCount|machineStatus/);
   assert.doesNotMatch(ui, /\{GEN_|session_not_found|taxonomyVersion/);
-  assert.equal(AFC_QA_TESTER_COPY.manualButton, "Report an issue");
+  assert.equal(AFC_QA_TESTER_COPY.manualButton, "Report Issue");
   assert.equal(AFC_QA_TESTER_COPY.promptTitle, "Still not looking right?");
   assert.equal(
     AFC_QA_TESTER_ISSUE_OPTIONS[0]?.label,

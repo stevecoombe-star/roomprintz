@@ -8,20 +8,28 @@ import { formatRoomRecencyLabel } from "@/components/my-rooms/utils";
 type RoomCardProps = {
   room: MyRoomsRoom;
   folders: MyRoomsFolder[];
+  imageLoading?: "eager" | "lazy";
+  imageFetchPriority?: "high" | "low" | "auto";
   onOpen: () => void;
   onRename: () => void;
   onMoveToFolder: (folderId: string | null) => Promise<void>;
   onDelete: () => void;
+  onRefreshThumbnail: () => void;
+  isRefreshingThumbnail: boolean;
   isBusy: boolean;
 };
 
 export function RoomCard({
   room,
   folders,
+  imageLoading = "lazy",
+  imageFetchPriority = "auto",
   onOpen,
   onRename,
   onMoveToFolder,
   onDelete,
+  onRefreshThumbnail,
+  isRefreshingThumbnail,
   isBusy,
 }: RoomCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -41,6 +49,7 @@ export function RoomCard({
 
   const recencyLabel = formatRoomRecencyLabel(room);
   const hasImage = typeof room.display_image_url === "string" && room.display_image_url.length > 0;
+  const previewPending = room.preview_status === "pending" && !hasImage;
 
   return (
     <article className="group relative overflow-visible rounded-2xl bg-slate-900/50 transition hover:bg-slate-900/65">
@@ -52,7 +61,7 @@ export function RoomCard({
         disabled={isBusy}
       >
         <div className="overflow-hidden rounded-2xl border border-slate-800/70 bg-slate-900">
-          <div className="relative aspect-[4/3] w-full bg-slate-900">
+          <div className="relative aspect-[4/3] w-full bg-slate-900" aria-busy={previewPending}>
             {hasImage ? (
               <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -60,10 +69,14 @@ export function RoomCard({
                   src={room.display_image_url!}
                   alt={room.title}
                   className="h-full w-full object-cover"
-                  loading="lazy"
+                  loading={imageLoading}
+                  fetchPriority={imageFetchPriority}
+                  decoding="async"
                 />
                 <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent to-black/10" />
               </>
+            ) : previewPending ? (
+              <div className="h-full w-full animate-pulse bg-slate-800/80" />
             ) : (
               <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 p-4">
                 <div className="w-full max-w-[170px] rounded-lg border border-slate-700/70 bg-slate-900/85 px-3 py-2 text-center">
@@ -88,6 +101,29 @@ export function RoomCard({
           </p>
         </div>
       </button>
+
+      <div className="absolute left-2 top-2 z-10">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onRefreshThumbnail();
+          }}
+          disabled={isBusy || isRefreshingThumbnail}
+          aria-label="Refresh thumbnail"
+          aria-busy={isRefreshingThumbnail}
+          title="Refresh thumbnail"
+          className={
+            "inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/85 text-slate-300 backdrop-blur transition hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-200 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 disabled:cursor-default " +
+            (isRefreshingThumbnail
+              ? "opacity-100"
+              : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100")
+          }
+        >
+          <RefreshThumbnailIcon spinning={isRefreshingThumbnail} />
+        </button>
+      </div>
 
       <div ref={menuRef} className="absolute right-2 top-2">
         <button
@@ -174,5 +210,25 @@ export function RoomCard({
         ) : null}
       </div>
     </article>
+  );
+}
+
+function RefreshThumbnailIcon({ spinning }: { spinning: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={spinning ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+      <path d="M16 16h5v5" />
+    </svg>
   );
 }

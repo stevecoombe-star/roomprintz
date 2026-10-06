@@ -212,6 +212,7 @@ test("missing, unknown, running, and failed generations return empty overlays", 
     kind: "original",
   });
   assert.equal(failed.floorQuad, null);
+  assert.equal(failed.sourceNormalizedHost, true);
   assert.deepEqual(failed.collisionEdges, []);
 });
 
@@ -338,6 +339,7 @@ test("EMPTY compatible copies ORIGINAL UV; incompatible EMPTY/TILED stay empty",
     generation: typicalGeneration({ productionAuthority: authority }),
     kind: "original",
   });
+  assert.equal(compatible.sourceNormalizedHost, true);
   assert.deepEqual(compatible.floorQuad, original.floorQuad);
   assert.deepEqual(compatible.collisionEdges, original.collisionEdges);
   assert.deepEqual(compatible.frame, { width: 600, height: 400 });
@@ -352,6 +354,7 @@ test("EMPTY compatible copies ORIGINAL UV; incompatible EMPTY/TILED stay empty",
     }),
     kind: "tiled",
   });
+  assert.equal(tiled.sourceNormalizedHost, true);
   assert.deepEqual(tiled.floorQuad, original.floorQuad);
   assert.deepEqual(tiled.frame, { width: 600, height: 400 });
 
@@ -363,6 +366,7 @@ test("EMPTY compatible copies ORIGINAL UV; incompatible EMPTY/TILED stay empty",
     }),
     kind: "empty",
   });
+  assert.equal(incompatibleEmpty.sourceNormalizedHost, false);
   assert.equal(incompatibleEmpty.floorQuad, null);
   assert.deepEqual(incompatibleEmpty.collisionEdges, []);
   assert.deepEqual(incompatibleEmpty.frame, { width: 800, height: 800 });
@@ -377,6 +381,7 @@ test("EMPTY compatible copies ORIGINAL UV; incompatible EMPTY/TILED stay empty",
     }),
     kind: "tiled",
   });
+  assert.equal(tiledMismatch.sourceNormalizedHost, false);
   assert.equal(tiledMismatch.floorQuad, null);
   assert.deepEqual(tiledMismatch.collisionEdges, []);
 

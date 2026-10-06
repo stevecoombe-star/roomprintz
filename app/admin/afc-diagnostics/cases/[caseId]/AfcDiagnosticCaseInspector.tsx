@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 
 import { AdminDiagnosticsCopyButton } from "@/lib/afc-v2-diagnostics/admin-diagnostics-copy-button";
+import { AfcDiagnosticSelectedAttemptCopyJsonButton } from "@/lib/afc-v2-diagnostics/admin-selected-attempt-export-button";
 import {
   AFC_DIAGNOSTIC_INSPECTOR_COPY,
   AFC_DIAGNOSTIC_INSPECTOR_PAGE_PATH,
@@ -54,6 +55,7 @@ import {
 } from "@/lib/afc-v2-diagnostics/admin-case-inspector.client";
 import AfcDiagnosticAdminCapturePanel from "../../AfcDiagnosticAdminCapturePanel";
 import AfcDiagnosticAdminReviewPanel from "./AfcDiagnosticAdminReviewPanel";
+import AfcDiagnosticMetricDecisionPanel from "../../AfcDiagnosticMetricDecisionPanel";
 import AfcDiagnosticVisualEvidence from "./AfcDiagnosticVisualEvidence";
 import {
   AFC_DIAGNOSTIC_ADMIN_CAPTURE_COPY,
@@ -233,7 +235,7 @@ function ArtifactRow({
   );
 }
 
-function EngineDetails({
+export function EngineDetails({
   fingerprint,
 }: {
   fingerprint: AfcDiagnosticInspectorEngineFingerprint | null;
@@ -292,6 +294,34 @@ function EngineDetails({
       <MetaRow label="TILED reader version">
         {fingerprint.tiled.readerVersion ?? "Not available"}
       </MetaRow>
+      {fingerprint.imageGeneration ? (
+        <>
+          <MetaRow label="EMPTY image model">
+            {fingerprint.imageGeneration.empty.displayName}
+          </MetaRow>
+          <MetaRow label="EMPTY image provider">
+            {fingerprint.imageGeneration.empty.provider}
+          </MetaRow>
+          <MetaRow label="EMPTY provider model">
+            {fingerprint.imageGeneration.empty.modelId}
+          </MetaRow>
+          <MetaRow label="EMPTY image quality">
+            {fingerprint.imageGeneration.empty.quality ?? "Not applicable"}
+          </MetaRow>
+          <MetaRow label="TILED image model">
+            {fingerprint.imageGeneration.tiled.displayName}
+          </MetaRow>
+          <MetaRow label="TILED image provider">
+            {fingerprint.imageGeneration.tiled.provider}
+          </MetaRow>
+          <MetaRow label="TILED provider model">
+            {fingerprint.imageGeneration.tiled.modelId}
+          </MetaRow>
+          <MetaRow label="TILED image quality">
+            {fingerprint.imageGeneration.tiled.quality ?? "Not applicable"}
+          </MetaRow>
+        </>
+      ) : null}
     </dl>
   );
 }
@@ -330,12 +360,26 @@ function SelectedAttemptInspector({
 
   return (
     <section className={cardClassName}>
-      <h2 className="text-lg font-semibold tracking-tight">Selected attempt</h2>
-      {reported ? (
-        <p className="mt-1 text-sm text-slate-400">
-          {AFC_DIAGNOSTIC_INSPECTOR_COPY.reportedHelper}
-        </p>
-      ) : null}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight">Selected attempt</h2>
+          {reported ? (
+            <p className="mt-1 text-sm text-slate-400">
+              {AFC_DIAGNOSTIC_INSPECTOR_COPY.reportedHelper}
+            </p>
+          ) : null}
+        </div>
+        <AfcDiagnosticSelectedAttemptCopyJsonButton
+          source={{
+            caseDetail,
+            session,
+            attempt,
+            generation,
+            associatedAt,
+            attemptOrdinal,
+          }}
+        />
+      </div>
 
       <div className="mt-4 space-y-5">
         <div>
@@ -370,6 +414,17 @@ function SelectedAttemptInspector({
           originalSha256={
             generation.original?.originalSha256 ??
             caseDetail.source.originalSha256
+          }
+          metricDecision={generation.metricDecision}
+          frame={generation.frame}
+          originalDecodedFrame={
+            generation.original?.decodedWidth != null &&
+            generation.original.decodedHeight != null
+              ? {
+                  width: generation.original.decodedWidth,
+                  height: generation.original.decodedHeight,
+                }
+              : null
           }
         />
 
@@ -445,6 +500,12 @@ function SelectedAttemptInspector({
             <ArtifactRow label="TILED" artifact={generation.tiled} />
           </dl>
         </div>
+
+        <AfcDiagnosticMetricDecisionPanel
+          metricStatus={generation.metricStatus}
+          metricDecision={generation.metricDecision}
+          legacyMetricConclusion={generation.legacyMetricConclusion}
+        />
 
         {originalDiffers && generation.original ? (
           <div>

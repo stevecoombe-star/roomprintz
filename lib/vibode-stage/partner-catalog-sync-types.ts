@@ -5,6 +5,7 @@
  * import them without a runtime cycle into the patch module.
  */
 
+import type { ModelDimensions } from "./model-dimensions";
 import type { ProductVariantIssue } from "./product-variant-register";
 import type {
   StageCollection,
@@ -37,6 +38,13 @@ export type PlannedVariantUpdate = Readonly<{
   variantId: string;
   productId: string;
   changes: readonly PlannedFieldChange[];
+}>;
+
+export type PlannedVariantModelDimensions = Readonly<{
+  variantId: string;
+  productId: string;
+  previous: ModelDimensions | null;
+  next: ModelDimensions;
 }>;
 
 export type PlannedVariantCreate = Readonly<{
@@ -99,6 +107,8 @@ export type PartnerCatalogSyncPlan = Readonly<{
   productUpdates: readonly PlannedProductUpdate[];
   variantCreates: readonly PlannedVariantCreate[];
   variantUpdates: readonly PlannedVariantUpdate[];
+  /** Present only when a publish changes Variant physical dimensions. */
+  variantModelDimensionUpdates?: readonly PlannedVariantModelDimensions[];
   collectionCreates: readonly PlannedCollectionCreate[];
   collectionUpdates: readonly PlannedCollectionUpdate[];
   membershipAdds: readonly PlannedMembership[];

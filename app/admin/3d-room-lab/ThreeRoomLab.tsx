@@ -3333,7 +3333,11 @@ export default function ThreeRoomLab({
           )
         ) as AfcTiledPerspectivePolygon;
         const range = computeAfcTiledPerspectiveAdjustmentRange(automaticPolygon);
-        if (!range?.usable || !tiledPerspective) {
+        if (
+          !range?.usable
+          || !tiledPerspective
+          || tiledPerspective.readerVersion !== "afc-sr1-tiled-perspective-reader/s1"
+        ) {
           invalidatePerspectiveAdjustSession();
         } else {
           perspectivePreviewDeltaRef.current = 0;

@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { isAdminEmail } from "@/lib/adminAccess";
+import { afcImageGenerationProvenance } from "@/lib/afc-image-models";
 
 import {
   AFC_DIAGNOSTIC_CASE_TABLE,
@@ -30,8 +31,14 @@ import {
   parseAfcDiagnosticAdminGenerationRecord,
   parseAfcDiagnosticAdminUuid,
 } from "./admin-read-model";
+import { parseAfcDiagnosticInspectorCaseDetail } from "./admin-case-inspector.client";
+import {
+  buildAfcDiagnosticSelectedAttemptExport,
+  serializeAfcDiagnosticSelectedAttemptExport,
+} from "./admin-selected-attempt-export";
 import {
   AFC_DIAGNOSTIC_ADMIN_GENERATION_COLUMNS,
+  AFC_DIAGNOSTIC_ADMIN_VIEWPORT_ARTIFACT_COLUMNS,
   AFC_GENERATION_TABLE,
   createSupabaseAfcDiagnosticAdminReadStore,
   handleAfcDiagnosticsAdminCaseDetailGet,
@@ -67,6 +74,9 @@ const SUMMARY_KEYS = [
   "issueCodes",
   "taxonomyVersion",
   "hasNotes",
+  "notes",
+  "viewportArtifactKind",
+  "viewportFrame",
   "roomId",
   "sessionId",
   "sessionStatus",
@@ -956,21 +966,29 @@ test("44-55) case summary DTO shape, origin, hasNotes, and privacy of notes/emai
   assert.deepEqual(Object.keys(items[0]), [...SUMMARY_KEYS]);
   assert.equal(items[0].origin, "tester");
   assert.equal(items[0].hasNotes, true);
+  assert.equal(items[0].notes, "looks tilted");
   assert.equal(items[1].origin, "admin");
   assert.equal(items[1].hasNotes, false);
+  assert.equal(items[1].notes, null);
   assert.equal(items[2].hasNotes, false);
+  assert.equal(items[2].notes, null);
+  assert.equal(items[0].viewportArtifactKind, "empty");
+  assert.deepEqual(items[0].viewportFrame, { width: 1200, height: 800 });
   const serialized = JSON.stringify(body);
-  assert.doesNotMatch(serialized, /looks tilted|review_notes|reviewNotes/);
+  assert.match(serialized, /looks tilted/);
+  assert.doesNotMatch(serialized, /review_notes|reviewNotes/);
   assert.doesNotMatch(serialized, /@example\.com|reporterEmail|displayName/);
   assert.equal(items[0].sessionStatus, "open");
   assert.equal(items[0].sessionAttemptCount, 2);
   assert.equal(items[0].reporterUserId, USER_A);
   assert.doesNotMatch(serialized, /storage_path|provider_provenance|diagnostic_payload|production_authority/);
-  assert.equal("notes" in items[0], false);
+  assert.doesNotMatch(serialized, new RegExp(EMPTY_SHA));
+  assert.equal("notes" in items[0], true);
   assert.equal("review" in items[0], false);
+  assert.equal("sourceImageUrl" in items[0], false);
 });
 
-test("56-58) case list uses three constant queries and batches sessions/memberships", async () => {
+test("56-58) case list batches sessions, memberships, and viewport artifacts", async () => {
   const cases = Array.from({ length: 3 }, (_, index) =>
     caseRow({
       id: padCaseId(index + 1),
@@ -985,7 +1003,7 @@ test("56-58) case list uses three constant queries and batches sessions/membersh
   const response = await listGet("http://test/api/admin/afc-diagnostics/cases", store);
   assert.equal(response.status, 200);
   const selects = db.ops.filter((op) => op.action === "select");
-  assert.equal(selects.length, 3);
+  assert.equal(selects.length, 4);
   assert.equal(selects[0].table, AFC_DIAGNOSTIC_CASE_TABLE);
   assert.equal(selects[0].limit, 26);
   assert.equal(selects[1].table, AFC_DIAGNOSTIC_SESSION_TABLE);
@@ -994,6 +1012,65 @@ test("56-58) case list uses three constant queries and batches sessions/membersh
   assert.equal(selects[2].table, AFC_DIAGNOSTIC_SESSION_GENERATION_TABLE);
   assert.equal(selects[2].columns, "session_id");
   assert.ok(selects[2].filters.some((filter) => filter.type === "in"));
+  assert.equal(selects[3].table, AFC_GENERATION_TABLE);
+  assert.equal(selects[3].columns, AFC_DIAGNOSTIC_ADMIN_VIEWPORT_ARTIFACT_COLUMNS);
+  assert.ok(selects[3].filters.some((filter) => filter.type === "in"));
+  assert.doesNotMatch(
+    selects[3].columns,
+    /diagnostic_payload|production_authority|storage_path|metric_decision|engine_fingerprint/,
+  );
+});
+
+test("viewport kind follows visual evidence and stays off artifact bytes", async () => {
+  const missingGenerationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa99";
+  const { store } = harness({
+    ...typicalSeed(),
+    generations: [
+      generationRow(),
+      generationRow({
+        id: GEN_2,
+        empty_sha256: null,
+        tiled_sha256: TILED_SHA,
+        frame_width: 640,
+        frame_height: 480,
+      }),
+    ],
+    cases: [
+      caseRow({ notes: "keep the walls" }),
+      caseRow({
+        id: CASE_2,
+        reported_generation_id: GEN_2,
+        notes: null,
+        submitted_at: "2026-09-18T12:00:00.000Z",
+      }),
+      caseRow({
+        id: CASE_3,
+        reported_generation_id: missingGenerationId,
+        notes: "   ",
+        submitted_at: "2026-09-17T12:00:00.000Z",
+      }),
+    ],
+  });
+  const response = await listGet("http://test/api/admin/afc-diagnostics/cases", store);
+  assert.equal(response.status, 200);
+  const body = await jsonBody(response);
+  const items = body.items as Array<Record<string, unknown>>;
+  assert.equal(items[0].viewportArtifactKind, "empty");
+  assert.deepEqual(items[0].viewportFrame, { width: 1200, height: 800 });
+  assert.equal(items[0].notes, "keep the walls");
+  assert.equal(items[1].viewportArtifactKind, "tiled");
+  assert.deepEqual(items[1].viewportFrame, { width: 640, height: 480 });
+  assert.equal(items[1].notes, null);
+  assert.equal(items[2].viewportArtifactKind, null);
+  assert.equal(items[2].viewportFrame, null);
+  assert.equal(items[2].notes, null);
+  const serialized = JSON.stringify(body);
+  assert.doesNotMatch(serialized, new RegExp(`${EMPTY_SHA}|${TILED_SHA}`));
+  assert.doesNotMatch(
+    serialized,
+    /storage_path|signedUrl|diagnostic_payload|production_authority|reviewNotes/,
+  );
+  assertAfcDiagnosticAdminPayloadPrivacy(body);
 });
 
 test("59-69) case detail happy path, validation, missing, integrity, and compact evidence", async () => {
@@ -1374,4 +1451,154 @@ test("cookie client missing is a generic 500 and does not leak admin email", asy
     assert.deepEqual(body, { error: "Server error." });
     assert.doesNotMatch(JSON.stringify(body), /secret-admin/);
   }
+});
+
+test("failed Sunburst case loads and historical cases without imageGeneration still load", async () => {
+  const provenance = afcImageGenerationProvenance({
+    empty: "gpt-image-2.5-sunburst-high",
+    tiled: "nano-banana-pro",
+  });
+  const nbp = afcImageGenerationProvenance({
+    empty: "nano-banana-pro",
+    tiled: "nano-banana-pro",
+  });
+  const sunburstFingerprint = validFingerprint({
+    imageGeneration: provenance,
+    providerProvenance: {
+      imageGeneration: provenance,
+      emptyArtifactSource: "generated",
+    },
+    tiled: {
+      generatorId: "gen",
+      profileId: "prof",
+      researchPreset: "preset",
+      requestedModelId: "NBP",
+      readerVersion: null,
+    },
+  });
+  const { store } = harness({
+    sessions: [sessionRow()],
+    memberships: [membershipRow()],
+    generations: [
+      generationRow({
+        status: "failed",
+        failure_reason: "tiled_lineage_not_exact_grid",
+        diagnostic_payload: {
+          analysisStatus: "failed",
+          reason: "tiled_lineage_not_exact_grid",
+          executionCounts: { tiledReader: 1 },
+        },
+        engine_fingerprint: sunburstFingerprint,
+        original_decoded_width: 2048,
+        original_decoded_height: 1536,
+      }),
+    ],
+    cases: [
+      caseRow({
+        machine_status_snapshot: "failed",
+        issue_codes: ["other"],
+      }),
+    ],
+  });
+
+  const response = await caseGet(CASE_1, store);
+  assert.equal(response.status, 200);
+  const body = await jsonBody(response);
+  assert.doesNotThrow(() => assertAfcDiagnosticAdminPayloadPrivacy(body));
+  const parsed = parseAfcDiagnosticInspectorCaseDetail(body);
+  assert.ok(parsed);
+  const empty = parsed.reportedGeneration.engineFingerprint?.imageGeneration?.empty;
+  const tiled = parsed.reportedGeneration.engineFingerprint?.imageGeneration?.tiled;
+  assert.equal(empty?.provider, "openai");
+  assert.equal(empty?.modelId, "gpt-image-2.5-sunburst-2026-09-08");
+  assert.equal(empty?.quality, "high");
+  assert.equal(empty?.stage, "empty");
+  assert.equal(empty?.displayName, "GPT Image 2.5 Sunburst High");
+  assert.equal(tiled?.provider, "nanobanana-pro");
+  assert.equal(tiled?.modelId, "NBP");
+  assert.equal(tiled?.displayName, "Nano Banana Pro");
+  assert.equal(parsed.reportedGeneration.status, "failed");
+  assert.equal(parsed.reportedGeneration.failureReason, "tiled_lineage_not_exact_grid");
+  const serialized = JSON.stringify(body);
+  assert.doesNotMatch(
+    serialized,
+    /OPENAI_API_KEY|Bearer |sk-|providerProvenance|provider_provenance|authorization/i,
+  );
+  assert.equal("providerProvenance" in (body as object), false);
+
+  const exported = buildAfcDiagnosticSelectedAttemptExport({
+    caseDetail: parsed,
+    session: null,
+    attempt: null,
+    generation: parsed.reportedGeneration,
+    associatedAt: null,
+    attemptOrdinal: parsed.reportedAttemptOrdinal,
+  }, "2026-10-01T04:07:35.000Z");
+  const exportText = serializeAfcDiagnosticSelectedAttemptExport(exported);
+  assert.equal(
+    exported.engineFingerprint?.imageGeneration?.empty.modelId,
+    "gpt-image-2.5-sunburst-2026-09-08",
+  );
+  assert.equal(exported.engineFingerprint?.imageGeneration?.empty.quality, "high");
+  assert.match(exportText, /gpt-image-2\.5-sunburst-2026-09-08/);
+  assert.doesNotMatch(
+    exportText,
+    /OPENAI_API_KEY|Bearer |sk-|providerProvenance|provider_provenance/i,
+  );
+
+  const nbpStore = harness({
+    sessions: [sessionRow()],
+    memberships: [membershipRow()],
+    generations: [
+      generationRow({
+        engine_fingerprint: validFingerprint({ imageGeneration: nbp }),
+      }),
+    ],
+    cases: [caseRow()],
+  }).store;
+  const nbpResponse = await caseGet(CASE_1, nbpStore);
+  assert.equal(nbpResponse.status, 200);
+  const nbpBody = await jsonBody(nbpResponse);
+  const nbpParsed = parseAfcDiagnosticInspectorCaseDetail(nbpBody);
+  assert.equal(
+    nbpParsed?.reportedGeneration.engineFingerprint?.imageGeneration?.empty.provider,
+    "nanobanana-pro",
+  );
+  assert.equal(
+    nbpParsed?.reportedGeneration.engineFingerprint?.imageGeneration?.empty.modelId,
+    "NBP",
+  );
+
+  const historical = harness(typicalSeed());
+  const historicalResponse = await caseGet(CASE_1, historical.store);
+  assert.equal(historicalResponse.status, 200);
+  const historicalBody = await jsonBody(historicalResponse);
+  const historicalParsed = parseAfcDiagnosticInspectorCaseDetail(historicalBody);
+  assert.ok(historicalParsed);
+  assert.equal(
+    historicalParsed.reportedGeneration.engineFingerprint?.imageGeneration,
+    undefined,
+  );
+
+  assert.ok(
+    collectAfcDiagnosticAdminPayloadPrivacyViolations({
+      displayName: "Reporter Name",
+    }).some((entry) => entry === "displayName"),
+  );
+  assert.deepEqual(
+    collectAfcDiagnosticAdminPayloadPrivacyViolations({
+      engineFingerprint: {
+        imageGeneration: provenance,
+      },
+    }),
+    [],
+  );
+  assert.ok(
+    collectAfcDiagnosticAdminPayloadPrivacyViolations({
+      engineFingerprint: {
+        imageGeneration: provenance,
+        providerProvenance: { imageGeneration: provenance },
+      },
+    }).some((entry) => entry.includes("providerProvenance")),
+  );
 });

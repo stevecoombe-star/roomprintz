@@ -15,8 +15,13 @@ import {
 import {
   deriveAutoMetricScale,
   evaluateTrustedBackWallWidthSpan,
+  type AutoMetricCandidateObservation,
+  type TrustedBackWallWidthSpanResult,
 } from "@/app/admin/3d-room-lab-v2/metric-auto-scale";
-import type { AutoMetricScaleReceipt } from "@/app/admin/3d-room-lab-v2/metric-auto-scale-contract";
+import type {
+  AutoMetricS4aSafetyEvidence,
+  AutoMetricScaleReceipt,
+} from "@/app/admin/3d-room-lab-v2/metric-auto-scale-contract";
 import {
   appliedAutoMetricPath,
   deriveObservedSpanAutoMetricScale,
@@ -29,6 +34,34 @@ export type ProductionAutoMetric = Readonly<{
   path: "path_a" | "path_b" | "none";
   metricScale: number;
 }>;
+
+/**
+ * Write-only evidence retained from the production metric pass.
+ * `deriveProductionAutoMetric` never reads these fields back.
+ */
+export type ProductionMetricObservation = {
+  pathAReceipt: AutoMetricScaleReceipt | null;
+  pathBReceipt: AutoMetricScaleReceipt | null;
+  pathACandidateScaleBeforeFallback: number | null;
+  spanTrust: TrustedBackWallWidthSpanResult | null;
+  s4aSafety: AutoMetricS4aSafetyEvidence | null;
+  compatibilityTier: string | null;
+  trustSelectedBackSpanAsFullWidth: boolean | null;
+  completeBackGeometryExists: boolean | null;
+};
+
+export function createProductionMetricObservation(): ProductionMetricObservation {
+  return {
+    pathAReceipt: null,
+    pathBReceipt: null,
+    pathACandidateScaleBeforeFallback: null,
+    spanTrust: null,
+    s4aSafety: null,
+    compatibilityTier: null,
+    trustSelectedBackSpanAsFullWidth: null,
+    completeBackGeometryExists: null,
+  };
+}
 
 function s4aSafetyFromApplied(
   analysis: Extract<AfcV2AnalyzeResult, { status: "applied" }>,
@@ -50,6 +83,7 @@ function s4aSafetyFromApplied(
 
 export function deriveProductionAutoMetric(
   analysis: Extract<AfcV2AnalyzeResult, { status: "applied" }>,
+  observation?: ProductionMetricObservation,
 ): ProductionAutoMetric {
   const selected = analysis.metricCorrespondence?.selected ?? null;
   const s4aSafety = s4aSafetyFromApplied(analysis);
@@ -63,16 +97,17 @@ export function deriveProductionAutoMetric(
   });
   const trustSelectedBackSpanAsFullWidth =
     defaultTrustSelectedBackSpanAsFullWidth(compatibilityTier);
+  const pathACandidate: AutoMetricCandidateObservation = {
+    candidateScaleBeforeFallback: null,
+  };
   const pathA = deriveAutoMetricScale({
     roomPrior: analysis.metricRoomPrior,
     selected,
     s4aSafety,
     trustSelectedBackSpanAsFullWidth,
-  });
-  const completeBackGeometryExists = evaluateTrustedBackWallWidthSpan(
-    selected,
-    s4aSafety,
-  ).trusted;
+  }, observation ? pathACandidate : undefined);
+  const spanTrust = evaluateTrustedBackWallWidthSpan(selected, s4aSafety);
+  const completeBackGeometryExists = spanTrust.trusted;
   const pathB = deriveObservedSpanAutoMetricScale({
     estimate: analysis.observedSpanPhysicalEstimate,
     candidate: analysis.observedSpanMetricSelection?.selected ?? null,
@@ -87,6 +122,18 @@ export function deriveProductionAutoMetric(
       receipt.autoMetricScale > 0
     ? receipt.autoMetricScale
     : AUTO_METRIC_SCALE;
+  if (observation) {
+    observation.pathAReceipt = pathA;
+    observation.pathBReceipt = pathB;
+    observation.pathACandidateScaleBeforeFallback =
+      pathACandidate.candidateScaleBeforeFallback;
+    observation.spanTrust = spanTrust;
+    observation.s4aSafety = s4aSafety;
+    observation.compatibilityTier = compatibilityTier;
+    observation.trustSelectedBackSpanAsFullWidth =
+      trustSelectedBackSpanAsFullWidth;
+    observation.completeBackGeometryExists = completeBackGeometryExists;
+  }
   return Object.freeze({
     receipt,
     path: appliedAutoMetricPath(receipt),

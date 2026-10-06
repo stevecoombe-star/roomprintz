@@ -37,8 +37,18 @@ import {
   isCommercialId,
   isPlainObject,
   isUuidLike,
+  isValidCurrency,
+  normalizeCurrency,
   validateBrowseTaxonomy,
 } from "./product-variant-register";
+import {
+  explicitModelDimensions,
+  parseModelDimensionFields,
+  sameModelDimensions,
+  stageVariantModelFields,
+  type ModelDimensions,
+  type ModelSizingMode,
+} from "./model-dimensions";
 import type { StageCatalogSnapshot, StageCollection, StageProduct, StageVariant } from "./types";
 
 export const PARTNER_DRAFT_MAX_JSON_BYTES = 256 * 1024;
@@ -49,6 +59,8 @@ export const PARTNER_DRAFT_MUTATION_TYPES = Object.freeze([
   "product.set_image_url",
   "product.set_product_url",
   "product.set_price",
+  "product.deactivate",
+  "product.reactivate",
   "product.create",
   "product.create_edit",
   "product.create_remove",
@@ -56,6 +68,9 @@ export const PARTNER_DRAFT_MUTATION_TYPES = Object.freeze([
   "variant.set_sku",
   "variant.set_price",
   "variant.set_product_url",
+  "variant.set_model_dimensions",
+  "variant.deactivate",
+  "variant.reactivate",
   "variant.create",
   "variant.create_edit",
   "variant.create_remove",
@@ -73,6 +88,8 @@ export type PartnerDraftMutation =
   | Readonly<{ type: "product.set_image_url"; productId: string; imageUrl: string }>
   | Readonly<{ type: "product.set_product_url"; productId: string; productUrl: string | null }>
   | Readonly<{ type: "product.set_price"; productId: string; priceAmount: number }>
+  | Readonly<{ type: "product.deactivate"; productId: string }>
+  | Readonly<{ type: "product.reactivate"; productId: string }>
   | Readonly<{
       type: "product.create";
       name: string;
@@ -82,12 +99,17 @@ export type PartnerDraftMutation =
       categoryId: string;
       subcategoryId?: string | null;
       productCreationSlug?: string | null;
+      priceCurrency?: string;
       defaultVariant: Readonly<{
         finishLabel?: string | null;
         sku?: string | null;
         productUrl?: string | null;
         currentAssetId: string;
         creationSlug?: string | null;
+        modelWidthM?: number;
+        modelHeightM?: number;
+        modelDepthM?: number;
+        modelSizingMode?: ModelSizingMode;
       }>;
       collectionIds?: readonly string[];
     }>
@@ -108,6 +130,16 @@ export type PartnerDraftMutation =
   | Readonly<{ type: "variant.set_price"; variantId: string; priceAmount: number }>
   | Readonly<{ type: "variant.set_product_url"; variantId: string; productUrl: string | null }>
   | Readonly<{
+      type: "variant.set_model_dimensions";
+      variantId: string;
+      modelWidthM: number;
+      modelHeightM: number;
+      modelDepthM: number;
+      modelSizingMode: ModelSizingMode;
+    }>
+  | Readonly<{ type: "variant.deactivate"; variantId: string }>
+  | Readonly<{ type: "variant.reactivate"; variantId: string }>
+  | Readonly<{
       type: "variant.create";
       productId: string;
       finishLabel: string | null;
@@ -116,6 +148,10 @@ export type PartnerDraftMutation =
       productUrl: string | null;
       currentAssetId: string;
       creationSlug?: string | null;
+      modelWidthM?: number;
+      modelHeightM?: number;
+      modelDepthM?: number;
+      modelSizingMode?: ModelSizingMode;
     }>
   | Readonly<{
       type: "variant.create_edit";
@@ -125,6 +161,10 @@ export type PartnerDraftMutation =
       priceAmount?: number;
       productUrl?: string | null;
       currentAssetId?: string;
+      modelWidthM?: number;
+      modelHeightM?: number;
+      modelDepthM?: number;
+      modelSizingMode?: ModelSizingMode;
     }>
   | Readonly<{ type: "variant.create_remove"; variantId: string }>
   | Readonly<{ type: "collection.set_name"; collectionId: string; name: string }>
@@ -193,6 +233,10 @@ type WritableVariantPatch = {
   priceCurrency?: string;
   productUrl?: string | null;
   currentAssetId?: string;
+  modelWidthM?: number;
+  modelHeightM?: number;
+  modelDepthM?: number;
+  modelSizingMode?: ModelSizingMode;
 };
 
 type WritableCollectionPatch = {
@@ -335,6 +379,15 @@ export function parsePartnerDraftMutations(
   return { ok: true, mutations };
 }
 
+function mutationModelDimensions(
+  value: Record<string, unknown>,
+): Readonly<{ ok: true; dimensions: ModelDimensions | null } | { ok: false }> {
+  const parsed = parseModelDimensionFields(value);
+  if (parsed.state === "invalid") return { ok: false };
+  if (parsed.state === "absent") return { ok: true, dimensions: null };
+  return { ok: true, dimensions: parsed.dimensions };
+}
+
 export function parsePartnerDraftMutation(
   value: unknown,
 ): Readonly<{ ok: true; mutation: PartnerDraftMutation }> | PartnerDraftMutationFailure {
@@ -385,6 +438,24 @@ export function parsePartnerDraftMutation(
       if (!productId || priceAmount == null) return fail("invalid_mutation", "Invalid draft mutation.");
       return { ok: true, mutation: { type, productId, priceAmount } };
     }
+    case "product.deactivate":
+    case "product.reactivate": {
+      if (extraKeys(value, ["type", "productId"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const productId = asNonEmptyString(value.productId);
+      if (!productId) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, productId } };
+    }
+    case "variant.deactivate":
+    case "variant.reactivate": {
+      if (extraKeys(value, ["type", "variantId"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const variantId = asNonEmptyString(value.variantId);
+      if (!variantId) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, variantId } };
+    }
     case "product.create": {
       if (extraKeys(value, [
         "type",
@@ -395,6 +466,7 @@ export function parsePartnerDraftMutation(
         "categoryId",
         "subcategoryId",
         "productCreationSlug",
+        "priceCurrency",
         "defaultVariant",
         "collectionIds",
       ]).length > 0) {
@@ -411,6 +483,12 @@ export function parsePartnerDraftMutation(
       const productCreationSlug = value.productCreationSlug === undefined
         ? undefined
         : nullableTrimmedString(value.productCreationSlug);
+      const priceCurrency = "priceCurrency" in value
+        ? asNonEmptyString(value.priceCurrency)
+        : undefined;
+      if ("priceCurrency" in value && !priceCurrency) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
       if (
         !name
         || !imageUrl
@@ -430,6 +508,10 @@ export function parsePartnerDraftMutation(
         "productUrl",
         "currentAssetId",
         "creationSlug",
+        "modelWidthM",
+        "modelHeightM",
+        "modelDepthM",
+        "modelSizingMode",
       ]).length > 0) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -455,6 +537,8 @@ export function parsePartnerDraftMutation(
       ) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
+      const defaultDimensions = mutationModelDimensions(value.defaultVariant);
+      if (!defaultDimensions.ok) return fail("invalid_mutation", "Invalid draft mutation.");
       let collectionIds: string[] | undefined;
       if ("collectionIds" in value) {
         if (!Array.isArray(value.collectionIds)) return fail("invalid_mutation", "Invalid draft mutation.");
@@ -476,12 +560,14 @@ export function parsePartnerDraftMutation(
           categoryId,
           ...(subcategoryId !== undefined ? { subcategoryId } : {}),
           ...(productCreationSlug !== undefined ? { productCreationSlug } : {}),
+          ...(priceCurrency ? { priceCurrency } : {}),
           defaultVariant: {
             ...(finishLabel !== undefined ? { finishLabel } : {}),
             ...(sku !== undefined ? { sku } : {}),
             ...(variantProductUrl !== undefined ? { productUrl: variantProductUrl } : {}),
             currentAssetId,
             ...(creationSlug !== undefined ? { creationSlug } : {}),
+            ...(defaultDimensions.dimensions ? stageVariantModelFields(defaultDimensions.dimensions) : {}),
           },
           ...(collectionIds ? { collectionIds } : {}),
         },
@@ -611,6 +697,34 @@ export function parsePartnerDraftMutation(
       if (!variantId || productUrl === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
       return { ok: true, mutation: { type, variantId, productUrl } };
     }
+    case "variant.set_model_dimensions": {
+      if (extraKeys(value, [
+        "type",
+        "variantId",
+        "modelWidthM",
+        "modelHeightM",
+        "modelDepthM",
+        "modelSizingMode",
+      ]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const variantId = asNonEmptyString(value.variantId);
+      const dimensions = mutationModelDimensions(value);
+      if (!variantId || !dimensions.ok || !dimensions.dimensions) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      return {
+        ok: true,
+        mutation: {
+          type,
+          variantId,
+          modelWidthM: dimensions.dimensions.widthM,
+          modelHeightM: dimensions.dimensions.heightM,
+          modelDepthM: dimensions.dimensions.depthM,
+          modelSizingMode: dimensions.dimensions.sizingMode,
+        },
+      };
+    }
     case "variant.create": {
       if (extraKeys(value, [
         "type",
@@ -621,6 +735,10 @@ export function parsePartnerDraftMutation(
         "productUrl",
         "currentAssetId",
         "creationSlug",
+        "modelWidthM",
+        "modelHeightM",
+        "modelDepthM",
+        "modelSizingMode",
       ]).length > 0) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -645,6 +763,8 @@ export function parsePartnerDraftMutation(
       ) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
+      const createDimensions = mutationModelDimensions(value);
+      if (!createDimensions.ok) return fail("invalid_mutation", "Invalid draft mutation.");
       return {
         ok: true,
         mutation: {
@@ -656,6 +776,7 @@ export function parsePartnerDraftMutation(
           productUrl,
           currentAssetId,
           ...(creationSlug !== undefined ? { creationSlug } : {}),
+          ...(createDimensions.dimensions ? stageVariantModelFields(createDimensions.dimensions) : {}),
         },
       };
     }
@@ -668,6 +789,10 @@ export function parsePartnerDraftMutation(
         "priceAmount",
         "productUrl",
         "currentAssetId",
+        "modelWidthM",
+        "modelHeightM",
+        "modelDepthM",
+        "modelSizingMode",
       ]).length > 0) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -681,6 +806,10 @@ export function parsePartnerDraftMutation(
         priceAmount?: number;
         productUrl?: string | null;
         currentAssetId?: string;
+        modelWidthM?: number;
+        modelHeightM?: number;
+        modelDepthM?: number;
+        modelSizingMode?: ModelSizingMode;
       } = { type, variantId };
       if ("finishLabel" in value) {
         const finishLabel = nullableTrimmedString(value.finishLabel);
@@ -707,12 +836,21 @@ export function parsePartnerDraftMutation(
         if (!currentAssetId) return fail("invalid_mutation", "Invalid draft mutation.");
         next.currentAssetId = currentAssetId;
       }
+      const editDimensions = mutationModelDimensions(value);
+      if (!editDimensions.ok) return fail("invalid_mutation", "Invalid draft mutation.");
+      if (editDimensions.dimensions) {
+        next.modelWidthM = editDimensions.dimensions.widthM;
+        next.modelHeightM = editDimensions.dimensions.heightM;
+        next.modelDepthM = editDimensions.dimensions.depthM;
+        next.modelSizingMode = editDimensions.dimensions.sizingMode;
+      }
       if (
         next.finishLabel === undefined
         && next.sku === undefined
         && next.priceAmount === undefined
         && next.productUrl === undefined
         && next.currentAssetId === undefined
+        && next.modelWidthM === undefined
       ) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -831,6 +969,106 @@ function findProduct(catalog: StageCatalogSnapshot, productId: string): StagePro
   return catalog.products.find((item) => item.productId === productId) ?? null;
 }
 
+function liveCommercialStatus(product: StageProduct | null): "active" | "inactive" | null {
+  if (!product) return null;
+  return product.status === "inactive" ? "inactive" : "active";
+}
+
+function sortStatusTargets<T extends { productId: string }>(items: readonly T[]): T[] {
+  return [...items].sort((left, right) => left.productId.localeCompare(right.productId));
+}
+
+function liveVariantStatus(variant: StageVariant | null): "active" | "inactive" | null {
+  if (!variant) return null;
+  return variant.status === "inactive" ? "inactive" : "active";
+}
+
+function sortVariantStatusTargets<T extends { variantId: string }>(items: readonly T[]): T[] {
+  return [...items].sort((left, right) => left.variantId.localeCompare(right.variantId));
+}
+
+function stageExistingVariantStatus(
+  working: MutablePatchDocument,
+  catalog: StageCatalogSnapshot,
+  variantId: string,
+  target: "active" | "inactive",
+): PartnerDraftMutationFailure | null {
+  if (findPendingCreate(working, variantId)) {
+    return fail("invalid_mutation", "Pending Variant edits use create-edit semantics.");
+  }
+  const variant = findVariant(catalog, variantId);
+  const product = variant ? findProduct(catalog, variant.productId) : null;
+  if (!variant || !product || product.partnerId !== working.partnerId || product.source !== "partner_catalog") {
+    return fail("unknown_id", "Unknown Variant.");
+  }
+  working.variants.deactivate = working.variants.deactivate.filter((item) => item.variantId !== variantId);
+  working.variants.reactivate = working.variants.reactivate.filter((item) => item.variantId !== variantId);
+  if (liveVariantStatus(variant) === target) return null;
+  const list = target === "inactive" ? working.variants.deactivate : working.variants.reactivate;
+  list.push({ variantId });
+  if (target === "inactive") working.variants.deactivate = sortVariantStatusTargets(working.variants.deactivate);
+  else working.variants.reactivate = sortVariantStatusTargets(working.variants.reactivate);
+  return null;
+}
+
+function normalizeVariantStatusTargets(
+  targets: readonly { variantId: string }[],
+  catalog: StageCatalogSnapshot,
+  liveStatus: "active" | "inactive",
+): { variantId: string }[] {
+  const seen = new Set<string>();
+  const next: { variantId: string }[] = [];
+  for (const item of sortVariantStatusTargets(targets)) {
+    if (seen.has(item.variantId)) continue;
+    seen.add(item.variantId);
+    if (liveVariantStatus(findVariant(catalog, item.variantId)) === liveStatus) {
+      next.push({ variantId: item.variantId });
+    }
+  }
+  return next;
+}
+
+function stageExistingProductStatus(
+  working: MutablePatchDocument,
+  catalog: StageCatalogSnapshot,
+  productId: string,
+  target: "active" | "inactive",
+): PartnerDraftMutationFailure | null {
+  if (findPendingProduct(working, productId)) {
+    return fail("invalid_mutation", "Pending Product edits use create-edit semantics.");
+  }
+  const product = findProduct(catalog, productId);
+  if (!product || product.partnerId !== working.partnerId || product.source !== "partner_catalog") {
+    return fail("unknown_id", "Unknown Product.");
+  }
+  working.products.deactivate = working.products.deactivate.filter((item) => item.productId !== productId);
+  working.products.reactivate = working.products.reactivate.filter((item) => item.productId !== productId);
+  const live = liveCommercialStatus(product);
+  if (live === target) return null;
+  const list = target === "inactive" ? working.products.deactivate : working.products.reactivate;
+  list.push({ productId });
+  if (target === "inactive") working.products.deactivate = sortStatusTargets(working.products.deactivate);
+  else working.products.reactivate = sortStatusTargets(working.products.reactivate);
+  return null;
+}
+
+function normalizeProductStatusTargets(
+  targets: readonly { productId: string }[],
+  catalog: StageCatalogSnapshot,
+  liveStatus: "active" | "inactive",
+): { productId: string }[] {
+  const seen = new Set<string>();
+  const next: { productId: string }[] = [];
+  for (const item of sortStatusTargets(targets)) {
+    if (seen.has(item.productId)) continue;
+    seen.add(item.productId);
+    if (liveCommercialStatus(findProduct(catalog, item.productId)) === liveStatus) {
+      next.push({ productId: item.productId });
+    }
+  }
+  return next;
+}
+
 function findVariant(catalog: StageCatalogSnapshot, variantId: string): StageVariant | null {
   return catalog.variants.find((item) => item.variantId === variantId) ?? null;
 }
@@ -901,10 +1139,15 @@ function sortProductCreates(
   return [...items].sort((left, right) => left.productId.localeCompare(right.productId));
 }
 
-export function partnerCatalogCurrencyForCreate(
+export type PartnerCatalogCurrencyResolution =
+  | Readonly<{ status: "resolved"; currency: string }>
+  | Readonly<{ status: "empty" }>
+  | Readonly<{ status: "conflict" }>;
+
+export function resolvePartnerCatalogCurrency(
   catalog: StageCatalogSnapshot,
   partnerId: string,
-): string | null {
+): PartnerCatalogCurrencyResolution {
   const currencies = new Set<string>();
   for (const product of catalog.products) {
     if (product.partnerId === partnerId && product.source === "partner_catalog") {
@@ -912,8 +1155,41 @@ export function partnerCatalogCurrencyForCreate(
       currencies.add(product.priceCurrency);
     }
   }
-  if (currencies.size !== 1) return null;
-  return [...currencies][0] ?? null;
+  if (currencies.size === 0) return { status: "empty" };
+  if (currencies.size > 1) return { status: "conflict" };
+  const currency = [...currencies][0];
+  if (!currency) return { status: "empty" };
+  return { status: "resolved", currency };
+}
+
+export function partnerCatalogCurrencyForCreate(
+  catalog: StageCatalogSnapshot,
+  partnerId: string,
+): string | null {
+  const resolved = resolvePartnerCatalogCurrency(catalog, partnerId);
+  return resolved.status === "resolved" ? resolved.currency : null;
+}
+
+function resolveProductCreateCurrency(
+  catalog: StageCatalogSnapshot,
+  partnerId: string,
+  supplied: string | undefined,
+): string | PartnerDraftMutationFailure {
+  const resolved = resolvePartnerCatalogCurrency(catalog, partnerId);
+  const normalized = supplied ? normalizeCurrency(supplied) : "";
+  if (resolved.status === "conflict") {
+    return fail("invalid_mutation", "Partner catalog currency could not be resolved.");
+  }
+  if (resolved.status === "resolved") {
+    if (normalized && normalized !== resolved.currency) {
+      return fail("invalid_mutation", "Partner catalog currency could not be resolved.");
+    }
+    return resolved.currency;
+  }
+  if (!normalized || !isValidCurrency(normalized)) {
+    return fail("invalid_mutation", "Partner catalog currency could not be resolved.");
+  }
+  return normalized;
 }
 
 function findPendingCollection(
@@ -1110,11 +1386,21 @@ function applyOne(
       applyPriceCoupling(working, product, mutation.priceAmount);
       return null;
     }
+    case "product.deactivate":
+      return stageExistingProductStatus(working, catalog, mutation.productId, "inactive");
+    case "product.reactivate":
+      return stageExistingProductStatus(working, catalog, mutation.productId, "active");
+    case "variant.deactivate":
+      return stageExistingVariantStatus(working, catalog, mutation.variantId, "inactive");
+    case "variant.reactivate":
+      return stageExistingVariantStatus(working, catalog, mutation.variantId, "active");
     case "product.create": {
-      const currency = partnerCatalogCurrencyForCreate(catalog, working.partnerId);
-      if (!currency) {
-        return fail("invalid_mutation", "Partner catalog currency could not be resolved.");
-      }
+      const currency = resolveProductCreateCurrency(
+        catalog,
+        working.partnerId,
+        mutation.priceCurrency,
+      );
+      if (typeof currency !== "string") return currency;
       const taxonomy = validateBrowseTaxonomy(mutation.categoryId, mutation.subcategoryId ?? null);
       if (taxonomy.length > 0) {
         return fail("invalid_mutation", taxonomy[0]?.message ?? "Invalid category.");
@@ -1163,6 +1449,7 @@ function applyOne(
         priceCurrency: currency,
         productUrl: mutation.defaultVariant.productUrl ?? null,
         currentAssetId: mutation.defaultVariant.currentAssetId,
+        ...stageVariantModelFields(explicitModelDimensions(mutation.defaultVariant)),
       });
       working.variants.create = sortVariantCreates(working.variants.create);
       setPendingProductMemberships(working, derived.productId, collectionIds);
@@ -1266,6 +1553,17 @@ function applyOne(
       });
       return null;
     }
+    case "variant.set_model_dimensions": {
+      const variant = findVariant(catalog, mutation.variantId);
+      if (!variant) return fail("unknown_id", "Unknown Variant.");
+      upsertById(working.variants.update, "variantId", mutation.variantId, {
+        modelWidthM: mutation.modelWidthM,
+        modelHeightM: mutation.modelHeightM,
+        modelDepthM: mutation.modelDepthM,
+        modelSizingMode: mutation.modelSizingMode,
+      });
+      return null;
+    }
     case "variant.create": {
       if (findPendingProduct(working, mutation.productId)) {
         return fail("invalid_mutation", "Additional variants cannot target a pending Product.");
@@ -1297,6 +1595,7 @@ function applyOne(
         priceCurrency: product.priceCurrency,
         productUrl: mutation.productUrl,
         currentAssetId: mutation.currentAssetId,
+        ...stageVariantModelFields(explicitModelDimensions(mutation)),
       });
       working.variants.create = sortVariantCreates(working.variants.create);
       return null;
@@ -1317,6 +1616,9 @@ function applyOne(
         priceAmount: mutation.priceAmount !== undefined ? mutation.priceAmount : pending.priceAmount,
         productUrl: mutation.productUrl !== undefined ? mutation.productUrl : pending.productUrl,
         currentAssetId: mutation.currentAssetId ?? pending.currentAssetId,
+        ...(mutation.modelWidthM !== undefined
+          ? stageVariantModelFields(explicitModelDimensions(mutation))
+          : {}),
       };
       working.variants.create = sortVariantCreates(
         working.variants.create.map((item) => (item.variantId === mutation.variantId ? next : item)),
@@ -1504,6 +1806,20 @@ function normalizeVariantPatch(
   if (patch.currentAssetId !== undefined && !sameValue(patch.currentAssetId, live.assetId)) {
     next.currentAssetId = patch.currentAssetId;
   }
+  if (
+    patch.modelWidthM !== undefined
+    || patch.modelHeightM !== undefined
+    || patch.modelDepthM !== undefined
+    || patch.modelSizingMode !== undefined
+  ) {
+    const nextDimensions = explicitModelDimensions(patch);
+    if (nextDimensions && !sameModelDimensions(nextDimensions, explicitModelDimensions(live))) {
+      next.modelWidthM = nextDimensions.widthM;
+      next.modelHeightM = nextDimensions.heightM;
+      next.modelDepthM = nextDimensions.depthM;
+      next.modelSizingMode = nextDimensions.sizingMode;
+    }
+  }
   return Object.keys(next).length === 1 ? null : next;
 }
 
@@ -1542,6 +1858,22 @@ export function normalizePartnerDraftDocument(
     .map((patch) => normalizeCollectionPatch(patch, findCollection(catalog, patch.collectionId)))
     .filter((item): item is WritableCollectionPatch => item != null)
     .sort((left, right) => left.collectionId.localeCompare(right.collectionId));
+  working.products.deactivate = normalizeProductStatusTargets(working.products.deactivate, catalog, "active");
+  working.products.reactivate = normalizeProductStatusTargets(
+    working.products.reactivate.filter((item) => (
+      !working.products.deactivate.some((deactivate) => deactivate.productId === item.productId)
+    )),
+    catalog,
+    "inactive",
+  );
+  working.variants.deactivate = normalizeVariantStatusTargets(working.variants.deactivate, catalog, "active");
+  working.variants.reactivate = normalizeVariantStatusTargets(
+    working.variants.reactivate.filter((item) => (
+      !working.variants.deactivate.some((deactivate) => deactivate.variantId === item.variantId)
+    )),
+    catalog,
+    "inactive",
+  );
 
   const liveMembership = new Set(
     catalog.collections.flatMap((collection) => (
@@ -1574,8 +1906,12 @@ function canonicalize(
   working.partnerId = partnerId;
   working.products.create = sortProductCreates(working.products.create);
   working.products.update.sort((left, right) => left.productId.localeCompare(right.productId));
+  working.products.deactivate = sortStatusTargets(working.products.deactivate);
+  working.products.reactivate = sortStatusTargets(working.products.reactivate);
   working.variants.create = sortVariantCreates(working.variants.create);
   working.variants.update.sort((left, right) => left.variantId.localeCompare(right.variantId));
+  working.variants.deactivate = sortVariantStatusTargets(working.variants.deactivate);
+  working.variants.reactivate = sortVariantStatusTargets(working.variants.reactivate);
   working.collections.create = sortCollectionCreates(working.collections.create);
   working.collections.update.sort((left, right) => left.collectionId.localeCompare(right.collectionId));
   working.collections.membershipAdd = sortMembership(working.collections.membershipAdd);

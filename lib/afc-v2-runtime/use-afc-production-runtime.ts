@@ -35,6 +35,7 @@ export function useAfcProductionRuntime(
       authority: null,
       originalImageUrl: null,
       generationId: null,
+      trustedPath: null,
     });
 
     async function load() {
@@ -64,6 +65,7 @@ export function useAfcProductionRuntime(
             authority: interpreted.authority,
             originalImageUrl: interpreted.originalImageUrl,
             generationId: interpreted.generationId,
+            trustedPath: interpreted.trustedPath,
           });
           return;
         }
@@ -73,6 +75,7 @@ export function useAfcProductionRuntime(
           authority: null,
           originalImageUrl: null,
           generationId: interpreted.generationId,
+          trustedPath: null,
         });
       } catch (loadError) {
         if (cancelled) return;
@@ -84,6 +87,7 @@ export function useAfcProductionRuntime(
           authority: null,
           originalImageUrl: null,
           generationId: null,
+          trustedPath: null,
         });
       }
     }

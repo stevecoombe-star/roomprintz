@@ -679,7 +679,9 @@ test("PI-5G5B1 portal copy distinguishes validated vs registered and does not cl
   assert.match(client, /Catalog-linked Assets/);
   assert.doesNotMatch(client, /use in Product|use in Variant|Available in catalog|Usable in room/);
   assert.doesNotMatch(client, /productId|variantId|collectionId|planVersion/);
-  assert.match(page, /runtime activation is still pending/);
+  assert.match(client, /runtime activation is still pending/);
+  assert.match(page, /View and manage the 3D models used across your Vibode catalog/);
+  assert.doesNotMatch(page, /Register Asset|Activate Runtime/);
   assert.equal(formatSha256Prefix("abcdef0123456789", 12), "abcdef012345");
 });
 

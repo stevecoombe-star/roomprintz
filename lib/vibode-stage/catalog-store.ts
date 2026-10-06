@@ -9,6 +9,7 @@ import {
   createStageCatalogSnapshot,
   seedFixtureStageCatalog,
 } from "./catalog";
+import { explicitModelDimensions, stageVariantModelFields } from "./model-dimensions";
 import type {
   StageAsset,
   StageAssetStatus,
@@ -95,6 +96,13 @@ function asInteger(value: unknown, fallback = 0): number {
   return Math.trunc(parsed);
 }
 
+function asOptionalInteger(value: unknown): number | undefined {
+  if (value == null || value === "") return undefined;
+  const parsed = asNumber(value);
+  if (parsed == null) return undefined;
+  return Math.trunc(parsed);
+}
+
 function asSource(value: unknown): StageProductSource | null {
   if (
     value === "vibode_curated" ||
@@ -176,6 +184,13 @@ function mapVariant(row: Record<string, unknown>): StageVariant | null {
   const productId = asTrimmedString(row.product_id);
   const status = asCommercialStatus(row.status);
   if (!variantId || !productId || !status) return null;
+  const sortOrder = asOptionalInteger(row.sort_order);
+  const modelDimensions = explicitModelDimensions({
+    modelWidthM: asNumber(row.model_width_m),
+    modelHeightM: asNumber(row.model_height_m),
+    modelDepthM: asNumber(row.model_depth_m),
+    modelSizingMode: typeof row.model_sizing_mode === "string" ? row.model_sizing_mode : null,
+  });
   return {
     variantId,
     productId,
@@ -186,7 +201,29 @@ function mapVariant(row: Record<string, unknown>): StageVariant | null {
     priceCurrency: asNullableString(row.price_currency) ?? "USD",
     productUrl: asNullableString(row.product_url),
     status,
+    ...(sortOrder !== undefined ? { sortOrder } : {}),
+    ...stageVariantModelFields(modelDimensions),
   };
+}
+
+function sortVariantInputRows(input: readonly unknown[]): unknown[] {
+  return input.map((row, index) => ({ row, index })).sort((left, right) => {
+    const leftOrder = isRecord(left.row) ? asOptionalInteger(left.row.sort_order) : undefined;
+    const rightOrder = isRecord(right.row) ? asOptionalInteger(right.row.sort_order) : undefined;
+    if (leftOrder !== undefined && rightOrder === undefined) return -1;
+    if (leftOrder === undefined && rightOrder !== undefined) return 1;
+    if (leftOrder !== undefined && rightOrder !== undefined && leftOrder !== rightOrder) {
+      return leftOrder - rightOrder;
+    }
+    if (leftOrder !== undefined && rightOrder !== undefined && isRecord(left.row) && isRecord(right.row)) {
+      const byId = (asTrimmedString(left.row.variant_id) ?? "").localeCompare(
+        asTrimmedString(right.row.variant_id) ?? "",
+        "en",
+      );
+      if (byId !== 0) return byId;
+    }
+    return left.index - right.index;
+  }).map((item) => item.row);
 }
 
 function mapProduct(
@@ -234,6 +271,7 @@ function mapProduct(
     source,
     partnerId,
     status,
+    sortOrder: asInteger(row.sort_order),
   };
 }
 
@@ -335,7 +373,7 @@ export function assembleStageCatalogFromRows(
   }
 
   const variants: StageVariant[] = [];
-  for (const row of rows.variants) {
+  for (const row of sortVariantInputRows(rows.variants)) {
     if (!isRecord(row)) return null;
     const variant = mapVariant(row);
     if (!variant) return null;
@@ -463,7 +501,7 @@ export function stageCatalogRowsFromSnapshot(
       authored_depth_m: asset.authoredDepthM,
       status: asset.status,
     })),
-    products: catalog.products.map((product, sortOrder) => ({
+    products: catalog.products.map((product, index) => ({
       product_id: product.productId,
       name: product.name,
       brand: product.brand,
@@ -478,7 +516,7 @@ export function stageCatalogRowsFromSnapshot(
       partner_id: product.partnerId,
       default_variant_id: product.defaultVariantId,
       status: product.status ?? "active",
-      sort_order: sortOrder,
+      sort_order: product.sortOrder ?? index,
     })),
     variants: catalog.variants.map((variant) => ({
       variant_id: variant.variantId,
@@ -490,6 +528,17 @@ export function stageCatalogRowsFromSnapshot(
       price_currency: variant.priceCurrency,
       product_url: variant.productUrl,
       status: variant.status ?? "active",
+      ...(typeof variant.sortOrder === "number" ? { sort_order: variant.sortOrder } : {}),
+      ...(() => {
+        const dimensions = explicitModelDimensions(variant);
+        if (!dimensions) return {};
+        return {
+          model_width_m: dimensions.widthM,
+          model_height_m: dimensions.heightM,
+          model_depth_m: dimensions.depthM,
+          model_sizing_mode: dimensions.sizingMode,
+        };
+      })(),
     })),
     collections: catalog.collections.map((collection, sortOrder) => ({
       collection_id: collection.collectionId,

@@ -501,8 +501,29 @@ test("PI-5C durable empty or failed loads use an explicit seed fixture fallback"
 
 test("PI-5C Catalog browse still filters durable products without scene presence", () => {
   const durable = durableCatalogFromSeed();
+  const partnerChairId = "prod-partner-browse-chair";
+  const products = [
+    ...durable.products,
+    {
+      productId: partnerChairId,
+      brand: "Partner",
+      name: "Partner Chair",
+      retailer: "Partner",
+      categoryId: "living-room",
+      subcategoryId: "chairs",
+      productUrl: null,
+      imageUrl: "/partner-chair.jpg",
+      priceAmount: 100,
+      priceCurrency: "USD",
+      defaultVariantId: `${partnerChairId}-default`,
+      collectionIds: ["col-vibode-picks"],
+      source: "partner_catalog" as const,
+      partnerId: null,
+      status: "active" as const,
+    },
+  ];
   const living = filterStageCatalogProducts({
-    products: durable.products,
+    products,
     mode: "browse",
     query: "",
     categoryId: "living-room",
@@ -512,9 +533,10 @@ test("PI-5C Catalog browse still filters durable products without scene presence
     favoriteKeyFor: (product) => favoriteKey(product.productId, product.defaultVariantId),
   });
   assert.equal(living.length, 1);
-  assert.equal(living[0]?.productId, STAGE_STUDIO_CHAIR_PRODUCT_ID);
+  assert.equal(living[0]?.productId, partnerChairId);
+  assert.equal(living.some((product) => product.productId === STAGE_STUDIO_CHAIR_PRODUCT_ID), false);
   const picks = filterStageCatalogProducts({
-    products: durable.products,
+    products,
     mode: "collections",
     query: "",
     categoryId: null,
@@ -523,7 +545,7 @@ test("PI-5C Catalog browse still filters durable products without scene presence
     favoriteKeys: new Set(),
     favoriteKeyFor: (product) => favoriteKey(product.productId, product.defaultVariantId),
   });
-  assert.equal(picks.length, 4);
+  assert.deepEqual(picks.map((product) => product.productId), [partnerChairId]);
 });
 
 test("PI-5C migration seeds the certified STAGE identities and stays a public catalog", () => {

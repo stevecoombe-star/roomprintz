@@ -10,6 +10,9 @@ import {
 } from "@/lib/afc-v2-production/production-persistence.server";
 import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
+import { assertProductionPayloadPrivacy } from "@/lib/afc-v2-production/privacy";
+import { trustedPathBaselineFromGeneration } from "@/lib/vibode-stage/trusted-path-authority";
+import type { TrustedPathBaseline } from "@/lib/vibode-stage/trusted-path";
 
 export const runtime = "nodejs";
 
@@ -83,11 +86,48 @@ async function restoreRuntime(request: Request, body: unknown) {
     }, 200);
   }
 
+  const trustedPath = await readTrustedPath(store, {
+    userId: auth.userId,
+    roomId,
+    generationId: restored.generationId,
+  });
   return productionAfcJson({
     ...restored,
     authority: validated.authority,
     originalImageUrl,
+    trustedPath,
   }, 200);
+}
+
+async function readTrustedPath(
+  store: NonNullable<ReturnType<typeof createProductionAfcStoreFromEnv>>,
+  input: Readonly<{ userId: string; roomId: string; generationId: string | null }>,
+): Promise<TrustedPathBaseline | null> {
+  if (!input.generationId) return null;
+  try {
+    const generation = await store.getGeneration(input.generationId);
+    const authority = generation?.productionAuthority;
+    if (
+      !generation ||
+      !authority ||
+      generation.userId !== input.userId ||
+      generation.roomId !== input.roomId
+    ) {
+      return null;
+    }
+    const trustedPath = trustedPathBaselineFromGeneration({
+      metricDecision: generation.metricDecision,
+      originalWidth: authority.original.decodedWidth,
+      originalHeight: authority.original.decodedHeight,
+      emptyWidth: authority.empty.decodedWidth,
+      emptyHeight: authority.empty.decodedHeight,
+    });
+    if (!trustedPath) return null;
+    assertProductionPayloadPrivacy(trustedPath);
+    return trustedPath;
+  } catch {
+    return null;
+  }
 }
 
 export async function GET(request: Request) {

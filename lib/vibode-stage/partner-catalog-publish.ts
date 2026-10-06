@@ -34,6 +34,21 @@ import {
   partnerRuntimePlanNeedsV5,
   toRuntimeApplyPayloadV5,
 } from "./partner-catalog-runtime-executor-v5";
+import {
+  g6UnsupportedPublishOperations,
+  partnerRuntimePlanNeedsV6,
+  toRuntimeApplyPayloadV6,
+} from "./partner-catalog-runtime-executor-v6";
+import {
+  g7UnsupportedPublishOperations,
+  partnerRuntimePlanNeedsV7,
+  toRuntimeApplyPayloadV7,
+} from "./partner-catalog-runtime-executor-v7";
+import {
+  g8UnsupportedPublishOperations,
+  partnerRuntimePlanNeedsV8,
+  toRuntimeApplyPayloadV8,
+} from "./partner-catalog-runtime-executor-v8";
 import { persistablePartnerPatchDocument } from "./partner-draft-mutations";
 import {
   parsePartnerDraftTouchedBase,
@@ -55,6 +70,7 @@ import {
   PARTNER_PUBLISH_SOURCE,
   type PartnerPublishAuditStore,
 } from "./partner-publish-audit";
+import { canonicalModelDimensions } from "./model-dimensions";
 import { asNonEmptyString, isPlainObject } from "./product-variant-register";
 import type { StageCatalogSnapshot, StageCollection } from "./types";
 
@@ -63,6 +79,9 @@ export const STAGE_PARTNER_APPLY_RPC_V2 = "vibode_stage_apply_partner_patch_v2";
 export const STAGE_PARTNER_APPLY_RPC_V3 = "vibode_stage_apply_partner_patch_v3";
 export const STAGE_PARTNER_APPLY_RPC_V4 = "vibode_stage_apply_partner_patch_v4";
 export const STAGE_PARTNER_APPLY_RPC_V5 = "vibode_stage_apply_partner_patch_v5";
+export const STAGE_PARTNER_APPLY_RPC_V6 = "vibode_stage_apply_partner_patch_v6";
+export const STAGE_PARTNER_APPLY_RPC_V7 = "vibode_stage_apply_partner_patch_v7";
+export const STAGE_PARTNER_APPLY_RPC_V8 = "vibode_stage_apply_partner_patch_v8";
 
 export const PARTNER_PUBLISH_REJECT_BODY_KEYS = Object.freeze([
   "partnerId",
@@ -189,6 +208,24 @@ export function detectPartnerPublishConflicts(input: Readonly<{
           live: change.previous,
         });
       }
+    }
+  }
+
+  for (const update of input.plan.variantModelDimensionUpdates ?? []) {
+    const base = input.touchedBase.variants[update.variantId];
+    if (!base || !("model_dimensions" in base)) {
+      missingCoverage = true;
+      continue;
+    }
+    const live = canonicalModelDimensions(update.previous);
+    if (!sameTouchedValue(base.model_dimensions, live)) {
+      conflicts.push({
+        entity: "variant",
+        id: update.variantId,
+        field: "model_dimensions",
+        expected: base.model_dimensions,
+        live,
+      });
     }
   }
 
@@ -525,6 +562,15 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
     const collectionUpdates = Array.isArray(payload.collectionUpdates) ? payload.collectionUpdates : [];
     const membershipAdds = Array.isArray(payload.membershipAdds) ? payload.membershipAdds : [];
     const membershipRemoves = Array.isArray(payload.membershipRemoves) ? payload.membershipRemoves : [];
+    const productStatusTransitions = Array.isArray(payload.productStatusTransitions)
+      ? payload.productStatusTransitions
+      : [];
+    const variantStatusTransitions = Array.isArray(payload.variantStatusTransitions)
+      ? payload.variantStatusTransitions
+      : [];
+    const variantModelDimensions = Array.isArray(payload.variantModelDimensions)
+      ? payload.variantModelDimensions
+      : [];
     const isNoop = (
       productUpdates.length
       + variantUpdates.length
@@ -534,6 +580,9 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
       + collectionUpdates.length
       + membershipAdds.length
       + membershipRemoves.length
+      + productStatusTransitions.length
+      + variantStatusTransitions.length
+      + variantModelDimensions.length
     ) === 0;
     const status = isNoop ? "noop" : "accepted";
     const plan: Record<string, unknown> = {
@@ -545,7 +594,25 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
       membershipAdds,
       membershipRemoves,
     };
-    if (payload.planVersion === 5 || payload.planVersion === 4 || collectionCreates.length > 0) {
+    if (payload.planVersion === 8) {
+      plan.productCreates = productCreates;
+      plan.variantCreates = variantCreates;
+      plan.collectionCreates = collectionCreates;
+      plan.productStatusTransitions = productStatusTransitions;
+      plan.variantStatusTransitions = variantStatusTransitions;
+      plan.variantModelDimensions = variantModelDimensions;
+    } else if (payload.planVersion === 7) {
+      plan.productCreates = productCreates;
+      plan.variantCreates = variantCreates;
+      plan.collectionCreates = collectionCreates;
+      plan.productStatusTransitions = productStatusTransitions;
+      plan.variantStatusTransitions = variantStatusTransitions;
+    } else if (payload.planVersion === 6) {
+      plan.productCreates = productCreates;
+      plan.variantCreates = variantCreates;
+      plan.collectionCreates = collectionCreates;
+      plan.productStatusTransitions = productStatusTransitions;
+    } else if (payload.planVersion === 5 || payload.planVersion === 4 || collectionCreates.length > 0) {
       plan.productCreates = productCreates;
       plan.variantCreates = variantCreates;
       plan.collectionCreates = collectionCreates;
@@ -692,11 +759,17 @@ export async function publishPartnerPatchDraft(input: Readonly<{
     return plannerRejectBody(plan, merchantMessageForPublishErrorCode("PLANNER_ISSUE"), "PLANNER_ISSUE");
   }
 
-  const unsupported = partnerRuntimePlanNeedsV5(plan)
-    ? g5c1UnsupportedPublishOperations(plan)
-    : partnerRuntimePlanNeedsV4(plan)
-      ? g4cUnsupportedPublishOperations(plan)
-      : g3UnsupportedPublishOperations(plan);
+  const unsupported = partnerRuntimePlanNeedsV8(plan)
+    ? g8UnsupportedPublishOperations(plan)
+    : partnerRuntimePlanNeedsV7(plan)
+    ? g7UnsupportedPublishOperations(plan)
+    : partnerRuntimePlanNeedsV6(plan)
+      ? g6UnsupportedPublishOperations(plan)
+      : partnerRuntimePlanNeedsV5(plan)
+        ? g5c1UnsupportedPublishOperations(plan)
+        : partnerRuntimePlanNeedsV4(plan)
+          ? g4cUnsupportedPublishOperations(plan)
+          : g3UnsupportedPublishOperations(plan);
   if (unsupported.length > 0) {
     await recordRejected({
       audit: input.audit,
@@ -768,13 +841,19 @@ export async function publishPartnerPatchDraft(input: Readonly<{
     });
   }
 
-  const serialized = plan.noOp
-    ? { ok: true as const, payload: emptyRuntimeApplyPayload(partnerId) }
-    : partnerRuntimePlanNeedsV5(plan)
-      ? toRuntimeApplyPayloadV5(plan)
-      : partnerRuntimePlanNeedsV4(plan)
-        ? toRuntimeApplyPayloadV4(plan)
-        : toRuntimeApplyPayload(plan);
+  const serialized = partnerRuntimePlanNeedsV8(plan)
+    ? toRuntimeApplyPayloadV8(plan)
+    : partnerRuntimePlanNeedsV7(plan)
+    ? toRuntimeApplyPayloadV7(plan)
+    : partnerRuntimePlanNeedsV6(plan)
+      ? toRuntimeApplyPayloadV6(plan)
+      : plan.noOp
+      ? { ok: true as const, payload: emptyRuntimeApplyPayload(partnerId) }
+      : partnerRuntimePlanNeedsV5(plan)
+        ? toRuntimeApplyPayloadV5(plan)
+        : partnerRuntimePlanNeedsV4(plan)
+          ? toRuntimeApplyPayloadV4(plan)
+          : toRuntimeApplyPayload(plan);
   if (!serialized.ok) {
     await recordRejected({
       audit: input.audit,
