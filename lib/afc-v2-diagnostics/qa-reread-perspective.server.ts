@@ -6,7 +6,7 @@ import {
   type ProductionAfcAuth,
 } from "@/lib/afc-v2-production/production-http";
 
-import type { AfcQaCapabilityEnv } from "./qa-capability.server";
+import type { AfcQaAccessConfig } from "./qa-access";
 import {
   authorizeAfcQaReadyRerun,
   AfcQaReadyRerunGenerationError,
@@ -92,7 +92,7 @@ export async function handleAfcQaPerspectiveRereadPost(args: {
   startProductionAnalysis: (
     input: AfcQaPerspectiveRereadStartInput,
   ) => Promise<AfcQaPerspectiveRereadAnalysisResult>;
-  env?: AfcQaCapabilityEnv | NodeJS.ProcessEnv;
+  qaAccess?: AfcQaAccessConfig;
   store?: AfcQaReadyRerunStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: AfcQaReadyRerunOptions["retrySignal"];
@@ -114,7 +114,7 @@ export async function handleAfcQaPerspectiveRereadPost(args: {
         generationId: record.generationId,
       },
       {
-        env: args.env ?? process.env,
+        qaAccess: args.qaAccess,
         store: args.store,
         retryStore: args.retryStore,
         retrySignal: args.retrySignal,

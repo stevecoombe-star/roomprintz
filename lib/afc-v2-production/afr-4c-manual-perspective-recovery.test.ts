@@ -7,15 +7,10 @@ import test from "node:test";
 
 import { freezeAppliedTiledAfcCamera } from "@/app/admin/3d-room-lab/afc-calibrated-camera-authority-freeze";
 import type { AfcSr1LiveAuthoritativeGeometry } from "@/app/admin/3d-room-lab/afc-sr1-live-product-contract";
-import {
-  AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
-  AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
-  AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
-  AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
-} from "@/app/admin/3d-room-lab/research/afc-sr1-tile-grid-scaffold";
 import { buildEmptyRoomObservationEvidence } from "@/app/admin/3d-room-lab-v2/empty-room-observation-contract";
 import { buildUnavailableMetricRoomPriorReceipt } from "@/app/admin/3d-room-lab-v2/metric-room-prior-contract";
 import type { AfcDiagnosticsAdminAuth } from "@/lib/afc-v2-diagnostics/admin-auth.server";
+import { afcQaAccessConfig } from "@/lib/afc-v2-diagnostics/qa-access";
 import {
   handleManualPerspectiveRecoveryGet,
   handleManualPerspectiveRecoveryPost,
@@ -286,9 +281,9 @@ function dependencies(
     calls,
     value: {
       authorize: authorize(true),
-      env: options.qa === false
-        ? { VIBODE_AFC_QA_MODE: "off" }
-        : { VIBODE_AFC_QA_MODE: "all" },
+      qaAccess: options.qa === false
+        ? afcQaAccessConfig(false, QA_USER_ID)
+        : afcQaAccessConfig(true, QA_USER_ID),
       store: manualStore(store),
       productionStore: store,
       now: () => "2026-09-30T17:05:00.000Z",

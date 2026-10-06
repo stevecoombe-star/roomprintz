@@ -16,10 +16,8 @@ import {
   type AfcDiagnosticTableClient,
   type AfcDiagnosticWriteQuery,
 } from "./diagnostic-db-client";
-import {
-  resolveAfcQaCapability,
-  type AfcQaCapabilityEnv,
-} from "./qa-capability.server";
+import type { AfcQaAccessConfig } from "./qa-access";
+import { resolveAfcQaCapability } from "./qa-capability.server";
 
 /**
  * AFD-2A Diagnostic Session lifecycle primitive.
@@ -134,7 +132,7 @@ export type AfcDiagnosticDbClient<
 >;
 
 export type AfcDiagnosticSessionLifecycleOptions = {
-  env?: AfcQaCapabilityEnv | NodeJS.ProcessEnv;
+  qaAccess?: AfcQaAccessConfig;
   store?: AfcDiagnosticSessionStore;
 };
 
@@ -495,9 +493,9 @@ export async function ensureAfcDiagnosticSessionMembership(
   options: AfcDiagnosticSessionLifecycleOptions = {},
 ): Promise<AfcDiagnosticMembershipResult> {
   const parsed = parseMembershipInput(input);
-  const capability = resolveAfcQaCapability(
+  const capability = await resolveAfcQaCapability(
     parsed.userId,
-    options.env ?? process.env,
+    options.qaAccess,
   );
   if (!capability.enabled) return { enabled: false };
 

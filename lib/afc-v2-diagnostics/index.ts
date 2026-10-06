@@ -43,7 +43,8 @@ export type {
   AfcQaIssueTaxonomyValidation,
   AfcQaIssueTaxonomyVersion,
 } from "./taxonomy";
-export type { AfcQaCapability, AfcQaMode } from "./qa-capability.server";
+export type { AfcQaCapability } from "./qa-capability.server";
+export type { AfcQaAccessConfig } from "./qa-access";
 export type { AfcDiagnosticMembershipResult } from "./session-lifecycle.server";
 export type { AfcDiagnosticRetryEpisodeSignal } from "./retry-episode-signal.server";
 export type {

@@ -13,13 +13,14 @@ import {
 } from "@/lib/afc-v2-production/production-http";
 
 import {
+  afcQaAccessConfig,
+  type AfcQaAccessConfig,
+} from "./qa-access";
+import {
   freezeAfcQaCapability,
   handleAfcQaCapabilityGet,
-  parseAfcQaMode,
-  parseAfcQaUserIds,
   resolveAfcQaCapability,
-  resolveAfcQaCapabilityForUser,
-  type AfcQaCapabilityEnv,
+  resolveAfcQaCapabilityForConfig,
 } from "./qa-capability.server";
 
 const ROOT = process.cwd();
@@ -46,7 +47,7 @@ function authorized(userId: string): ProductionAfcAuth {
 async function getCapability(args: {
   userId?: string | null;
   url?: string;
-  env?: AfcQaCapabilityEnv;
+  qaAccess?: AfcQaAccessConfig;
 }) {
   return handleAfcQaCapabilityGet({
     request: new Request(
@@ -54,7 +55,7 @@ async function getCapability(args: {
     ),
     authorize: async () =>
       args.userId ? authorized(args.userId) : unauthorized(),
-    env: args.env,
+    qaAccess: args.qaAccess,
   });
 }
 
@@ -62,164 +63,62 @@ async function jsonBody(response: Response) {
   return (await response.json()) as Record<string, unknown>;
 }
 
-test("1) missing mode → off", () => {
-  assert.equal(parseAfcQaMode(undefined), "off");
-});
-
-test("2) empty mode → off", () => {
-  assert.equal(parseAfcQaMode(""), "off");
-  assert.equal(parseAfcQaMode("   "), "off");
-});
-
-test("3) off → off", () => {
-  assert.equal(parseAfcQaMode("off"), "off");
-});
-
-test("4) allowlist → allowlist", () => {
-  assert.equal(parseAfcQaMode("allowlist"), "allowlist");
-});
-
-test("5) all → all", () => {
-  assert.equal(parseAfcQaMode("all"), "all");
-});
-
-test("6) invalid value → off", () => {
-  for (const value of ["enabled", "true", "beta", "foobar", "OFF", "All", "Allowlist"]) {
-    assert.equal(parseAfcQaMode(value), "off", value);
-  }
-});
-
-test("7) whitespace trimmed correctly", () => {
-  assert.equal(parseAfcQaMode("  all  "), "all");
-  assert.equal(parseAfcQaMode("\tallowlist\n"), "allowlist");
-  assert.equal(parseAfcQaMode(" off "), "off");
-});
-
-test("8) valid UUID accepted", () => {
-  const ids = parseAfcQaUserIds(ALLOWLISTED_USER);
-  assert.equal(ids.size, 1);
-  assert.equal(ids.has(ALLOWLISTED_USER), true);
-});
-
-test("9) multiple UUIDs accepted", () => {
-  const ids = parseAfcQaUserIds(`${ALLOWLISTED_USER},${OTHER_USER}`);
-  assert.equal(ids.size, 2);
-  assert.equal(ids.has(ALLOWLISTED_USER), true);
-  assert.equal(ids.has(OTHER_USER), true);
-});
-
-test("10) whitespace trimmed", () => {
-  const ids = parseAfcQaUserIds(` ${ALLOWLISTED_USER} , ${OTHER_USER} `);
-  assert.equal(ids.size, 2);
-  assert.equal(ids.has(ALLOWLISTED_USER), true);
-  assert.equal(ids.has(OTHER_USER), true);
-});
-
-test("11) duplicates de-duplicated", () => {
-  const ids = parseAfcQaUserIds(
-    `${ALLOWLISTED_USER},${ALLOWLISTED_USER.toUpperCase()},${ALLOWLISTED_USER}`,
-  );
-  assert.equal(ids.size, 1);
-  assert.equal(ids.has(ALLOWLISTED_USER), true);
-});
-
-test("12) empty tokens ignored", () => {
-  const ids = parseAfcQaUserIds(`,${ALLOWLISTED_USER},, ,${OTHER_USER},`);
-  assert.equal(ids.size, 2);
-});
-
-test("13) invalid UUID ignored", () => {
-  const ids = parseAfcQaUserIds(
-    `not-a-uuid,admin@example.com,11111111-1111-4111-7111-111111111111,${ALLOWLISTED_USER}`,
-  );
-  assert.equal(ids.size, 1);
-  assert.equal(ids.has(ALLOWLISTED_USER), true);
-});
-
-test("14) missing env → empty set", () => {
-  assert.equal(parseAfcQaUserIds(undefined).size, 0);
-  assert.equal(parseAfcQaUserIds("").size, 0);
-  assert.equal(parseAfcQaUserIds("   ").size, 0);
-});
-
-test("15) off disables allowlisted user", () => {
+test("1) QA mode disabled denies an allowlisted user", () => {
   assert.deepEqual(
-    resolveAfcQaCapabilityForUser({
-      userId: ALLOWLISTED_USER,
-      mode: "off",
-      allowlist: new Set([ALLOWLISTED_USER]),
-    }),
+    resolveAfcQaCapabilityForConfig(
+      ALLOWLISTED_USER,
+      afcQaAccessConfig(false, ALLOWLISTED_USER),
+    ),
     { enabled: false },
   );
 });
 
-test("16) off disables arbitrary user", () => {
+test("2) QA mode enabled allows an allowlisted user", () => {
   assert.deepEqual(
-    resolveAfcQaCapabilityForUser({
-      userId: OTHER_USER,
-      mode: "off",
-      allowlist: new Set([ALLOWLISTED_USER]),
-    }),
-    { enabled: false },
-  );
-});
-
-test("17) all enables authenticated user", () => {
-  assert.deepEqual(
-    resolveAfcQaCapabilityForUser({
-      userId: OTHER_USER,
-      mode: "all",
-      allowlist: new Set(),
-    }),
+    resolveAfcQaCapabilityForConfig(
+      ALLOWLISTED_USER.toUpperCase(),
+      afcQaAccessConfig(true, ALLOWLISTED_USER),
+    ),
     { enabled: true },
   );
 });
 
-test("18) allowlist enables matching user", () => {
+test("3) QA mode enabled denies a user who is not allowlisted", () => {
   assert.deepEqual(
-    resolveAfcQaCapabilityForUser({
-      userId: ALLOWLISTED_USER.toUpperCase(),
-      mode: "allowlist",
-      allowlist: parseAfcQaUserIds(ALLOWLISTED_USER),
-    }),
-    { enabled: true },
-  );
-});
-
-test("19) allowlist disables non-matching user", () => {
-  assert.deepEqual(
-    resolveAfcQaCapabilityForUser({
-      userId: OTHER_USER,
-      mode: "allowlist",
-      allowlist: parseAfcQaUserIds(ALLOWLISTED_USER),
-    }),
+    resolveAfcQaCapabilityForConfig(
+      OTHER_USER,
+      afcQaAccessConfig(true, ALLOWLISTED_USER),
+    ),
     { enabled: false },
   );
 });
 
-test("20) allowlist with empty list disables everyone", () => {
+test("4) enabled mode with an empty allowlist denies everyone", () => {
   assert.deepEqual(
-    resolveAfcQaCapabilityForUser({
-      userId: ALLOWLISTED_USER,
-      mode: "allowlist",
-      allowlist: parseAfcQaUserIds(undefined),
-    }),
-    { enabled: false },
-  );
-  assert.deepEqual(
-    resolveAfcQaCapability(ALLOWLISTED_USER, {
-      VIBODE_AFC_QA_MODE: "allowlist",
-    }),
+    resolveAfcQaCapabilityForConfig(
+      ALLOWLISTED_USER,
+      afcQaAccessConfig(true),
+    ),
     { enabled: false },
   );
 });
 
-test("21) invalid mode disables everyone", () => {
+test("5) invalid user id is denied even when QA mode is enabled", () => {
   assert.deepEqual(
-    resolveAfcQaCapability(ALLOWLISTED_USER, {
-      VIBODE_AFC_QA_MODE: "enabled",
-      VIBODE_AFC_QA_USER_IDS: ALLOWLISTED_USER,
-    }),
+    resolveAfcQaCapabilityForConfig(
+      "not-a-user",
+      afcQaAccessConfig(true, ALLOWLISTED_USER),
+    ),
+    { enabled: false },
+  );
+});
+
+test("6) email is not an authorization identity", () => {
+  assert.deepEqual(
+    resolveAfcQaCapabilityForConfig(
+      "admin@example.com",
+      afcQaAccessConfig(true, ALLOWLISTED_USER),
+    ),
     { enabled: false },
   );
 });
@@ -230,10 +129,10 @@ test("22) admin identity receives no special treatment", () => {
   assert.doesNotMatch(capability, /VIBODE_ADMIN_EMAIL|isAdminEmail|getAuthenticatedAdminUser/);
   assert.doesNotMatch(route, /VIBODE_ADMIN_EMAIL|isAdminEmail|getAuthenticatedAdminUser/);
   assert.deepEqual(
-    resolveAfcQaCapability(ADMIN_SHAPED_USER, {
-      VIBODE_AFC_QA_MODE: "allowlist",
-      VIBODE_AFC_QA_USER_IDS: ALLOWLISTED_USER,
-    }),
+    resolveAfcQaCapabilityForConfig(
+      ADMIN_SHAPED_USER,
+      afcQaAccessConfig(true, ALLOWLISTED_USER),
+    ),
     { enabled: false },
   );
 });
@@ -249,7 +148,7 @@ test("23) partner membership is not consulted", () => {
 
 test("24) unauthenticated request rejected using existing auth semantics", async () => {
   const response = await getCapability({
-    env: { VIBODE_AFC_QA_MODE: "all" },
+    qaAccess: afcQaAccessConfig(true, ALLOWLISTED_USER),
   });
   assert.equal(response.status, 401);
   assert.deepEqual(await jsonBody(response), { error: "Unauthorized." });
@@ -264,10 +163,7 @@ test("24) unauthenticated request rejected using existing auth semantics", async
 test("25) authenticated eligible user → 200 { enabled: true }", async () => {
   const response = await getCapability({
     userId: ALLOWLISTED_USER,
-    env: {
-      VIBODE_AFC_QA_MODE: "allowlist",
-      VIBODE_AFC_QA_USER_IDS: ALLOWLISTED_USER,
-    },
+    qaAccess: afcQaAccessConfig(true, ALLOWLISTED_USER),
   });
   assert.equal(response.status, 200);
   assert.deepEqual(await jsonBody(response), { enabled: true });
@@ -276,10 +172,7 @@ test("25) authenticated eligible user → 200 { enabled: true }", async () => {
 test("26) authenticated ineligible user → 200 { enabled: false }", async () => {
   const response = await getCapability({
     userId: OTHER_USER,
-    env: {
-      VIBODE_AFC_QA_MODE: "allowlist",
-      VIBODE_AFC_QA_USER_IDS: ALLOWLISTED_USER,
-    },
+    qaAccess: afcQaAccessConfig(true, ALLOWLISTED_USER),
   });
   assert.equal(response.status, 200);
   assert.notEqual(response.status, 403);
@@ -290,10 +183,7 @@ test("27) endpoint trusts authenticated user, not request user ID", async () => 
   const response = await getCapability({
     userId: OTHER_USER,
     url: `http://test/api/vibode/afc/qa/capability?userId=${ALLOWLISTED_USER}`,
-    env: {
-      VIBODE_AFC_QA_MODE: "allowlist",
-      VIBODE_AFC_QA_USER_IDS: ALLOWLISTED_USER,
-    },
+    qaAccess: afcQaAccessConfig(true, ALLOWLISTED_USER),
   });
   assert.deepEqual(await jsonBody(response), { enabled: false });
   const capability = source("lib/afc-v2-diagnostics/qa-capability.server.ts");
@@ -305,7 +195,7 @@ test("27) endpoint trusts authenticated user, not request user ID", async () => 
 test("28) response contains only enabled", async () => {
   const response = await getCapability({
     userId: ALLOWLISTED_USER,
-    env: { VIBODE_AFC_QA_MODE: "all" },
+    qaAccess: afcQaAccessConfig(true, ALLOWLISTED_USER),
   });
   const body = await jsonBody(response);
   assert.deepEqual(Object.keys(body), ["enabled"]);
@@ -315,10 +205,7 @@ test("28) response contains only enabled", async () => {
 test("29) no forbidden privacy keys", async () => {
   const response = await getCapability({
     userId: ALLOWLISTED_USER,
-    env: {
-      VIBODE_AFC_QA_MODE: "allowlist",
-      VIBODE_AFC_QA_USER_IDS: `${ALLOWLISTED_USER},${OTHER_USER},${THIRD_USER}`,
-    },
+    qaAccess: afcQaAccessConfig(true, ALLOWLISTED_USER, OTHER_USER, THIRD_USER),
   });
   const body = await jsonBody(response);
   const serialized = JSON.stringify(body);
@@ -389,17 +276,12 @@ test("35) no diagnostic session tables are written", () => {
   assert.doesNotMatch(`${capability}\n${route}`, /\.insert\(|from\("/);
 });
 
-test("36) no new DB migration", () => {
+test("36) durable QA access migration does not encode env authorization", () => {
   const migrations = readdirSync(path.join(ROOT, "supabase/migrations")).filter(
     (name) => name.endsWith(".sql"),
   );
-  assert.ok(
-    !migrations.some((name) => /qa|capability|allowlist/i.test(name)),
-  );
+  assert.ok(migrations.includes("20261005170000_afc_qa_access.sql"));
   for (const name of migrations) {
-    if (name.includes("diagnostic_foundation") || name.includes("engine_fingerprint")) {
-      continue;
-    }
     const sql = source(`supabase/migrations/${name}`);
     assert.doesNotMatch(sql, /VIBODE_AFC_QA_MODE|VIBODE_AFC_QA_USER_IDS/);
   }
@@ -428,18 +310,24 @@ test("38) parent-generation/activation behavior unchanged", () => {
   assert.doesNotMatch(store, /qa-capability|VIBODE_AFC_QA_/);
 });
 
-test("capability off is the default and all enables only authenticated identity", async () => {
+test("disabled configuration denies access and an invalid id stays denied", async () => {
   assert.deepEqual(
-    resolveAfcQaCapability(ALLOWLISTED_USER, {}),
+    await resolveAfcQaCapability(
+      ALLOWLISTED_USER,
+      afcQaAccessConfig(false, ALLOWLISTED_USER),
+    ),
     { enabled: false },
   );
   const enabled = await getCapability({
     userId: OTHER_USER,
-    env: { VIBODE_AFC_QA_MODE: "all" },
+    qaAccess: afcQaAccessConfig(true, OTHER_USER),
   });
   assert.deepEqual(await jsonBody(enabled), { enabled: true });
   assert.deepEqual(
-    resolveAfcQaCapability("not-a-user", { VIBODE_AFC_QA_MODE: "all" }),
+    resolveAfcQaCapabilityForConfig(
+      "not-a-user",
+      afcQaAccessConfig(true, OTHER_USER),
+    ),
     { enabled: false },
   );
 });

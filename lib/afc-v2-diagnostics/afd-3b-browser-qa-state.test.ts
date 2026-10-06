@@ -14,7 +14,7 @@ import {
   AFC_DIAGNOSTIC_SESSION_GENERATION_TABLE,
   AFC_DIAGNOSTIC_SESSION_TABLE,
 } from "./contracts";
-import type { AfcQaCapabilityEnv } from "./qa-capability.server";
+import { afcQaAccessConfig, type AfcQaAccessConfig } from "./qa-access";
 import {
   AFC_GENERATION_TABLE,
   createSupabaseAfcDiagnosticRetryEpisodeStore,
@@ -54,12 +54,9 @@ const PUBLIC_KEYS = [
   "reportGenerationId",
 ] as const;
 
-const QA_ALL: AfcQaCapabilityEnv = { VIBODE_AFC_QA_MODE: "all" };
-const QA_OFF: AfcQaCapabilityEnv = { VIBODE_AFC_QA_MODE: "off" };
-const QA_ALLOW: AfcQaCapabilityEnv = {
-  VIBODE_AFC_QA_MODE: "allowlist",
-  VIBODE_AFC_QA_USER_IDS: USER_A,
-};
+const QA_ALL: AfcQaAccessConfig = afcQaAccessConfig(true, USER_A, USER_B);
+const QA_OFF: AfcQaAccessConfig = afcQaAccessConfig(false, USER_A, USER_B);
+const QA_ALLOW: AfcQaAccessConfig = afcQaAccessConfig(true, USER_A);
 
 type RoomRow = { id: string; user_id: string };
 
@@ -441,7 +438,7 @@ async function jsonBody(response: Response) {
 async function getState(args: {
   userId?: string | null;
   url?: string;
-  env?: AfcQaCapabilityEnv;
+  qaAccess?: AfcQaAccessConfig;
   store?: AfcDiagnosticBrowserQaStateStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof import("./retry-episode-signal.server").getAfcDiagnosticRetryEpisodeSignal;
@@ -452,7 +449,7 @@ async function getState(args: {
     ),
     authorize: async () =>
       args.userId ? authorized(args.userId) : unauthorized(),
-    env: args.env ?? QA_ALL,
+    qaAccess: args.qaAccess ?? QA_ALL,
     store: args.store,
     retryStore: args.retryStore,
     retrySignal: args.retrySignal,
@@ -502,7 +499,7 @@ test("1) QA off returns disabled state without diagnostic reads", async () => {
   });
   const response = await getState({
     userId: USER_A,
-    env: QA_OFF,
+    qaAccess: QA_OFF,
     store: throwingStateStore(),
     retryStore: throwingRetryStore(),
   });
@@ -514,7 +511,7 @@ test("2) QA allowlisted user is enabled", async () => {
   const { store, retryStore } = harness();
   const response = await getState({
     userId: USER_A,
-    env: QA_ALLOW,
+    qaAccess: QA_ALLOW,
     store,
     retryStore,
   });
@@ -524,7 +521,7 @@ test("2) QA allowlisted user is enabled", async () => {
 test("3) non-allowlisted user receives disabled state", async () => {
   const response = await getState({
     userId: USER_B,
-    env: QA_ALLOW,
+    qaAccess: QA_ALLOW,
     store: throwingStateStore(),
     retryStore: throwingRetryStore(),
   });
@@ -593,7 +590,7 @@ test("7) room owned by another user is the same privacy-safe 404", async () => {
     () =>
       getAfcDiagnosticBrowserQaState(
         { userId: USER_A, roomId: ROOM_B },
-        { store, env: QA_ALL, retryStore: throwingRetryStore() },
+        { store, qaAccess: QA_ALL, retryStore: throwingRetryStore() },
       ),
     (error: unknown) =>
       error instanceof AfcDiagnosticBrowserQaStateRoomError &&
@@ -794,7 +791,7 @@ test("multiple open Sessions are an integrity failure, not latest-created_at", a
     () =>
       getAfcDiagnosticBrowserQaState(
         { userId: USER_A, roomId: ROOM_A },
-        { store, retryStore, env: QA_ALL },
+        { store, retryStore, qaAccess: QA_ALL },
       ),
     (error: unknown) =>
       error instanceof AfcDiagnosticBrowserQaStateIntegrityError &&
@@ -881,7 +878,7 @@ test("reads are compact, Case-free, and mutation-free", async () => {
   });
   await getAfcDiagnosticBrowserQaState(
     { userId: USER_A, roomId: ROOM_A },
-    { store, retryStore, env: QA_ALL },
+    { store, retryStore, qaAccess: QA_ALL },
   );
   assert.equal(db.ops.every((op) => op.action === "select"), true);
   assert.equal(

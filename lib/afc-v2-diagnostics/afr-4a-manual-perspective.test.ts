@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import type { AfcDiagnosticsAdminAuth } from "./admin-auth.server";
+import { afcQaAccessConfig } from "./qa-access";
 import {
   canonicalWorldRectangle,
   imagePointsEqual,
@@ -294,7 +295,7 @@ test("GET does not write, and a non-QA caller receives no floor geometry", async
     dependencies: {
       authorize: authorize(true),
       store,
-      env: { VIBODE_AFC_QA_MODE: "off" },
+      qaAccess: afcQaAccessConfig(false, USER_ID),
     },
   });
   assert.equal(denied.status, 403);
@@ -323,7 +324,7 @@ test("apply persists a manual record and leaves automatic evidence in place", as
     dependencies: {
       authorize: authorize(true),
       store,
-      env: { VIBODE_AFC_QA_MODE: "all" },
+      qaAccess: afcQaAccessConfig(true, USER_ID),
       now: () => "2026-09-30T00:00:00.000Z",
     },
   });
@@ -376,7 +377,7 @@ test("an unrealizable apply does not replace the automatic perspective", async (
     dependencies: {
       authorize: authorize(true),
       store,
-      env: { VIBODE_AFC_QA_MODE: "all" },
+      qaAccess: afcQaAccessConfig(true, USER_ID),
     },
   });
   assert.equal(response.status, 409);
@@ -410,7 +411,7 @@ test("effective walls and furniture stay on the manual camera's floor", async ()
     dependencies: {
       authorize: authorize(true),
       store,
-      env: { VIBODE_AFC_QA_MODE: "all" },
+      qaAccess: afcQaAccessConfig(true, USER_ID),
       now: () => "2026-09-30T00:00:00.000Z",
     },
   });
@@ -533,7 +534,7 @@ test("a failed generation with a frame opens a diagnostic bootstrap and cannot d
     dependencies: {
       authorize: authorize(true),
       store,
-      env: { VIBODE_AFC_QA_MODE: "all" },
+      qaAccess: afcQaAccessConfig(true, USER_ID),
     },
   });
   assert.equal(response.status, 200);
@@ -589,7 +590,7 @@ test("a failed generation with a frame opens a diagnostic bootstrap and cannot d
     dependencies: {
       authorize: authorize(true),
       store,
-      env: { VIBODE_AFC_QA_MODE: "all" },
+      qaAccess: afcQaAccessConfig(true, USER_ID),
     },
   });
   assert.equal(post.status, 409);
@@ -612,7 +613,7 @@ test("a generation with no image frame keeps Manual Perspective unavailable", as
     dependencies: {
       authorize: authorize(true),
       store,
-      env: { VIBODE_AFC_QA_MODE: "all" },
+      qaAccess: afcQaAccessConfig(true, USER_ID),
     },
   });
   assert.equal(response.status, 200);
@@ -650,7 +651,7 @@ test("a ready authority with no source quad can bootstrap onto the existing prod
     dependencies: {
       authorize: authorize(true),
       store,
-      env: { VIBODE_AFC_QA_MODE: "all" },
+      qaAccess: afcQaAccessConfig(true, USER_ID),
       now: () => "2026-09-30T00:00:00.000Z",
     },
   });

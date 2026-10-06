@@ -15,7 +15,7 @@ import {
   AFC_DIAGNOSTIC_SESSION_GENERATION_TABLE,
   AFC_DIAGNOSTIC_SESSION_TABLE,
 } from "./contracts";
-import type { AfcQaCapabilityEnv } from "./qa-capability.server";
+import { afcQaAccessConfig, type AfcQaAccessConfig } from "./qa-access";
 import {
   AFC_GENERATION_TABLE,
   createSupabaseAfcDiagnosticRetryEpisodeStore,
@@ -62,12 +62,9 @@ const AFD3A_MIGRATION =
 const AFD1A_MIGRATION =
   "supabase/migrations/20260921120000_vibode_afc_v2_diagnostic_foundation.sql";
 
-const QA_ALL: AfcQaCapabilityEnv = { VIBODE_AFC_QA_MODE: "all" };
-const QA_OFF: AfcQaCapabilityEnv = { VIBODE_AFC_QA_MODE: "off" };
-const QA_ALLOW: AfcQaCapabilityEnv = {
-  VIBODE_AFC_QA_MODE: "allowlist",
-  VIBODE_AFC_QA_USER_IDS: USER_A,
-};
+const QA_ALL: AfcQaAccessConfig = afcQaAccessConfig(true, USER_A, USER_B);
+const QA_OFF: AfcQaAccessConfig = afcQaAccessConfig(false, USER_A, USER_B);
+const QA_ALLOW: AfcQaAccessConfig = afcQaAccessConfig(true, USER_A);
 
 type RoomRow = {
   id: string;
@@ -501,7 +498,7 @@ async function submit(
   store: AfcDiagnosticTesterCaseStore,
   retryStore: AfcDiagnosticRetryEpisodeStore,
   input: Partial<AfcDiagnosticTesterCaseSubmitInput> = {},
-  env: AfcQaCapabilityEnv = QA_ALL,
+  qaAccess: AfcQaAccessConfig = QA_ALL,
 ) {
   return submitAfcDiagnosticTesterCase(
     {
@@ -512,7 +509,7 @@ async function submit(
       trigger: "manual_report",
       ...input,
     },
-    { store, retryStore, env },
+    { store, retryStore, qaAccess },
   );
 }
 
@@ -530,7 +527,7 @@ function authorized(userId: string): ProductionAfcAuth {
 async function postCase(args: {
   userId?: string | null;
   body?: unknown;
-  env?: AfcQaCapabilityEnv;
+  qaAccess?: AfcQaAccessConfig;
   store?: AfcDiagnosticTesterCaseStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
 }) {
@@ -552,7 +549,7 @@ async function postCase(args: {
     }),
     authorize: async () =>
       args.userId ? authorized(args.userId) : unauthorized(),
-    env: args.env ?? QA_ALL,
+    qaAccess: args.qaAccess ?? QA_ALL,
     store: args.store,
     retryStore: args.retryStore,
   });
@@ -685,7 +682,7 @@ test("10) browser cannot choose Session", async () => {
       trigger: "manual_report",
       sessionId: SESSION_B,
     } as never,
-    { store, retryStore, env: QA_ALL },
+    { store, retryStore, qaAccess: QA_ALL },
   );
   assert.equal(insertedCase(db).session_id, SESSION_A);
   assert.notEqual(insertedCase(db).session_id, SESSION_B);
@@ -792,7 +789,7 @@ test("19) machine_status_snapshot server-derived", async () => {
       trigger: "manual_report",
       machineStatusSnapshot: "failed",
     } as never,
-    { store, retryStore, env: QA_ALL },
+    { store, retryStore, qaAccess: QA_ALL },
   );
   assert.equal(insertedCase(db).machine_status_snapshot, "ready");
 });
@@ -896,7 +893,7 @@ test("29) taxonomy version server-fixed to v1", async () => {
       trigger: "manual_report",
       taxonomyVersion: "afc-qa-issue-taxonomy/v2",
     } as never,
-    { store, retryStore, env: QA_ALL },
+    { store, retryStore, qaAccess: QA_ALL },
   );
   assert.equal(insertedCase(db).taxonomy_version, AFC_QA_ISSUE_TAXONOMY_VERSION);
 });
@@ -1046,7 +1043,7 @@ test("38) identity snapshot built only from server evidence", async () => {
       trigger: "manual_report",
       originalIdentity: { decodedWidth: 1, mimeType: "image/gif" },
     } as never,
-    { store, retryStore, env: QA_ALL },
+    { store, retryStore, qaAccess: QA_ALL },
   );
   assert.deepEqual(insertedCase(db).original_identity, {
     decodedWidth: 1200,
@@ -1070,7 +1067,7 @@ test("39) browser cannot override original sha/identity", async () => {
       originalSha256: SHA_B,
       originalIdentity: { baseAssetId: ASSET_ROOM },
     } as never,
-    { store, retryStore, env: QA_ALL },
+    { store, retryStore, qaAccess: QA_ALL },
   );
   assert.equal(insertedCase(db).original_sha256, SHA_A);
   assert.equal(
@@ -1410,7 +1407,7 @@ test("public POST maps errors without leaking internals", async () => {
 
   const qaOff = await postCase({
     userId: USER_A,
-    env: QA_OFF,
+    qaAccess: QA_OFF,
     store,
     retryStore,
   });

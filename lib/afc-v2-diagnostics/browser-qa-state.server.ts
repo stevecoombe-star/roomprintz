@@ -15,10 +15,8 @@ import {
   type AfcDiagnosticSelectHead,
   type AfcDiagnosticTableClient,
 } from "./diagnostic-db-client";
-import {
-  resolveAfcQaCapability,
-  type AfcQaCapabilityEnv,
-} from "./qa-capability.server";
+import type { AfcQaAccessConfig } from "./qa-access";
+import { resolveAfcQaCapability } from "./qa-capability.server";
 import {
   getAfcDiagnosticRetryEpisodeSignal,
   type AfcDiagnosticRetryEpisodeSignal,
@@ -77,7 +75,7 @@ export type AfcDiagnosticBrowserQaStateDbClient<
 > = AfcDiagnosticTableClient<AfcDiagnosticSelectHead<S>>;
 
 export type AfcDiagnosticBrowserQaStateOptions = {
-  env?: AfcQaCapabilityEnv | NodeJS.ProcessEnv;
+  qaAccess?: AfcQaAccessConfig;
   store?: AfcDiagnosticBrowserQaStateStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
@@ -279,9 +277,9 @@ export async function getAfcDiagnosticBrowserQaState(
 ): Promise<AfcDiagnosticBrowserQaState> {
   const userId = requireUuid(input.userId, "invalid_user_id", "userId");
   const roomId = requireUuid(input.roomId, "invalid_room_id", "roomId");
-  const capability = resolveAfcQaCapability(
+  const capability = await resolveAfcQaCapability(
     userId,
-    options.env ?? process.env,
+    options.qaAccess,
   );
   if (!capability.enabled) return disabledState();
 
@@ -332,7 +330,7 @@ function mapPublicBrowserQaStateError(error: unknown) {
 export async function handleAfcQaBrowserStateGet(args: {
   request: Request;
   authorize: (request: Request) => Promise<ProductionAfcAuth>;
-  env?: AfcQaCapabilityEnv | NodeJS.ProcessEnv;
+  qaAccess?: AfcQaAccessConfig;
   store?: AfcDiagnosticBrowserQaStateStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
@@ -349,7 +347,7 @@ export async function handleAfcQaBrowserStateGet(args: {
     const state = await getAfcDiagnosticBrowserQaState(
       { userId: auth.userId, roomId },
       {
-        env: args.env ?? process.env,
+        qaAccess: args.qaAccess,
         store: args.store,
         retryStore: args.retryStore,
         retrySignal: args.retrySignal,

@@ -14,7 +14,7 @@ import {
   AFC_DIAGNOSTIC_SESSION_GENERATION_TABLE,
   AFC_DIAGNOSTIC_SESSION_TABLE,
 } from "./contracts";
-import type { AfcQaCapabilityEnv } from "./qa-capability.server";
+import { afcQaAccessConfig, type AfcQaAccessConfig } from "./qa-access";
 import {
   AFC_GENERATION_TABLE,
   createSupabaseAfcDiagnosticRetryEpisodeStore,
@@ -63,12 +63,9 @@ const SESSION_A = "aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
 const SHA_A = "a".repeat(64);
 const SHA_B = "b".repeat(64);
 
-const QA_ALL: AfcQaCapabilityEnv = { VIBODE_AFC_QA_MODE: "all" };
-const QA_OFF: AfcQaCapabilityEnv = { VIBODE_AFC_QA_MODE: "off" };
-const QA_ALLOW: AfcQaCapabilityEnv = {
-  VIBODE_AFC_QA_MODE: "allowlist",
-  VIBODE_AFC_QA_USER_IDS: USER_A,
-};
+const QA_ALL: AfcQaAccessConfig = afcQaAccessConfig(true, USER_A, USER_B);
+const QA_OFF: AfcQaAccessConfig = afcQaAccessConfig(false, USER_A, USER_B);
+const QA_ALLOW: AfcQaAccessConfig = afcQaAccessConfig(true, USER_A);
 
 type RoomRow = { id: string; user_id: string };
 
@@ -424,7 +421,7 @@ function recordingStart() {
 async function postRerun(args: {
   userId?: string | null;
   body?: unknown;
-  env?: AfcQaCapabilityEnv;
+  qaAccess?: AfcQaAccessConfig;
   store?: AfcQaReadyRerunStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   start?: (input: AfcQaReadyRerunStartInput) => Promise<AfcQaReadyRerunAnalysisResult>;
@@ -444,7 +441,7 @@ async function postRerun(args: {
       }),
       authorize: async () =>
         args.userId ? authorized(args.userId) : unauthorized(),
-      env: args.env ?? QA_ALL,
+      qaAccess: args.qaAccess ?? QA_ALL,
       store: args.store,
       retryStore: args.retryStore,
       startProductionAnalysis: args.start ?? recorder.start,
@@ -494,7 +491,7 @@ async function authorizeReady(
   store: AfcQaReadyRerunStore,
   retryStore: AfcDiagnosticRetryEpisodeStore,
   input: Partial<{ userId: string; roomId: string; generationId: string }> = {},
-  env: AfcQaCapabilityEnv = QA_ALL,
+  qaAccess: AfcQaAccessConfig = QA_ALL,
 ) {
   return authorizeAfcQaReadyRerun(
     {
@@ -502,7 +499,7 @@ async function authorizeReady(
       roomId: input.roomId ?? ROOM_A,
       generationId: input.generationId ?? GEN_1,
     },
-    { store, retryStore, env },
+    { store, retryStore, qaAccess },
   );
 }
 
@@ -527,7 +524,7 @@ test("1) QA off hides rerun and server rejects without analyze", async () => {
   assert.equal(db.ops.length, 0);
   const posted = await postRerun({
     userId: USER_A,
-    env: QA_OFF,
+    qaAccess: QA_OFF,
     store,
     retryStore,
   });
@@ -830,7 +827,7 @@ test("22-27) production analyze reuse is a wrapper, not a second insert path", (
   assert.doesNotMatch(implementation, /parent_generation_id|lineage_seq/);
   assert.match(
     adapter,
-    /parentGenerationId: parentId/,
+    /parentGenerationId: recovery \? recovery\.sourceGenerationId : parentId/,
   );
   assert.match(adapter, /const parentId = room.currentAfcGenerationId/);
   assert.match(analyze, /onGenerationCreated: attachAfcDiagnosticSessionBestEffort/);
@@ -1030,7 +1027,7 @@ test("allowlisted users can authorize; others cannot", async () => {
     () =>
       authorizeAfcQaReadyRerun(
         { userId: USER_B, roomId: ROOM_A, generationId: GEN_1 },
-        { store, retryStore, env: QA_ALLOW },
+        { store, retryStore, qaAccess: QA_ALLOW },
       ),
     (error: unknown) => error instanceof AfcQaReadyRerunQaDisabledError,
   );
@@ -1041,7 +1038,7 @@ test("invalid user id is a 400 before room reads", async () => {
     () =>
       authorizeAfcQaReadyRerun(
         { userId: "bad", roomId: ROOM_A, generationId: GEN_1 },
-        { env: QA_ALL },
+        { qaAccess: QA_ALL },
       ),
     (error: unknown) =>
       error instanceof AfcQaReadyRerunInputError && error.code === "invalid_user_id",

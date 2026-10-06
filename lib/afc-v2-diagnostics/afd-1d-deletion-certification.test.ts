@@ -3,7 +3,11 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { freezeAfcQaCapability, resolveAfcQaCapability } from "./qa-capability.server";
+import { afcQaAccessConfig } from "./qa-access";
+import {
+  freezeAfcQaCapability,
+  resolveAfcQaCapabilityForConfig,
+} from "./qa-capability.server";
 
 const ROOT = process.cwd();
 const AFD1A_MIGRATION =
@@ -185,7 +189,10 @@ test("32) storage deletion result details are not returned", () => {
 test("33) QA capability endpoint remains { enabled } only", () => {
   assert.deepEqual(freezeAfcQaCapability({ enabled: true }), { enabled: true });
   assert.deepEqual(
-    resolveAfcQaCapability("22222222-2222-4222-8222-222222222222", {}),
+    resolveAfcQaCapabilityForConfig(
+      "22222222-2222-4222-8222-222222222222",
+      afcQaAccessConfig(false),
+    ),
     { enabled: false },
   );
   assert.match(CAPABILITY_ROUTE, /export async function GET/);
@@ -300,9 +307,10 @@ test("QA capability contract is unchanged and stays off by default", () => {
   assert.match(CAPABILITY, /explicit later operational decision/);
   assert.doesNotMatch(CAPABILITY, /VIBODE_AFC_QA_MODE\s*=\s*"allowlist"|mode === "allowlist" && true/);
   assert.equal(
-    resolveAfcQaCapability("22222222-2222-4222-8222-222222222222", {
-      VIBODE_AFC_QA_MODE: "off",
-    }).enabled,
+    resolveAfcQaCapabilityForConfig(
+      "22222222-2222-4222-8222-222222222222",
+      afcQaAccessConfig(false, "22222222-2222-4222-8222-222222222222"),
+    ).enabled,
     false,
   );
 });

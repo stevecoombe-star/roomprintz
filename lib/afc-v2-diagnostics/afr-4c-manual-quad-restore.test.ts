@@ -8,6 +8,7 @@ import {
   type ManualPerspectiveGenerationRow,
   type ManualPerspectiveStore,
 } from "./manual-perspective.server";
+import { afcQaAccessConfig } from "./qa-access";
 import {
   buildManualPerspectiveRecord,
   editManualPerspectivePoint,
@@ -115,7 +116,7 @@ async function readBootstrap(memory: ManualPerspectiveStore) {
         admin: { userId: USER, email: "qa@example.com" },
       }),
       store: memory,
-      env: { VIBODE_AFC_QA_MODE: "all" },
+      qaAccess: afcQaAccessConfig(true, USER),
     },
   });
   assert.equal(response.status, 200);

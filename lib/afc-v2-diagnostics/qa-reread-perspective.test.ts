@@ -9,7 +9,7 @@ import {
 } from "@/lib/afc-v2-production/production-http";
 
 import type { AfcDiagnosticSessionRecord } from "./contracts";
-import type { AfcQaCapabilityEnv } from "./qa-capability.server";
+import { afcQaAccessConfig, type AfcQaAccessConfig } from "./qa-access";
 import {
   handleAfcQaPerspectiveRereadPost,
   type AfcQaPerspectiveRereadAnalysisResult,
@@ -40,12 +40,9 @@ const GEN_PARENT = "12121212-1212-4121-8121-121212121212";
 const SESSION_A = "aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
 const SHA_A = "a".repeat(64);
 
-const QA_ALL: AfcQaCapabilityEnv = { VIBODE_AFC_QA_MODE: "all" };
-const QA_OFF: AfcQaCapabilityEnv = { VIBODE_AFC_QA_MODE: "off" };
-const QA_ALLOW: AfcQaCapabilityEnv = {
-  VIBODE_AFC_QA_MODE: "allowlist",
-  VIBODE_AFC_QA_USER_IDS: USER_A,
-};
+const QA_ALL: AfcQaAccessConfig = afcQaAccessConfig(true, USER_A, USER_B);
+const QA_OFF: AfcQaAccessConfig = afcQaAccessConfig(false, USER_A, USER_B);
+const QA_ALLOW: AfcQaAccessConfig = afcQaAccessConfig(true, USER_A);
 
 function source(relativePath: string) {
   return readFileSync(path.join(ROOT, relativePath), "utf8");
@@ -152,7 +149,7 @@ const READY_CONTEXT = {
 async function postReread(args: {
   userId?: string | null;
   body?: unknown;
-  env?: AfcQaCapabilityEnv;
+  qaAccess?: AfcQaAccessConfig;
   start?: (
     input: AfcQaPerspectiveRereadStartInput,
   ) => Promise<AfcQaPerspectiveRereadAnalysisResult>;
@@ -171,7 +168,7 @@ async function postReread(args: {
     }),
     authorize: async () =>
       args.userId ? authorized(args.userId) : unauthorized(),
-    env: args.env ?? QA_ALL,
+    qaAccess: args.qaAccess ?? QA_ALL,
     store: store(),
     retrySignal: async () => readySignal(),
     startProductionAnalysis: async (input) => {
@@ -346,26 +343,26 @@ test("failure restores the pending control and does not invent a new authority",
 });
 
 test("allowlisted user can re-read; QA-off, other users, and anonymous calls cannot", async () => {
-  const allowed = await postReread({ userId: USER_A, env: QA_ALLOW });
+  const allowed = await postReread({ userId: USER_A, qaAccess: QA_ALLOW });
   assert.equal(allowed.response.status, 200);
   assert.equal(allowed.calls.length, 1);
   assert.equal(allowed.calls[0]?.intent, "reread_perspective");
   assert.equal(allowed.calls[0]?.roomId, ROOM_A);
 
-  const allMode = await postReread({ userId: USER_A, env: QA_ALL });
+  const allMode = await postReread({ userId: USER_A, qaAccess: QA_ALL });
   assert.equal(allMode.response.status, 200);
   assert.equal(allMode.calls[0]?.intent, "reread_perspective");
 
-  const disabled = await postReread({ userId: USER_A, env: QA_OFF });
+  const disabled = await postReread({ userId: USER_A, qaAccess: QA_OFF });
   assert.equal(disabled.response.status, 404);
   assert.deepEqual(await disabled.response.json(), { error: "Not available." });
   assert.equal(disabled.calls.length, 0);
 
-  const stranger = await postReread({ userId: USER_B, env: QA_ALLOW });
+  const stranger = await postReread({ userId: USER_B, qaAccess: QA_ALLOW });
   assert.equal(stranger.response.status, 404);
   assert.equal(stranger.calls.length, 0);
 
-  const anonymous = await postReread({ userId: null, env: QA_ALL });
+  const anonymous = await postReread({ userId: null, qaAccess: QA_ALL });
   assert.equal(anonymous.response.status, 401);
   assert.equal(anonymous.calls.length, 0);
 });
@@ -373,7 +370,7 @@ test("allowlisted user can re-read; QA-off, other users, and anonymous calls can
 test("client intent is ignored and a non-owned room is rejected before analysis", async () => {
   const coerced = await postReread({
     userId: USER_A,
-    env: QA_ALLOW,
+    qaAccess: QA_ALLOW,
     body: {
       roomId: ROOM_A,
       generationId: GEN_1,
@@ -387,7 +384,7 @@ test("client intent is ignored and a non-owned room is rejected before analysis"
 
   const wrongRoom = await postReread({
     userId: USER_A,
-    env: QA_ALL,
+    qaAccess: QA_ALL,
     body: { roomId: ROOM_B, generationId: GEN_1 },
   });
   assert.equal(wrongRoom.response.status, 404);
@@ -399,7 +396,7 @@ test("analysis failure returns the parent generation unchanged", async () => {
   const parentAuthority = { schemaVersion: "afc-v2-production-room-authority/v1", generationId: GEN_1 };
   const failed = await postReread({
     userId: USER_A,
-    env: QA_ALL,
+    qaAccess: QA_ALL,
     start: async () => ({
       status: "failed",
       generationId: GEN_PARENT,
@@ -437,7 +434,10 @@ test("perspective re-read reaches the Lab force-TILED primitive and not the admi
   assert.match(lab, /analyzeAndApply\(\{ forceTiledRegeneration: true \}\)/);
   assert.match(analysis, /executeAfcSr1TiledLiveProductAttempt/);
   assert.match(analysis, /forceTiledRegeneration: input\.forceTiledRegeneration === true/);
-  assert.match(adapter, /const forceTiledRegeneration = intent === "reread_perspective"/);
+  assert.match(
+    adapter,
+    /const forceTiledRegeneration = recovery \? false : intent === "reread_perspective"/,
+  );
   assert.match(adapter, /executeAfcV2Analysis|const analyze = input\.analyze \?\? executeAfcV2Analysis/);
   assert.match(route, /loadOwnedOriginalForProductionAnalysis/);
   assert.match(route, /intent: "reread_perspective"/);

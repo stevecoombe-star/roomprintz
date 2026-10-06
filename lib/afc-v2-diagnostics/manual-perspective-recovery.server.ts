@@ -583,7 +583,7 @@ async function authorizeRecovery(
   const authorize = dependencies?.authorize ?? authorizeAfcDiagnosticsAdmin;
   const auth = await authorize(dependencies?.authorizeOptions);
   if (!auth.ok) return { ok: false, response: auth.response };
-  const capability = resolveAfcQaCapability(auth.admin.userId, dependencies?.env);
+  const capability = await resolveAfcQaCapability(auth.admin.userId, dependencies?.qaAccess);
   if (!capability.enabled) {
     return { ok: false, response: json({ error: "QA access required." }, 403) };
   }

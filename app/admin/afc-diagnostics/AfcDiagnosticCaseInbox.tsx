@@ -13,6 +13,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { closeAfcDiagnosticAdminCase } from "@/lib/afc-v2-diagnostics/admin-case-review.client";
 import AfcImageModelSettings from "./AfcImageModelSettings";
+import AfcQaAccessSettings from "./AfcQaAccessSettings";
 import {
   AFC_DIAGNOSTIC_INBOX_COPY,
   AFC_DIAGNOSTIC_INBOX_ISSUE_OPTIONS,
@@ -594,6 +595,8 @@ export default function AfcDiagnosticCaseInbox() {
             </div>
           </div>
         </header>
+
+        <AfcQaAccessSettings />
 
         <AfcImageModelSettings />
 
