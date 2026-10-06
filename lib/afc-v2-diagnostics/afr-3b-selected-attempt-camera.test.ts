@@ -246,7 +246,9 @@ test("the client parser reads a recorded diagnostic and treats a missing key as 
   assert.equal(parsed?.cameraRealizability?.kind, "recorded");
   if (parsed?.cameraRealizability?.kind !== "recorded") return;
   assert.equal(parsed.cameraRealizability.value.status, "computed");
-  const { cameraRealizability: _omitted, ...historical } = generation(null);
+  const historical = Object.fromEntries(
+    Object.entries(generation(null)).filter(([key]) => key !== "cameraRealizability"),
+  );
   const missing = parseAfcDiagnosticInspectorGenerationEvidence(historical);
   assert.equal(missing?.cameraRealizability, null);
   const unreadable = parseAfcDiagnosticInspectorGenerationEvidence(generation({

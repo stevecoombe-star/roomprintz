@@ -72,10 +72,13 @@ export default function AfcDiagnosticManualPerspective({
   const [session, setSession] = useState<ManualPerspectiveSession | null>(null);
   const [applyMessage, setApplyMessage] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
-  const [recoveryEligible, setRecoveryEligible] = useState(false);
-  const [recoveryReason, setRecoveryReason] = useState<string | null>(null);
+  const [checkedRecoveryEligible, setCheckedRecoveryEligible] = useState(false);
+  const [checkedRecoveryReason, setCheckedRecoveryReason] = useState<string | null>(null);
   const [recovering, setRecovering] = useState(false);
   const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
+  const diagnosticRecovery = view?.runtime === "diagnostic_only";
+  const recoveryEligible = diagnosticRecovery ? checkedRecoveryEligible : false;
+  const recoveryReason = diagnosticRecovery ? checkedRecoveryReason : null;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -96,11 +99,7 @@ export default function AfcDiagnosticManualPerspective({
   }, [caseId, generationId]);
 
   useEffect(() => {
-    if (view?.runtime !== "diagnostic_only") {
-      setRecoveryEligible(false);
-      setRecoveryReason(null);
-      return;
-    }
+    if (!diagnosticRecovery) return;
     const controller = new AbortController();
     fetch(buildManualPerspectiveRecoveryUrl(caseId, generationId), {
       credentials: "same-origin",
@@ -113,18 +112,18 @@ export default function AfcDiagnosticManualPerspective({
       })
       .then((eligibility) => {
         if (controller.signal.aborted) return;
-        setRecoveryEligible(eligibility?.eligible === true);
-        setRecoveryReason(eligibility && !eligibility.eligible ? eligibility.blocker : null);
+        setCheckedRecoveryEligible(eligibility?.eligible === true);
+        setCheckedRecoveryReason(eligibility && !eligibility.eligible ? eligibility.blocker : null);
       })
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         if (!controller.signal.aborted) {
-          setRecoveryEligible(false);
-          setRecoveryReason("Recovery prerequisites could not be checked.");
+          setCheckedRecoveryEligible(false);
+          setCheckedRecoveryReason("Recovery prerequisites could not be checked.");
         }
       });
     return () => controller.abort();
-  }, [caseId, generationId, view?.runtime]);
+  }, [caseId, generationId, diagnosticRecovery]);
 
   useEffect(() => {
     if (!session || session.status !== "solving") return;
@@ -153,19 +152,18 @@ export default function AfcDiagnosticManualPerspective({
     };
   }, [session]);
 
-  const manualModeRef = { current: session?.mode };
+  const manualMode = session?.mode;
   useEffect(() => {
-    if (!editing || !manualModeRef.current) {
+    if (!editing || !manualMode) {
       onRegisterPointEdit(null);
       onRegisterQuadEdit(null);
       return;
     }
-    const mode = manualModeRef.current;
     onRegisterPointEdit((corner, x, y) => {
       setSession((current) =>
         current ? editManualPerspectivePoint(current, corner, x, y) : current,
       );
-    }, mode);
+    }, manualMode);
     onRegisterQuadEdit((points) => {
       setSession((current) =>
         current ? editManualPerspectiveImagePoints(current, points) : current,
@@ -175,7 +173,7 @@ export default function AfcDiagnosticManualPerspective({
       onRegisterPointEdit(null);
       onRegisterQuadEdit(null);
     };
-  }, [editing, onRegisterPointEdit, onRegisterQuadEdit]);
+  }, [editing, manualMode, onRegisterPointEdit, onRegisterQuadEdit]);
 
   const projected = overlayPoints(editing ? session : null, editing ? null : view?.applied ?? null);
   const visibleProjection = hostGeometryVisible ? projected : null;

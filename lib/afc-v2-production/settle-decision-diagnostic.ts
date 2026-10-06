@@ -294,7 +294,7 @@ function parsePolygon(value: unknown): AfcV2SettleDecisionPolygon | null {
 }
 
 function projectBestRejected(
-  candidate: AfcFixedSeamCalibrationResult extends infer _ ? {
+  candidate: {
     ratio: number;
     verticalFovDeg: number;
     confidence: "high" | "low";
@@ -306,7 +306,7 @@ function projectBestRejected(
     atFovMax: boolean;
     atRatioMin: boolean;
     atRatioMax: boolean;
-  } | null : never,
+  } | null,
 ): AfcV2SettleDecisionBestRejectedCandidate | null {
   if (!candidate) return null;
   const ratio = finiteNumber(candidate.ratio);

@@ -331,7 +331,9 @@ test("the client parser reads a recorded diagnostic and treats a missing key as 
   assert.equal(parsed.artifactLineage.value.reader.status, "ok");
   assert.equal(parsed.artifactLineage.value.reader.selectedCore?.i0, -1);
   assert.equal(parsed.artifactLineage.value.empty.source, "durable");
-  const { artifactLineage: _omitted, ...historical } = generation(null);
+  const historical = Object.fromEntries(
+    Object.entries(generation(null)).filter(([key]) => key !== "artifactLineage"),
+  );
   const missing = parseAfcDiagnosticInspectorGenerationEvidence(historical);
   assert.equal(missing?.artifactLineage, null);
   const unreadable = parseAfcDiagnosticInspectorGenerationEvidence(generation({
