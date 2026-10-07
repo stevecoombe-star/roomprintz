@@ -107,11 +107,19 @@ export type AfcQaReadyRerunStartInput = {
   intent: AfcQaReadyRerunIntent;
 };
 
+export type AfcQaCurrentGenerationMembership = (input: {
+  userId: string;
+  roomId: string;
+  generationId: string;
+  qaAccess?: AfcQaAccessConfig;
+}) => Promise<void>;
+
 export type AfcQaReadyRerunOptions = {
   qaAccess?: AfcQaAccessConfig;
   store?: AfcQaReadyRerunStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
+  prepareCurrentGenerationMembership?: AfcQaCurrentGenerationMembership;
 };
 
 export class AfcQaReadyRerunInputError extends Error {
@@ -445,6 +453,15 @@ export async function authorizeAfcQaReadyRerun(
     );
   }
 
+  if (options.prepareCurrentGenerationMembership) {
+    await options.prepareCurrentGenerationMembership({
+      userId,
+      roomId,
+      generationId,
+      qaAccess: options.qaAccess,
+    });
+  }
+
   const membership = await store.findMembershipByGenerationId(generationId);
   if (!membership) {
     throw new AfcQaReadyRerunMembershipError();
@@ -575,6 +592,7 @@ export async function handleAfcQaReadyRerunPost(args: {
   store?: AfcQaReadyRerunStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
+  prepareCurrentGenerationMembership?: AfcQaCurrentGenerationMembership;
 }) {
   const auth = await args.authorize(args.request);
   if (!auth.ok) return auth.response;
@@ -597,6 +615,7 @@ export async function handleAfcQaReadyRerunPost(args: {
         store: args.store,
         retryStore: args.retryStore,
         retrySignal: args.retrySignal,
+        prepareCurrentGenerationMembership: args.prepareCurrentGenerationMembership,
       },
     );
     const result = await args.startProductionAnalysis({

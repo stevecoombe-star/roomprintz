@@ -17,6 +17,7 @@ import {
   AfcQaReadyRerunRoomError,
   AfcQaReadyRerunSessionError,
   AfcQaReadyRerunStoreError,
+  type AfcQaCurrentGenerationMembership,
   type AfcQaReadyRerunAnalysisResult,
   type AfcQaReadyRerunOptions,
   type AfcQaReadyRerunStore,
@@ -96,6 +97,7 @@ export async function handleAfcQaPerspectiveRereadPost(args: {
   store?: AfcQaReadyRerunStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: AfcQaReadyRerunOptions["retrySignal"];
+  prepareCurrentGenerationMembership?: AfcQaCurrentGenerationMembership;
 }) {
   const auth = await args.authorize(args.request);
   if (!auth.ok) return auth.response;
@@ -118,6 +120,7 @@ export async function handleAfcQaPerspectiveRereadPost(args: {
         store: args.store,
         retryStore: args.retryStore,
         retrySignal: args.retrySignal,
+        prepareCurrentGenerationMembership: args.prepareCurrentGenerationMembership,
       } satisfies AfcQaReadyRerunOptions,
     );
     const result = await args.startProductionAnalysis({

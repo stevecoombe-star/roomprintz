@@ -74,11 +74,17 @@ export type AfcDiagnosticBrowserQaStateDbClient<
   S extends BrowserQaFilter<S>,
 > = AfcDiagnosticTableClient<AfcDiagnosticSelectHead<S>>;
 
+export type AfcQaCurrentGenerationLoad = (input: {
+  userId: string;
+  roomId: string;
+}) => Promise<{ generationId: string; status: string } | null>;
+
 export type AfcDiagnosticBrowserQaStateOptions = {
   qaAccess?: AfcQaAccessConfig;
   store?: AfcDiagnosticBrowserQaStateStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
+  loadCurrentGeneration?: AfcQaCurrentGenerationLoad;
 };
 
 export class AfcDiagnosticBrowserQaStateInputError extends Error {
@@ -231,6 +237,29 @@ function idleEnabledState(): AfcDiagnosticBrowserQaState {
   };
 }
 
+async function supplementIdleQaState(
+  state: AfcDiagnosticBrowserQaState,
+  userId: string,
+  roomId: string,
+  loadCurrentGeneration: AfcQaCurrentGenerationLoad | undefined,
+): Promise<AfcDiagnosticBrowserQaState> {
+  if (state.canReport || !loadCurrentGeneration) return state;
+  try {
+    const current = await loadCurrentGeneration({ userId, roomId });
+    const generationId = parseUuid(current?.generationId)?.toLowerCase() ?? null;
+    if (!generationId) return state;
+    if (current?.status !== "ready" && current?.status !== "failed") return state;
+    return {
+      enabled: true,
+      canReport: true,
+      offerFeedback: false,
+      reportGenerationId: generationId,
+    };
+  } catch {
+    return state;
+  }
+}
+
 function isTerminalMachineStatus(status: string): status is "ready" | "failed" {
   return status === "ready" || status === "failed";
 }
@@ -302,19 +331,26 @@ export async function getAfcDiagnosticBrowserQaState(
     userId,
     roomId,
   });
-  if (openSessions.length === 0) return idleEnabledState();
   if (openSessions.length > 1) {
     throw new AfcDiagnosticBrowserQaStateIntegrityError(
       "Multiple open diagnostic sessions for this room.",
     );
   }
 
-  const retrySignal = options.retrySignal ?? getAfcDiagnosticRetryEpisodeSignal;
-  const signal = await retrySignal(
-    { sessionId: openSessions[0]!.id, userId },
-    options.retryStore ? { store: options.retryStore } : {},
+  const diagnostic = openSessions.length === 0
+    ? idleEnabledState()
+    : projectAfcDiagnosticBrowserQaState(
+      await (options.retrySignal ?? getAfcDiagnosticRetryEpisodeSignal)(
+        { sessionId: openSessions[0]!.id, userId },
+        options.retryStore ? { store: options.retryStore } : {},
+      ),
+    );
+  return supplementIdleQaState(
+    diagnostic,
+    userId,
+    roomId,
+    options.loadCurrentGeneration,
   );
-  return projectAfcDiagnosticBrowserQaState(signal);
 }
 
 function mapPublicBrowserQaStateError(error: unknown) {
@@ -334,6 +370,7 @@ export async function handleAfcQaBrowserStateGet(args: {
   store?: AfcDiagnosticBrowserQaStateStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
+  loadCurrentGeneration?: AfcQaCurrentGenerationLoad;
 }) {
   const auth = await args.authorize(args.request);
   if (!auth.ok) return auth.response;
@@ -351,6 +388,7 @@ export async function handleAfcQaBrowserStateGet(args: {
         store: args.store,
         retryStore: args.retryStore,
         retrySignal: args.retrySignal,
+        loadCurrentGeneration: args.loadCurrentGeneration,
       },
     );
     return productionAfcJson(freezeAfcDiagnosticBrowserQaState(state), 200);
