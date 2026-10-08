@@ -13,6 +13,9 @@ export type StageCatalogMode =
 
 export const STAGE_DEFAULT_CATALOG_MODE: StageCatalogMode = "browse";
 
+/** Browse opens unfiltered until the shopper selects a category. */
+export const STAGE_DEFAULT_CATALOG_CATEGORY_ID: string | null = null;
+
 export const STAGE_CATALOG_MODES: readonly Readonly<{
   id: StageCatalogMode;
   label: string;

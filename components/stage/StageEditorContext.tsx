@@ -65,7 +65,10 @@ import {
   selectionTransformSessionAfterChange,
   selectionTransformSessionAfterTranslation,
 } from "@/lib/vibode-stage/selection-transform-session";
-import { STAGE_DEFAULT_CATALOG_MODE } from "@/lib/vibode-stage/types";
+import {
+  STAGE_DEFAULT_CATALOG_CATEGORY_ID,
+  STAGE_DEFAULT_CATALOG_MODE,
+} from "@/lib/vibode-stage/types";
 import { useRoomScale } from "@/lib/vibode-stage/use-room-scale";
 import {
   initialTrustedPathVisible,
@@ -192,7 +195,9 @@ export function StageEditorProvider({
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [catalogMode, setCatalogMode] = useState<StageCatalogMode>(STAGE_DEFAULT_CATALOG_MODE);
   const [catalogQuery, setCatalogQuery] = useState("");
-  const [catalogCategoryId, setCatalogCategoryIdState] = useState<string | null>("living-room");
+  const [catalogCategoryId, setCatalogCategoryIdState] = useState<string | null>(
+    STAGE_DEFAULT_CATALOG_CATEGORY_ID,
+  );
   const [catalogSubcategoryId, setCatalogSubcategoryId] = useState<string | null>(null);
   const [collectionId, setCollectionId] = useState<string | null>("col-vibode-picks");
   const [detailProductId, setDetailProductId] = useState<string | null>(null);
