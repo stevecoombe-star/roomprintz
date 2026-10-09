@@ -1,5 +1,6 @@
 "use client";
 
+import { HarmonizeExportButton } from "@/components/stage/HarmonizeExportButton";
 import { RoomScaleControl } from "@/components/stage/RoomScaleControl";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
 
@@ -10,7 +11,7 @@ export function StageEditorHeader() {
   const stage = useStageEditor();
   return (
     <div
-      className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-800/80 px-3"
+      className="relative z-40 flex h-10 shrink-0 items-center justify-between border-b border-neutral-800/80 px-3"
       data-stage-header="true"
     >
       <button
@@ -54,6 +55,7 @@ export function StageEditorHeader() {
         >
           Summary →
         </button>
+        <HarmonizeExportButton />
       </div>
     </div>
   );
