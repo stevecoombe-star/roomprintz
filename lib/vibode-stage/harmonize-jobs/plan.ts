@@ -63,6 +63,23 @@ export type HarmonizePlanResult =
   | Readonly<{ ok: true; insert: HarmonizeJobInsert }>
   | Readonly<{ ok: false; code: string }>;
 
+export type HarmonizeEnqueueDiagnostic = Readonly<Record<string, string | number | boolean | null>>;
+
+/** Development server log. The HTTP body stays the public error code. */
+export function reportHarmonizeEnqueueMismatch(
+  stage: string,
+  fields: HarmonizeEnqueueDiagnostic,
+): void {
+  if (process.env.NODE_ENV !== "development") return;
+  const safe: Record<string, string | number | boolean | null> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (/prompt|material|text|cookie|authorization|signed|token|secret|byte/i.test(key)) continue;
+    safe[key] = value;
+  }
+  const summary = [`stage=${stage}`, ...Object.entries(safe).map(([key, value]) => `${key}=${value}`)].join(" ");
+  console.info(`[vibode-harmonize] enqueue rejected ${summary}`);
+}
+
 export function readHarmonizeEnqueueIds(
   value: unknown,
 ): Readonly<{ roomId: string; sourceVersionId: string; idempotencyKey: string }> | null {
@@ -97,15 +114,44 @@ export async function planHarmonizeEnqueue(input: Readonly<{
   }
   const image = await inspectComposite(input.composite, parsed.value.compositeSha256);
   if (!image.ok) return image;
+  const note = (stage: string, fields: HarmonizeEnqueueDiagnostic) => {
+    reportHarmonizeEnqueueMismatch(stage, {
+      roomId: parsed.value.roomId,
+      sourceVersionId: parsed.value.sourceVersionId,
+      generationId: parsed.value.generationId,
+      idempotencyKey: parsed.value.idempotencyKey,
+      compositeWidth: image.width,
+      compositeHeight: image.height,
+      ...fields,
+    });
+  };
   if (
     parsed.value.generationId !== trusted.room.currentAfcGenerationId
     || trusted.room.scene.afcGenerationId !== trusted.room.currentAfcGenerationId
   ) {
+    note("generation", {
+      submittedGenerationId: parsed.value.generationId,
+      currentGenerationId: trusted.room.currentAfcGenerationId,
+      sceneGenerationId: trusted.room.scene.afcGenerationId,
+    });
     return { ok: false, code: "stale_generation" };
   }
+  // Effective editor coordinates, the representation harmonizeSceneCanonical documents.
   const objects = authoritativeObjects(parsed.value, trusted.room.scene.objects);
-  if (!objects.ok) return objects;
+  if (!objects.ok) {
+    note("objects", objects.diagnostic.reason === "position"
+      ? {
+          ...objects.diagnostic,
+          effectiveScale: effectiveMetricScale(
+            trusted.room.certifiedMetricScale,
+            trusted.room.roomScaleMultiplier,
+          ),
+        }
+      : objects.diagnostic);
+    return { ok: false, code: "stale_scene" };
+  }
   if (!cameraMatches(parsed.value.camera, trusted.room.camera)) {
+    note("camera", cameraDiagnostic(parsed.value.camera, trusted.room.camera));
     return { ok: false, code: "stale_scene" };
   }
   const expectedEffective = effectiveMetricScale(
@@ -117,10 +163,19 @@ export async function planHarmonizeEnqueue(input: Readonly<{
     || parsed.value.certifiedMetricScale !== trusted.room.certifiedMetricScale
     || parsed.value.effectiveMetricScale !== expectedEffective
   ) {
+    note("scale", {
+      submittedRoomScale: parsed.value.roomScaleMultiplier,
+      trustedRoomScale: trusted.room.roomScaleMultiplier,
+      submittedCertifiedScale: parsed.value.certifiedMetricScale,
+      trustedCertifiedScale: trusted.room.certifiedMetricScale,
+      submittedEffectiveScale: parsed.value.effectiveMetricScale,
+      trustedEffectiveScale: expectedEffective,
+    });
     return { ok: false, code: "stale_scene" };
   }
   const backgroundSha256 = await sha256HexBytes(trusted.room.background);
   if (backgroundSha256 !== parsed.value.backgroundSha256) {
+    note("background", { hashMatch: false });
     return { ok: false, code: "stale_background" };
   }
   const resolved = resolveHarmonizeMaterials({
@@ -136,6 +191,7 @@ export async function planHarmonizeEnqueue(input: Readonly<{
     secondaryProvenance: object.secondary.provenance,
   }));
   if (!sameMaterials(materials, parsed.value.materials)) {
+    note("materials", materialDiagnostic(materials, parsed.value.materials));
     return { ok: false, code: "stale_materials" };
   }
   const assembled = assembleHarmonizePrompt({
@@ -143,9 +199,15 @@ export async function planHarmonizeEnqueue(input: Readonly<{
     camera: parsed.value.camera,
     catalog: trusted.room.catalog,
   });
-  if (!assembled.text) return { ok: false, code: "stale_prompt" };
+  if (!assembled.text) {
+    note("prompt", { assembled: false });
+    return { ok: false, code: "stale_prompt" };
+  }
   const promptSha256 = await sha256HexBytes(new TextEncoder().encode(assembled.text));
-  if (promptSha256 !== parsed.value.promptSha256) return { ok: false, code: "stale_prompt" };
+  if (promptSha256 !== parsed.value.promptSha256) {
+    note("prompt", { assembled: true, hashMatch: false });
+    return { ok: false, code: "stale_prompt" };
+  }
   const sceneCanonical = harmonizeSceneCanonical({
     generationId: trusted.room.currentAfcGenerationId,
     roomScaleMultiplier: trusted.room.roomScaleMultiplier,
@@ -157,6 +219,7 @@ export async function planHarmonizeEnqueue(input: Readonly<{
   });
   const sceneSnapshotSha256 = await sha256HexBytes(new TextEncoder().encode(sceneCanonical));
   if (sceneSnapshotSha256 !== parsed.value.sceneSnapshotSha256) {
+    note("scene_hash", { hashMatch: false });
     return { ok: false, code: "stale_scene" };
   }
   const requestSha256 = await sha256HexBytes(new TextEncoder().encode(canonicalJson({
@@ -312,26 +375,43 @@ function authoritativeObjects(
       unmountedObjectIds: readonly string[];
       uniformScales: readonly Readonly<{ objectId: string; uniformScale: number }>[];
     }>
-  | Readonly<{ ok: false; code: "stale_scene" }> {
+  | Readonly<{ ok: false; code: "stale_scene"; diagnostic: HarmonizeEnqueueDiagnostic }> {
   const saved = new Map(sceneObjects.map((object) => [object.objectId, object]));
   const mountedIds = submission.objects.map((entry) => entry.object.objectId);
-  if (new Set(mountedIds).size !== mountedIds.length) return { ok: false, code: "stale_scene" };
+  if (new Set(mountedIds).size !== mountedIds.length) {
+    return sceneReject({ reason: "duplicate_mounted_ids" });
+  }
   const mounted = new Set(mountedIds);
   const unmounted = new Set(submission.unmountedObjectIds);
-  if (unmounted.size !== submission.unmountedObjectIds.length) return { ok: false, code: "stale_scene" };
-  for (const id of mounted) {
-    if (unmounted.has(id)) return { ok: false, code: "stale_scene" };
+  if (unmounted.size !== submission.unmountedObjectIds.length) {
+    return sceneReject({ reason: "duplicate_unmounted_ids" });
   }
-  if (mounted.size + unmounted.size !== saved.size) return { ok: false, code: "stale_scene" };
+  for (const id of mounted) {
+    if (unmounted.has(id)) return sceneReject({ reason: "mounted_and_unmounted", objectId: id });
+  }
+  if (mounted.size + unmounted.size !== saved.size) {
+    return sceneReject({
+      reason: "membership_count",
+      submittedCount: mounted.size + unmounted.size,
+      savedCount: saved.size,
+    });
+  }
   for (const id of [...mounted, ...unmounted]) {
-    if (!saved.has(id)) return { ok: false, code: "stale_scene" };
+    if (!saved.has(id)) return sceneReject({ reason: "unknown_object", objectId: id });
   }
   const rebuilt: HarmonizeExportObject[] = [];
   const uniformScales: Array<{ objectId: string; uniformScale: number }> = [];
   for (const entry of submission.objects) {
     const sceneObject = saved.get(entry.object.objectId);
     if (!sceneObject || !sameObject(sceneObject, entry.object, entry.uniformScale)) {
-      return { ok: false, code: "stale_scene" };
+      const reason = sceneObject
+        ? objectMismatchField(sceneObject, entry.object, entry.uniformScale) ?? "object_field"
+        : "missing_object";
+      return sceneReject(
+        reason === "position" && sceneObject
+          ? positionMismatchDiagnostic(sceneObject, entry.object)
+          : { reason, objectId: entry.object.objectId },
+      );
     }
     rebuilt.push(harmonizeExportObject({
       objectId: sceneObject.objectId,
@@ -356,7 +436,7 @@ function authoritativeObjects(
   }
   for (const id of submission.unmountedObjectIds) {
     const sceneObject = saved.get(id);
-    if (!sceneObject) return { ok: false, code: "stale_scene" };
+    if (!sceneObject) return sceneReject({ reason: "missing_unmounted_object", objectId: id });
   }
   return {
     ok: true,
@@ -364,6 +444,46 @@ function authoritativeObjects(
     unmountedObjectIds: [...submission.unmountedObjectIds].sort((left, right) => left < right ? -1 : left > right ? 1 : 0),
     uniformScales,
   };
+}
+
+function sceneReject(diagnostic: HarmonizeEnqueueDiagnostic) {
+  return { ok: false as const, code: "stale_scene" as const, diagnostic };
+}
+
+function positionMismatchDiagnostic(
+  sceneObject: SceneObjectDefinition,
+  submitted: HarmonizeExportObject,
+): HarmonizeEnqueueDiagnostic {
+  const trusted = sceneObject.transform.position;
+  const sent = submitted.positionM;
+  return {
+    reason: "position",
+    objectId: sceneObject.objectId,
+    submittedX: sent.x,
+    submittedY: sent.y,
+    submittedZ: sent.z,
+    trustedX: trusted.x,
+    trustedY: trusted.y,
+    trustedZ: trusted.z,
+    deltaX: sent.x - trusted.x,
+    deltaY: sent.y - trusted.y,
+    deltaZ: sent.z - trusted.z,
+  };
+}
+
+function objectMismatchField(
+  sceneObject: SceneObjectDefinition,
+  submitted: HarmonizeExportObject,
+  uniformScale: number,
+): string | null {
+  if (sceneObject.assetId !== submitted.assetId) return "assetId";
+  if ((sceneObject.productId ?? null) !== submitted.productId) return "productId";
+  if ((sceneObject.variantId ?? null) !== submitted.variantId) return "variantId";
+  if ((sceneObject.userSizeMultiplier ?? 1) !== submitted.userSizeMultiplier) return "userSizeMultiplier";
+  if (sceneObject.transform.uniformScale !== uniformScale) return "uniformScale";
+  if (!sameVec(sceneObject.transform.position, submitted.positionM)) return "position";
+  if (!sameVec(sceneObject.transform.rotationDeg, submitted.rotationDeg)) return "rotation";
+  return null;
 }
 
 function sameObject(
@@ -391,6 +511,73 @@ function cameraMatches(camera: HarmonizeExportCamera, trusted: HarmonizeTrustedC
     && sameVec(camera.pose.position, trusted.pose.position)
     && sameVec(camera.pose.lookAt, trusted.pose.lookAt)
     && sameVec(camera.pose.up, trusted.pose.up);
+}
+
+function cameraDiagnostic(
+  camera: HarmonizeExportCamera,
+  trusted: HarmonizeTrustedCamera,
+): HarmonizeEnqueueDiagnostic {
+  const fields: Record<string, string | number | boolean | null> = {};
+  if (camera.projection !== "frozen-production-perspective") fields.projection = camera.projection;
+  if (camera.verticalFovDeg !== trusted.verticalFovDeg) {
+    fields.submittedFov = camera.verticalFovDeg;
+    fields.trustedFov = trusted.verticalFovDeg;
+  }
+  if (camera.near !== AFC_V2_RUNTIME_CAMERA_NEAR) fields.submittedNear = camera.near;
+  if (camera.far !== AFC_V2_RUNTIME_CAMERA_FAR) fields.submittedFar = camera.far;
+  if (camera.frame.width !== trusted.frame.width || camera.frame.height !== trusted.frame.height) {
+    fields.submittedFrameWidth = camera.frame.width;
+    fields.submittedFrameHeight = camera.frame.height;
+    fields.trustedFrameWidth = trusted.frame.width;
+    fields.trustedFrameHeight = trusted.frame.height;
+  }
+  if (!close(camera.aspect, trusted.frame.width / trusted.frame.height)) {
+    fields.submittedAspect = camera.aspect;
+    fields.trustedAspect = trusted.frame.width / trusted.frame.height;
+  }
+  const axes = ["position", "lookAt", "up"] as const;
+  for (const axis of axes) {
+    if (sameVec(camera.pose[axis], trusted.pose[axis])) continue;
+    fields[`submitted${axis}X`] = camera.pose[axis].x;
+    fields[`submitted${axis}Y`] = camera.pose[axis].y;
+    fields[`submitted${axis}Z`] = camera.pose[axis].z;
+    fields[`trusted${axis}X`] = trusted.pose[axis].x;
+    fields[`trusted${axis}Y`] = trusted.pose[axis].y;
+    fields[`trusted${axis}Z`] = trusted.pose[axis].z;
+  }
+  return fields;
+}
+
+function materialDiagnostic(
+  server: readonly HarmonizeMaterialDescriptor[],
+  client: readonly HarmonizeMaterialDescriptor[],
+): HarmonizeEnqueueDiagnostic {
+  if (server.length !== client.length) {
+    return { reason: "count", serverCount: server.length, clientCount: client.length };
+  }
+  const byId = new Map(client.map((item) => [item.objectId, item]));
+  for (const item of server) {
+    const other = byId.get(item.objectId);
+    if (!other) return { reason: "missing_object", objectId: item.objectId };
+    if (
+      other.primaryProvenance !== item.primaryProvenance
+      || other.secondaryProvenance !== item.secondaryProvenance
+      || other.primaryText !== item.primaryText
+      || other.secondaryText !== item.secondaryText
+    ) {
+      return {
+        reason: "descriptor",
+        objectId: item.objectId,
+        serverPrimaryProvenance: item.primaryProvenance,
+        clientPrimaryProvenance: other.primaryProvenance,
+        serverSecondaryProvenance: item.secondaryProvenance,
+        clientSecondaryProvenance: other.secondaryProvenance,
+        primaryEqual: other.primaryText === item.primaryText,
+        secondaryEqual: other.secondaryText === item.secondaryText,
+      };
+    }
+  }
+  return { reason: "descriptor" };
 }
 
 function sameMaterials(

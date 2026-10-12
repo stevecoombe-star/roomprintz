@@ -89,6 +89,7 @@ export async function PUT(request: Request) {
     jobId,
     claimNonce,
     output: bytes,
+    declaredMime: request.headers.get("content-type") ?? "",
     returnedModelId: request.headers.get("x-vibode-harmonize-returned-model"),
     providerStatus: request.headers.get("x-vibode-harmonize-provider-status"),
     providerHttpStatus: numberHeader(request, "x-vibode-harmonize-http-status"),

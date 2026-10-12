@@ -9,6 +9,10 @@ import {
   signOwnedOriginalDisplayUrl,
 } from "@/lib/afc-v2-production/production-persistence.server";
 import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import {
+  readCertifiedFrozenCamera,
+  type CertifiedFrozenCamera,
+} from "@/lib/afc-v2-runtime/production-runtime-client";
 import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
 import { assertProductionPayloadPrivacy } from "@/lib/afc-v2-production/privacy";
 import { trustedPathBaselineFromGeneration } from "@/lib/vibode-stage/trusted-path-authority";
@@ -86,7 +90,7 @@ async function restoreRuntime(request: Request, body: unknown) {
     }, 200);
   }
 
-  const trustedPath = await readTrustedPath(store, {
+  const handoff = await readRuntimeHandoff(store, {
     userId: auth.userId,
     roomId,
     generationId: restored.generationId,
@@ -95,15 +99,20 @@ async function restoreRuntime(request: Request, body: unknown) {
     ...restored,
     authority: validated.authority,
     originalImageUrl,
-    trustedPath,
+    trustedPath: handoff.trustedPath,
+    certifiedFrozenCamera: handoff.certifiedFrozenCamera,
   }, 200);
 }
 
-async function readTrustedPath(
+async function readRuntimeHandoff(
   store: NonNullable<ReturnType<typeof createProductionAfcStoreFromEnv>>,
   input: Readonly<{ userId: string; roomId: string; generationId: string | null }>,
-): Promise<TrustedPathBaseline | null> {
-  if (!input.generationId) return null;
+): Promise<Readonly<{
+  trustedPath: TrustedPathBaseline | null;
+  certifiedFrozenCamera: CertifiedFrozenCamera | null;
+}>> {
+  const empty = { trustedPath: null, certifiedFrozenCamera: null };
+  if (!input.generationId) return empty;
   try {
     const generation = await store.getGeneration(input.generationId);
     const authority = generation?.productionAuthority;
@@ -113,7 +122,7 @@ async function readTrustedPath(
       generation.userId !== input.userId ||
       generation.roomId !== input.roomId
     ) {
-      return null;
+      return empty;
     }
     const trustedPath = trustedPathBaselineFromGeneration({
       metricDecision: generation.metricDecision,
@@ -122,11 +131,13 @@ async function readTrustedPath(
       emptyWidth: authority.empty.decodedWidth,
       emptyHeight: authority.empty.decodedHeight,
     });
-    if (!trustedPath) return null;
-    assertProductionPayloadPrivacy(trustedPath);
-    return trustedPath;
+    if (trustedPath) assertProductionPayloadPrivacy(trustedPath);
+    return {
+      trustedPath,
+      certifiedFrozenCamera: readCertifiedFrozenCamera(authority.frozenCamera),
+    };
   } catch {
-    return null;
+    return empty;
   }
 }
 

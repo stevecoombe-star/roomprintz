@@ -13,6 +13,12 @@ import {
 } from "@/app/admin/3d-room-lab/research/afc-r3c-image-pair-compatibility";
 
 import {
+  AFC_V2_RUNTIME_CAMERA_FAR,
+  AFC_V2_RUNTIME_CAMERA_NEAR,
+  type SceneObjectDefinition,
+} from "@/lib/afc-v2-runtime/types";
+
+import {
   assembleHarmonizePrompt,
   HARMONIZE_PROMPT_ASSEMBLY_VERSION,
   HARMONIZE_PROMPT_FILE,
@@ -97,13 +103,27 @@ export type HarmonizeFurnitureCapture = Readonly<{
   contactShadowsHidden: number;
   objects: readonly HarmonizeExportObject[];
   unmountedObjectIds: readonly string[];
+  /**
+   * Realized STAGE camera. Harmonize Export records this pose.
+   * QA enqueue must not send it for server trust validation.
+   */
   camera: HarmonizeExportCamera;
+  /**
+   * Certified frozen camera, copied from production authority.
+   * QA enqueue sends this pose. The ZIP writer does not read it.
+   */
+  certifiedCamera?: HarmonizeExportCamera;
   roomScaleMultiplier: number;
   certifiedMetricScale: number;
   effectiveMetricScale: number;
   generationId: string;
   /** Frozen with the furniture pixels. Absent means this capture had no catalog. */
   materialCatalog?: HarmonizeMaterialCatalog | null;
+  /**
+   * Saved scene rows from the same capture. The ZIP writer does not read this.
+   * Harmonize QA uses it so provenance matches the persisted version.
+   */
+  sceneObjects?: readonly SceneObjectDefinition[];
 }>;
 
 export type HarmonizeFurnitureCapturer = (
@@ -540,6 +560,43 @@ export function harmonizeCameraRecord(input: Readonly<{
   };
 }
 
+/** Copies the certified frozen pose. It does not scale a realized camera. */
+export function certifiedHarmonizeCamera(frozen: Readonly<{
+  verticalFovDeg: number;
+  frame: Readonly<{ width: number; height: number }> | null | undefined;
+  pose: HarmonizeExportCamera["pose"] | null | undefined;
+}> | null | undefined): HarmonizeExportCamera {
+  if (frozen == null) {
+    throw new HarmonizeExportError(
+      "Certified camera pose is missing from the room authority.",
+    );
+  }
+  const frame = requireHarmonizePixelFrame(
+    frozen.frame,
+    "Certified camera frame is missing from the room authority. Export stopped instead of scaling.",
+  );
+  const pose = frozen.pose;
+  if (
+    pose == null
+    || !finiteVec(pose.position)
+    || !finiteVec(pose.lookAt)
+    || !finiteVec(pose.up)
+    || !(frozen.verticalFovDeg > 0)
+  ) {
+    throw new HarmonizeExportError(
+      "Certified camera pose is missing from the room authority.",
+    );
+  }
+  return harmonizeCameraRecord({
+    verticalFovDeg: frozen.verticalFovDeg,
+    aspect: frame.width / frame.height,
+    near: AFC_V2_RUNTIME_CAMERA_NEAR,
+    far: AFC_V2_RUNTIME_CAMERA_FAR,
+    frame,
+    pose,
+  });
+}
+
 export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
@@ -553,6 +610,15 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
+/**
+ * Scene identity shared by the QA client and enqueue validation.
+ *
+ * `objects` are effective editor coordinates: stored automatic-camera
+ * positions after `editorSceneObjectsFromAuthority`, or the stored positions
+ * when no manual perspective applies. Callers hash that representation with
+ * the certified camera and scales. The stored automatic-camera encoding is
+ * not part of this hash.
+ */
 export function harmonizeSceneCanonical(input: Readonly<{
   generationId: string;
   roomScaleMultiplier: number;

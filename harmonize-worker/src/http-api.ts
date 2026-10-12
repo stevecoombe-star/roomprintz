@@ -17,13 +17,16 @@ export type HarmonizeWorkerProcessEnv = Readonly<{
 
 export function readHarmonizeWorkerProcessEnv(
   env: NodeJS.ProcessEnv = process.env,
+  options: Readonly<{ requireProviderCredentials?: boolean }> = {},
 ): Readonly<{ ok: true; env: HarmonizeWorkerProcessEnv }> | Readonly<{ ok: false; missing: string[] }> {
   const missing: string[] = [];
   const appBaseUrl = env.VIBODE_APP_BASE_URL?.trim().replace(/\/$/, "") ?? "";
   const workerSecret = env.VIBODE_HARMONIZE_WORKER_SECRET?.trim() ?? "";
   if (!appBaseUrl) missing.push("VIBODE_APP_BASE_URL");
   if (!workerSecret) missing.push("VIBODE_HARMONIZE_WORKER_SECRET");
-  if (!env.GEMINI_API_KEY?.trim() && !env.GOOGLE_API_KEY?.trim()) missing.push("GEMINI_API_KEY");
+  if (options.requireProviderCredentials !== false && !env.GEMINI_API_KEY?.trim() && !env.GOOGLE_API_KEY?.trim()) {
+    missing.push("GEMINI_API_KEY");
+  }
   if (missing.length > 0) return { ok: false, missing };
   const pollIntervalMs = Number(env.VIBODE_HARMONIZE_POLL_INTERVAL_MS ?? "2000");
   return {

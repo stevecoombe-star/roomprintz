@@ -247,6 +247,8 @@ export function AfcIntegratedEditorViewport({
         trustedPath={stage?.trustedPath ?? null}
         trustedPathVisible={stage?.trustedPathVisible === true}
         harmonizeMaterialCatalog={harmonizeMaterialCatalog}
+        harmonizeSourceVersionId={versionId}
+        harmonizeCertifiedCamera={runtime.certifiedFrozenCamera}
       />
       <StageFurnitureToolbar />
       {!persistedScene.sceneReady ? (

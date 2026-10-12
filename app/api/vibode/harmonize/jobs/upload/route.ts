@@ -25,9 +25,5 @@ export async function POST(request: Request) {
     byteLength: typeof record.byteLength === "number" ? record.byteLength : 0,
   });
   if (!uploaded.ok) return harmonizeError(uploaded.code);
-  return harmonizeJson({
-    signedUrl: uploaded.signedUrl,
-    token: uploaded.token,
-    path: uploaded.path,
-  }, 200);
+  return harmonizeJson({ signedUrl: uploaded.signedUrl }, 200);
 }

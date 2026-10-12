@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+import sharp from "sharp";
+
+import { readHarmonizeWorkerProcessEnv } from "@/harmonize-worker/src/http-api";
 import {
   AFC_V2_RUNTIME_CAMERA_FAR,
   AFC_V2_RUNTIME_CAMERA_NEAR,
@@ -34,6 +37,7 @@ import {
   type HarmonizeJobDatabase,
 } from "./harmonize-jobs/engine";
 import { executeHarmonizeClaim } from "./harmonize-jobs/execute";
+import { createHarmonizeFakeJpeg, HARMONIZE_FAKE_JPEG_COMMENT } from "./harmonize-jobs/fake-jpeg";
 import { createMemoryHarmonizeWorkerApi } from "./harmonize-jobs/memory-api";
 import { assessHarmonizeJobOutput } from "./harmonize-jobs/output";
 import { planHarmonizeEnqueue } from "./harmonize-jobs/plan";
@@ -43,7 +47,11 @@ import {
   HARMONIZE_JOB_CLAIM_LEASE_MS,
   HARMONIZE_PRECONTACT_BACKOFF_MS,
 } from "./harmonize-jobs/policy";
-import type { HarmonizeProvider } from "./harmonize-jobs/provider";
+import {
+  createHarmonizeFakeProvider,
+  readHarmonizeWorkerProviderMode,
+  type HarmonizeProvider,
+} from "./harmonize-jobs/provider";
 import { redactHarmonizeDiagnostic } from "./harmonize-jobs/redaction";
 import { harmonizeStatusFromRecord } from "./harmonize-jobs/status";
 import type { HarmonizeJobInsert, HarmonizeTrustedRoom } from "./harmonize-jobs/types";
@@ -330,7 +338,7 @@ test("a queued job survives enqueue and one fake provider call finishes it", asy
     provider: async () => {
       calls += 1;
       assert.notEqual(db.jobs[0]?.providerStartedAtMs, null);
-      return jpegResult();
+      return await jpegResult();
     },
     heartbeatIntervalMs: 60_000,
   });
@@ -368,7 +376,7 @@ test("a crash before provider contact can run once later, and a crash after cann
   let calls = 0;
   const provider: HarmonizeProvider = async () => {
     calls += 1;
-    return jpegResult();
+    return await jpegResult();
   };
   const api = createMemoryHarmonizeWorkerApi({ db: first.db, composites, outputs, clock });
   const crashed = await executeHarmonizeClaim({ api, provider, heartbeatIntervalMs: 60_000 });
@@ -404,7 +412,7 @@ test("a crash before provider contact can run once later, and a crash after cann
     api: failing,
     provider: async () => {
       paid += 1;
-      return jpegResult();
+      return await jpegResult();
     },
     heartbeatIntervalMs: 60_000,
   });
@@ -437,7 +445,7 @@ test("provider rejection and lease loss do not pay twice or let a stale worker f
     api,
     provider: async () => {
       calls += 1;
-      return jpegResult();
+      return await jpegResult();
     },
     heartbeatIntervalMs: 60_000,
   })).outcome, "idle");
@@ -581,8 +589,11 @@ test("migration and routes stay isolated from thumbnails, scenes, and the paid p
   );
   const uploadAt = completion.indexOf(".upload(");
   const rpcAt = completion.indexOf("complete_vibode_harmonize_generation");
-  assert.ok(uploadAt > 0 && rpcAt > uploadAt);
+  const assessAt = completion.indexOf("assessHarmonizeJobOutput");
+  assert.ok(assessAt > 0 && uploadAt > assessAt && rpcAt > uploadAt);
+  assert.match(completion, /declaredMime/);
   assert.match(completion, /unavailable/);
+  assert.match(internal, /declaredMime: request.headers.get\("content-type"\)/);
 });
 
 test("the job row stores measured dimensions while 4:3 stays a provider gate", async () => {
@@ -591,7 +602,12 @@ test("the job row stores measured dimensions while 4:3 stays a provider gate", a
   assert.equal(approved.ok && approved.aspectRatio, "4:3");
   assert.equal(wide.ok, false);
   if (!wide.ok) assert.equal(wide.code, "unsupported_aspect");
-  const rejected = await assessHarmonizeJobOutput(jpeg(800, 600), 1200, 896);
+  const wrongFrame = await solidJpeg(800, 600);
+  const wrongMeta = await sharp(wrongFrame).metadata();
+  assert.equal(wrongMeta.format, "jpeg");
+  assert.equal(wrongMeta.width, 800);
+  assert.equal(wrongMeta.height, 600);
+  const rejected = await assessHarmonizeJobOutput(wrongFrame, 1200, 896, "image/jpeg");
   assert.equal(rejected.ok, false);
   const { db, job } = await queuedJob();
   const claim = claimNextHarmonizeJob(db, 0);
@@ -620,6 +636,149 @@ test("the job row stores measured dimensions while 4:3 stays a provider gate", a
   assert.equal(db.jobs[0]?.outputWidth, 800);
   assert.equal(db.jobs[0]?.outputHeight, 600);
   assert.equal(job.id, claim.jobId);
+});
+
+test("the fake provider is worker configuration and is refused in production", async () => {
+  const google = readHarmonizeWorkerProviderMode({ NODE_ENV: "test" });
+  assert.equal(google.ok && google.mode, "google");
+  const allowAlone = readHarmonizeWorkerProviderMode({
+    NODE_ENV: "development",
+    VIBODE_HARMONIZE_ALLOW_FAKE: "1",
+  });
+  assert.equal(allowAlone.ok && allowAlone.mode, "google");
+  const local = readHarmonizeWorkerProviderMode({
+    VIBODE_HARMONIZE_PROVIDER: "fake",
+    VIBODE_HARMONIZE_ALLOW_FAKE: "1",
+    NODE_ENV: "development",
+  });
+  assert.equal(local.ok && local.mode, "fake");
+  const wrongAllow = readHarmonizeWorkerProviderMode({
+    VIBODE_HARMONIZE_PROVIDER: "fake",
+    VIBODE_HARMONIZE_ALLOW_FAKE: "true",
+    NODE_ENV: "development",
+  });
+  assert.equal(wrongAllow.ok, false);
+  if (!wrongAllow.ok) assert.equal(wrongAllow.code, "fake_forbidden");
+  const missingAllow = readHarmonizeWorkerProviderMode({
+    VIBODE_HARMONIZE_PROVIDER: "fake",
+    NODE_ENV: "development",
+  });
+  assert.equal(missingAllow.ok, false);
+  if (!missingAllow.ok) assert.equal(missingAllow.code, "fake_forbidden");
+  const missingNodeEnv = readHarmonizeWorkerProviderMode({
+    VIBODE_HARMONIZE_PROVIDER: "fake",
+    VIBODE_HARMONIZE_ALLOW_FAKE: "1",
+  } as unknown as NodeJS.ProcessEnv);
+  assert.equal(missingNodeEnv.ok, false);
+  if (!missingNodeEnv.ok) assert.equal(missingNodeEnv.code, "fake_forbidden");
+  const production = readHarmonizeWorkerProviderMode({
+    VIBODE_HARMONIZE_PROVIDER: "fake",
+    VIBODE_HARMONIZE_ALLOW_FAKE: "1",
+    NODE_ENV: "production",
+  });
+  assert.equal(production.ok, false);
+  if (!production.ok) assert.equal(production.code, "fake_forbidden");
+  const unknown = readHarmonizeWorkerProviderMode({
+    VIBODE_HARMONIZE_PROVIDER: "other",
+    VIBODE_HARMONIZE_ALLOW_FAKE: "1",
+    NODE_ENV: "test",
+  });
+  assert.equal(unknown.ok, false);
+  const withoutKey = readHarmonizeWorkerProcessEnv({
+    VIBODE_APP_BASE_URL: "http://127.0.0.1:3000",
+    VIBODE_HARMONIZE_WORKER_SECRET: "local-test-secret",
+    NODE_ENV: "test",
+  }, { requireProviderCredentials: false });
+  assert.equal(withoutKey.ok, true);
+  const keyStillRequired = readHarmonizeWorkerProcessEnv({
+    VIBODE_APP_BASE_URL: "http://127.0.0.1:3000",
+    VIBODE_HARMONIZE_WORKER_SECRET: "local-test-secret",
+    NODE_ENV: "test",
+  });
+  assert.equal(keyStillRequired.ok, false);
+  const fake = createHarmonizeFakeProvider();
+  const generated = await fake({
+    prompt: "Photorealistic Furniture Harmonization",
+    png: png(1200, 896),
+    signal: new AbortController().signal,
+  });
+  assert.equal(generated.providerStatus, "FAKE");
+  assert.equal(generated.returnedModel, "fake-harmonize");
+  assert.equal(generated.outputMime, "image/jpeg");
+  const again = await createHarmonizeFakeJpeg();
+  assert.deepEqual(generated.output, again);
+  assert.ok(Buffer.from(generated.output).includes(Buffer.from(HARMONIZE_FAKE_JPEG_COMMENT)));
+  const meta = await sharp(generated.output).metadata();
+  assert.equal(meta.format, "jpeg");
+  assert.equal(meta.width, 2400);
+  assert.equal(meta.height, 1792);
+  const raster = await sharp(generated.output).raw().toBuffer({ resolveWithObject: true });
+  assert.equal(raster.info.width, 2400);
+  assert.equal(raster.info.height, 1792);
+  const assessed = await assessHarmonizeJobOutput(generated.output, 1200, 896, generated.outputMime);
+  assert.equal(assessed.ok, true);
+  if (assessed.ok) {
+    assert.equal(assessed.width, 2400);
+    assert.equal(assessed.height, 1792);
+    assert.equal(assessed.mime, "image/jpeg");
+  }
+  const declaredMismatch = await assessHarmonizeJobOutput(generated.output, 1200, 896, "image/png");
+  assert.equal(declaredMismatch.ok, false);
+  const headerOnly = await assessHarmonizeJobOutput(jpeg(2400, 1792), 1200, 896, "image/jpeg");
+  assert.equal(headerOnly.ok, false);
+  await assert.rejects(() => sharp(jpeg(2400, 1792)).raw().toBuffer());
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(() => fake({
+    prompt: "Photorealistic Furniture Harmonization",
+    png: png(1200, 896),
+    signal: aborted.signal,
+  }));
+  const routes = [
+    "app/api/vibode/harmonize/jobs/route.ts",
+    "app/api/vibode/harmonize/jobs/upload/route.ts",
+    "app/api/internal/vibode-harmonize-jobs/route.ts",
+    "components/stage/HarmonizeExportButton.tsx",
+    "components/stage/HarmonizeQaButton.tsx",
+    "lib/vibode-stage/harmonize-qa.ts",
+  ];
+  for (const file of routes) {
+    assert.doesNotMatch(source(file), /VIBODE_HARMONIZE_PROVIDER|VIBODE_HARMONIZE_ALLOW_FAKE/);
+  }
+  assert.match(source("harmonize-worker/src/index.ts"), /readHarmonizeWorkerProviderMode/);
+  assert.match(source("harmonize-worker/src/index.ts"), /createHarmonizeFakeProvider/);
+  assert.match(source("harmonize-worker/src/index.ts"), /requireProviderCredentials: providerMode.mode === "google"/);
+  assert.match(source("lib/vibode-stage/harmonize-jobs/provider.ts"), /VIBODE_HARMONIZE_ALLOW_FAKE/);
+  assert.match(source("lib/vibode-stage/harmonize-jobs/provider.ts"), /callHarmonizeNbpProof/);
+  assert.doesNotMatch(source("lib/vibode-stage/harmonize-jobs/provider.ts"), /generativelanguage.googleapis.com/);
+  assert.match(source("lib/vibode-stage/harmonize-jobs/output.ts"), /decoded.info.width !== meta.width/);
+});
+
+test("a JPEG header without a decodable image does not complete the job", async () => {
+  const { db, job, composite } = await queuedJob();
+  const outputs = new Map<string, Uint8Array>();
+  const result = await executeHarmonizeClaim({
+    api: createMemoryHarmonizeWorkerApi({
+      db,
+      composites: new Map([[job.id, composite]]),
+      outputs,
+      clock: { nowMs: 0 },
+    }),
+    provider: async () => ({
+      output: jpeg(2400, 1792),
+      outputMime: "image/jpeg",
+      returnedModel: "fake-harmonize",
+      providerStatus: "FAKE",
+      httpStatus: 200,
+      latencyMs: 1,
+    }),
+    heartbeatIntervalMs: 60_000,
+  });
+  assert.equal(result.outcome, "failed");
+  assert.equal(result.code, "unexpected_output");
+  assert.equal(db.jobs[0]?.status, "failed");
+  assert.equal(outputs.size, 0);
+  assert.notEqual(db.jobs[0]?.providerStartedAtMs, null);
 });
 
 async function accept(fixture: Fixture, room: HarmonizeTrustedRoom) {
@@ -757,15 +916,23 @@ function chairCatalog(variantPrimary: string | null): HarmonizeMaterialCatalog {
   };
 }
 
-function jpegResult() {
+async function jpegResult() {
   return {
-    output: jpeg(2400, 1792),
+    output: await createHarmonizeFakeJpeg(),
     outputMime: "image/jpeg",
     returnedModel: "gemini-3-pro-image",
     providerStatus: "completed",
     httpStatus: 200,
     latencyMs: 30,
   };
+}
+
+async function solidJpeg(width: number, height: number): Promise<Uint8Array> {
+  const raw = Buffer.alloc(width * height * 3, 40);
+  const encoded = await sharp(raw, { raw: { width, height, channels: 3 } })
+    .jpeg({ quality: 80, chromaSubsampling: "4:4:4", mozjpeg: false, progressive: false })
+    .toBuffer();
+  return new Uint8Array(encoded);
 }
 
 function png(width: number, height: number): Uint8Array {

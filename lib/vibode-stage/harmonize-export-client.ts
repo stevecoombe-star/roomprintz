@@ -11,9 +11,13 @@ import {
   requireHarmonizePixelFrame,
   sha256HexBytes,
   type HarmonizeBackgroundMediaType,
+  type HarmonizeBackgroundSource,
   type HarmonizeExportAuthority,
+  type HarmonizeFrameSuccess,
+  type HarmonizeFurnitureCapture,
   type HarmonizeFurnitureCapturer,
 } from "@/lib/vibode-stage/harmonize-export";
+import { buildHarmonizeQaSubmission, type HarmonizeQaSubmission } from "@/lib/vibode-stage/harmonize-qa";
 
 export type DecodedHarmonizeBackground = Readonly<{
   rgba: Uint8Array;
@@ -108,7 +112,7 @@ export async function decodeHarmonizeBackground(
   );
 }
 
-export async function executeHarmonizeExport(input: Readonly<{
+type HarmonizeCaptureInput = Readonly<{
   roomId: string;
   authority: HarmonizeExportAuthority;
   backgroundUrl: string;
@@ -118,12 +122,58 @@ export async function executeHarmonizeExport(input: Readonly<{
   fetchBackground?: (url: string) => Promise<Uint8Array>;
   decodeBackground?: (bytes: Uint8Array) => Promise<DecodedHarmonizeBackground>;
   fetchEmpty?: (roomId: string) => Promise<Uint8Array>;
+}>;
+
+type HarmonizePreparedCapture = Readonly<{
+  roomId: string;
+  generatedAt: string;
+  generationId: string;
+  background: Readonly<{
+    bytes: Uint8Array;
+    fileName: string;
+    role: "viewport-background" | "authoritative-empty";
+    source: HarmonizeBackgroundSource;
+    matchesEmpty: boolean;
+    matchesOriginal: boolean;
+  }>;
+  roomRgba: Uint8Array;
+  capture: HarmonizeFurnitureCapture;
+  alignment: HarmonizeFrameSuccess;
+  referenceEmptyBytes: Uint8Array | null;
+}>;
+
+export async function executeHarmonizeExport(input: HarmonizeCaptureInput & Readonly<{
   save?: (fileName: string, bytes: Uint8Array) => void;
 }>): Promise<void> {
+  const prepared = await prepareHarmonizeCapture(input);
+  const packed = await buildHarmonizeZip(prepared);
+  const save = input.save ?? saveHarmonizeZip;
+  save(packed.fileName, packed.bytes);
+}
+
+/** One capture, then the enqueue body. Does not write a ZIP. */
+export async function executeHarmonizeQaSubmission(input: HarmonizeCaptureInput & Readonly<{
+  sourceVersionId: string;
+  idempotencyKey: string;
+}>): Promise<Readonly<{ composite: Uint8Array; submission: HarmonizeQaSubmission }>> {
+  if (!isUuid(input.sourceVersionId) || !isUuid(input.idempotencyKey)) {
+    throw new HarmonizeExportError("Save this room version before testing Harmonize.");
+  }
+  const prepared = await prepareHarmonizeCapture(input);
+  return buildHarmonizeQaSubmission({
+    roomId: prepared.roomId,
+    sourceVersionId: input.sourceVersionId,
+    idempotencyKey: input.idempotencyKey,
+    backgroundBytes: prepared.background.bytes,
+    roomRgba: prepared.roomRgba,
+    capture: prepared.capture,
+  });
+}
+
+async function prepareHarmonizeCapture(input: HarmonizeCaptureInput): Promise<HarmonizePreparedCapture> {
   const fetchBackground = input.fetchBackground ?? fetchHarmonizeViewportBackground;
   const decodeBackground = input.decodeBackground ?? decodeHarmonizeBackground;
   const fetchEmpty = input.fetchEmpty ?? fetchHarmonizeEmptyPng;
-  const save = input.save ?? saveHarmonizeZip;
   const backgroundBytes = await fetchBackground(input.backgroundUrl);
   const mediaType = harmonizeBackgroundMediaType(backgroundBytes);
   if (!mediaType) {
@@ -186,7 +236,7 @@ export async function executeHarmonizeExport(input: Readonly<{
   const referenceEmptyBytes = identity.source === "empty"
     ? null
     : await readOptionalEmptyReference(input.roomId, input.authority, fetchEmpty);
-  const packed = await buildHarmonizeZip({
+  return {
     roomId: input.roomId,
     generatedAt: (input.now ?? (() => new Date()))().toISOString(),
     generationId: input.authority.generationId,
@@ -202,8 +252,11 @@ export async function executeHarmonizeExport(input: Readonly<{
     capture,
     alignment: frame,
     referenceEmptyBytes,
-  });
-  save(packed.fileName, packed.bytes);
+  };
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function viewportImageOrientation(

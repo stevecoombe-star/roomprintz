@@ -14,6 +14,16 @@ import {
 
 export const AFC_PRODUCTION_RUNTIME_PATH = "/api/vibode/afc/runtime";
 
+export type CertifiedFrozenCamera = Readonly<{
+  verticalFovDeg: number;
+  frame: Readonly<{ width: number; height: number }>;
+  pose: Readonly<{
+    position: Readonly<{ x: number; y: number; z: number }>;
+    lookAt: Readonly<{ x: number; y: number; z: number }>;
+    up: Readonly<{ x: number; y: number; z: number }>;
+  }>;
+}>;
+
 export type AfcProductionRuntimeLoadState = Readonly<{
   loading: boolean;
   error: string | null;
@@ -21,6 +31,8 @@ export type AfcProductionRuntimeLoadState = Readonly<{
   originalImageUrl: string | null;
   generationId: string | null;
   trustedPath: TrustedPathBaseline | null;
+  /** Stored production frozen camera. Independent of a manual perspective override. */
+  certifiedFrozenCamera: CertifiedFrozenCamera | null;
 }>;
 
 export const IDLE_AFC_PRODUCTION_RUNTIME_STATE: AfcProductionRuntimeLoadState = {
@@ -30,6 +42,7 @@ export const IDLE_AFC_PRODUCTION_RUNTIME_STATE: AfcProductionRuntimeLoadState = 
   originalImageUrl: null,
   generationId: null,
   trustedPath: null,
+  certifiedFrozenCamera: null,
 };
 
 export type InterpretedProductionRuntimeResponse =
@@ -39,6 +52,7 @@ export type InterpretedProductionRuntimeResponse =
       originalImageUrl: string;
       generationId: string | null;
       trustedPath: TrustedPathBaseline | null;
+      certifiedFrozenCamera: CertifiedFrozenCamera | null;
     }
   | {
       status: "error";
@@ -95,7 +109,44 @@ export function interpretProductionRuntimeResponse(input: Readonly<{
     originalImageUrl,
     generationId,
     trustedPath: parseTrustedPathBaseline(payload?.trustedPath),
+    certifiedFrozenCamera: readCertifiedFrozenCamera(payload?.certifiedFrozenCamera),
   };
+}
+
+/** Copies a stored frozen camera. A missing pose is unavailable, not inferred. */
+export function readCertifiedFrozenCamera(value: unknown): CertifiedFrozenCamera | null {
+  const camera = asRecord(value);
+  const frame = asRecord(camera?.frame);
+  const pose = asRecord(camera?.pose);
+  const verticalFovDeg = camera?.verticalFovDeg;
+  const width = frame?.width;
+  const height = frame?.height;
+  if (typeof verticalFovDeg !== "number" || !(verticalFovDeg > 0) || !pose) return null;
+  if (
+    typeof width !== "number" || typeof height !== "number"
+    || !Number.isInteger(width) || !Number.isInteger(height)
+    || width < 1 || height < 1
+  ) {
+    return null;
+  }
+  const position = readVec(pose.position);
+  const lookAt = readVec(pose.lookAt);
+  const up = readVec(pose.up);
+  if (!position || !lookAt || !up) return null;
+  return {
+    verticalFovDeg,
+    frame: { width, height },
+    pose: { position, lookAt, up },
+  };
+}
+
+function readVec(value: unknown): Readonly<{ x: number; y: number; z: number }> | null {
+  const point = asRecord(value);
+  if (!point) return null;
+  const { x, y, z } = point;
+  if (typeof x !== "number" || typeof y !== "number" || typeof z !== "number") return null;
+  if (![x, y, z].every(Number.isFinite)) return null;
+  return { x, y, z };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

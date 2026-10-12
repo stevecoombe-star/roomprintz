@@ -1,6 +1,7 @@
 "use client";
 
 import { HarmonizeExportButton } from "@/components/stage/HarmonizeExportButton";
+import { HarmonizeQaButton } from "@/components/stage/HarmonizeQaButton";
 import { RoomScaleControl } from "@/components/stage/RoomScaleControl";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
 
@@ -56,6 +57,7 @@ export function StageEditorHeader() {
           Summary →
         </button>
         <HarmonizeExportButton />
+        <HarmonizeQaButton />
       </div>
     </div>
   );

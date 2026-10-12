@@ -111,6 +111,27 @@ export async function readHarmonizeGenerationStatus(input: Readonly<{
   return harmonizeStatusFromRecord(data as Record<string, unknown>);
 }
 
+const HARMONIZE_ROOM_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Owner's newest job for one room. Paths, prompts, and bytes stay out of the select. */
+export async function readHarmonizeRoomJob(input: Readonly<{
+  userId: string;
+  roomId: string;
+}>): Promise<HarmonizeJobStatusView | null> {
+  const supabase = getServiceRoleSupabaseClient();
+  if (!supabase || !HARMONIZE_ROOM_ID_RE.test(input.roomId)) return null;
+  const { data, error } = await supabase
+    .from("vibode_harmonize_generations")
+    .select("id, status, failure_code, failure_message, output_width, output_height, output_mime, output_sha256, provider_started_at, created_at, completed_at, requested_model_id, returned_model_id, latency_ms, provider_http_status, provider_status, user_id")
+    .eq("user_id", input.userId)
+    .eq("room_id", input.roomId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data || typeof data !== "object") return null;
+  return harmonizeStatusFromRecord(data as Record<string, unknown>);
+}
+
 export async function readHarmonizeGenerationOutput(input: Readonly<{
   userId: string;
   jobId: string;
@@ -196,6 +217,7 @@ export async function completeHarmonizeGeneration(input: Readonly<{
   jobId: string;
   claimNonce: string;
   output: Uint8Array;
+  declaredMime: string;
   returnedModelId: string | null;
   providerStatus: string | null;
   providerHttpStatus: number | null;
@@ -215,7 +237,7 @@ export async function completeHarmonizeGeneration(input: Readonly<{
   const roomId = text(row.room_id);
   const width = typeof row.composite_width === "number" ? row.composite_width : 0;
   const height = typeof row.composite_height === "number" ? row.composite_height : 0;
-  const assessed = await assessHarmonizeJobOutput(input.output, width, height);
+  const assessed = await assessHarmonizeJobOutput(input.output, width, height, input.declaredMime);
   if (!assessed.ok || !roomId) return { ok: false, code: "unexpected_output" };
   const path = harmonizeOutputPath(roomId, input.jobId, input.claimNonce);
   const uploaded = await supabase.storage.from(VIBODE_HARMONIZE_BUCKET).upload(path, Buffer.from(input.output), {
@@ -290,7 +312,7 @@ async function loadTrustedRoom(
   });
   const generationId = text(room.current_afc_generation_id);
   const generation = generationId
-    ? await maybeOne(supabase, "vibode_afc_generations", "id, room_id, user_id, status, production_authority", {
+    ? await maybeOne(supabase, "vibode_afc_generations", "id, room_id, user_id, status, production_authority, manual_perspective", {
         id: generationId,
       })
     : null;

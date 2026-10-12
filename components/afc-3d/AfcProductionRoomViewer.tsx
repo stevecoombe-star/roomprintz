@@ -73,16 +73,22 @@ import {
   type LiveRuntimeSceneObject,
 } from "@/lib/afc-v2-runtime/scene-runtime";
 import { realizeProductionWorld } from "@/lib/afc-v2-runtime/production-world";
+import type { CertifiedFrozenCamera } from "@/lib/afc-v2-runtime/production-runtime-client";
 import { ROOM_SCALE_DEFAULT } from "@/lib/vibode-stage/room-scale";
 import type { TrustedPathBaseline } from "@/lib/vibode-stage/trusted-path";
 import { createTrustedPathOverlay } from "@/lib/vibode-stage/trusted-path-overlay";
-import { useRegisterHarmonizeExport } from "@/components/stage/HarmonizeExportContext";
+import {
+  useRegisterHarmonizeExport,
+  useRegisterHarmonizeQa,
+} from "@/components/stage/HarmonizeExportContext";
 import {
   displayedHarmonizeBackgroundUrl,
   executeHarmonizeExport,
+  executeHarmonizeQaSubmission,
 } from "@/lib/vibode-stage/harmonize-export-client";
 import {
   HarmonizeExportError,
+  certifiedHarmonizeCamera,
   decideHarmonizeExportFrame,
   harmonizeCameraRecord,
   harmonizeExportObject,
@@ -177,6 +183,8 @@ type Props = Readonly<{
   trustedPath?: TrustedPathBaseline | null;
   trustedPathVisible?: boolean;
   harmonizeMaterialCatalog?: HarmonizeMaterialCatalog | null;
+  harmonizeSourceVersionId?: string | null;
+  harmonizeCertifiedCamera?: CertifiedFrozenCamera | null;
 }>;
 
 type ReadyProps = Readonly<{
@@ -206,6 +214,8 @@ type ReadyProps = Readonly<{
   trustedPath?: TrustedPathBaseline | null;
   trustedPathVisible?: boolean;
   harmonizeMaterialCatalog?: HarmonizeMaterialCatalog | null;
+  harmonizeSourceVersionId?: string | null;
+  harmonizeCertifiedCamera?: CertifiedFrozenCamera | null;
 }>;
 
 export function AfcProductionRoomViewer({
@@ -233,6 +243,8 @@ export function AfcProductionRoomViewer({
   trustedPath = null,
   trustedPathVisible = false,
   harmonizeMaterialCatalog = null,
+  harmonizeSourceVersionId = null,
+  harmonizeCertifiedCamera = null,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -287,6 +299,8 @@ export function AfcProductionRoomViewer({
       trustedPath={trustedPath}
       trustedPathVisible={trustedPathVisible}
       harmonizeMaterialCatalog={harmonizeMaterialCatalog}
+      harmonizeSourceVersionId={harmonizeSourceVersionId}
+      harmonizeCertifiedCamera={harmonizeCertifiedCamera}
     />
   );
 }
@@ -316,6 +330,8 @@ function AfcProductionRoomViewerReady({
   trustedPath = null,
   trustedPathVisible = false,
   harmonizeMaterialCatalog = null,
+  harmonizeSourceVersionId = null,
+  harmonizeCertifiedCamera = null,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -355,11 +371,15 @@ function AfcProductionRoomViewerReady({
   const harmonizeBackgroundUrlRef = useRef(visualImageUrl);
   const harmonizeOriginalUrlRef = useRef(originalImageUrl ?? null);
   const harmonizeMaterialCatalogRef = useRef(harmonizeMaterialCatalog);
+  const harmonizeSourceVersionIdRef = useRef(harmonizeSourceVersionId);
+  const harmonizeCertifiedCameraRef = useRef(harmonizeCertifiedCamera);
   harmonizeRoomIdRef.current = roomId;
   harmonizeAuthorityRef.current = authority;
   harmonizeBackgroundUrlRef.current = visualImageUrl;
   harmonizeOriginalUrlRef.current = originalImageUrl ?? null;
   harmonizeMaterialCatalogRef.current = harmonizeMaterialCatalog;
+  harmonizeSourceVersionIdRef.current = harmonizeSourceVersionId;
+  harmonizeCertifiedCameraRef.current = harmonizeCertifiedCamera;
   useLayoutEffect(() => {
     roomScaleRef.current = roomScaleMultiplier;
   }, [roomScaleMultiplier]);
@@ -1806,6 +1826,7 @@ function AfcProductionRoomViewerReady({
             localAabb: object.localAabb,
           })
         )));
+        const storedCertifiedCamera = harmonizeCertifiedCameraRef.current;
         return {
           rgba: rendered.rgba,
           width,
@@ -1816,11 +1837,15 @@ function AfcProductionRoomViewerReady({
             left < right ? -1 : left > right ? 1 : 0
           )),
           camera: harmonizeCameraRecord(activeWorld.camera),
+          certifiedCamera: storedCertifiedCamera
+            ? certifiedHarmonizeCamera(storedCertifiedCamera)
+            : undefined,
           roomScaleMultiplier: activeWorld.roomScaleMultiplier,
           certifiedMetricScale: activeWorld.certifiedMetricScale,
           effectiveMetricScale: activeWorld.metricScale,
           generationId: activeWorld.generationId,
           materialCatalog: cloneHarmonizeMaterialCatalog(harmonizeMaterialCatalogRef.current),
+          sceneObjects: currentSerializedObjects(),
         };
       } finally {
         exportLocked = false;
@@ -1877,9 +1902,10 @@ function AfcProductionRoomViewerReady({
   }, [authority.generationId, furniture.objectId, furniture.transform, world]);
 
   const registerHarmonizeExport = useRegisterHarmonizeExport();
+  const registerHarmonizeQa = useRegisterHarmonizeQa();
   useEffect(() => {
     if (!registerHarmonizeExport) return;
-    registerHarmonizeExport(() => {
+    const begin = () => {
       if (harmonizeInFlightRef.current) {
         return Promise.reject(new HarmonizeExportError("Harmonize export is already running."));
       }
@@ -1888,12 +1914,17 @@ function AfcProductionRoomViewerReady({
         return Promise.reject(new HarmonizeExportError("STAGE scene is not ready to export."));
       }
       harmonizeInFlightRef.current = true;
-      const image = frameRef.current?.querySelector("img") ?? null;
+      return capture;
+    };
+    const backgroundImage = () => frameRef.current?.querySelector("img") ?? null;
+    registerHarmonizeExport(() => {
+      const capture = begin();
+      if (capture instanceof Promise) return capture;
       return executeHarmonizeExport({
         roomId: harmonizeRoomIdRef.current,
         authority: harmonizeAuthorityRef.current,
         backgroundUrl: displayedHarmonizeBackgroundUrl({
-          image,
+          image: backgroundImage(),
           fallbackUrl: harmonizeBackgroundUrlRef.current,
         }),
         originalImageUrl: harmonizeOriginalUrlRef.current,
@@ -1902,8 +1933,36 @@ function AfcProductionRoomViewerReady({
         harmonizeInFlightRef.current = false;
       });
     });
-    return () => registerHarmonizeExport(null);
-  }, [registerHarmonizeExport]);
+    registerHarmonizeQa?.({
+      roomId,
+      run: (idempotencyKey) => {
+        const sourceVersionId = harmonizeSourceVersionIdRef.current;
+        if (!sourceVersionId) {
+          return Promise.reject(new HarmonizeExportError("Save this room version before testing Harmonize."));
+        }
+        const capture = begin();
+        if (capture instanceof Promise) return capture;
+        return executeHarmonizeQaSubmission({
+          roomId: harmonizeRoomIdRef.current,
+          sourceVersionId,
+          idempotencyKey,
+          authority: harmonizeAuthorityRef.current,
+          backgroundUrl: displayedHarmonizeBackgroundUrl({
+            image: backgroundImage(),
+            fallbackUrl: harmonizeBackgroundUrlRef.current,
+          }),
+          originalImageUrl: harmonizeOriginalUrlRef.current,
+          captureFurniture: capture,
+        }).finally(() => {
+          harmonizeInFlightRef.current = false;
+        });
+      },
+    });
+    return () => {
+      registerHarmonizeExport(null);
+      registerHarmonizeQa?.(null);
+    };
+  }, [registerHarmonizeExport, registerHarmonizeQa, roomId]);
 
   useEffect(() => {
     applyRoomScaleRef.current?.(roomScaleMultiplier);

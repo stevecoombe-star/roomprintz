@@ -3,6 +3,7 @@
  * Callers may only SELECT. This module has no writes.
  */
 
+import { editorSceneObjectsFromAuthority } from "@/lib/afc-v2-runtime/editor-scene-objects";
 import { validatePersistedSceneObjects } from "@/lib/afc-v2-runtime/persisted-scene";
 import type { SceneObjectDefinition } from "@/lib/afc-v2-runtime/types";
 import { storedMaterial } from "@/lib/vibode-stage/material-text";
@@ -53,6 +54,14 @@ export function harmonizeTrustedRoomFromRecords(input: Readonly<{
 
   const authority = readAuthority(input.generation, input.roomId, input.userId, generationId);
   if (!authority) return { ok: false, code: "authority_unavailable" };
+  const generation = record(input.generation);
+  const placed = editorSceneObjectsFromAuthority({
+    objects: objects.objects,
+    productionAuthority: generation?.production_authority,
+    manualPerspective: generation?.manual_perspective,
+    direction: "to-effective",
+  });
+  if (!placed.ok) return { ok: false, code: "stale_scene" };
 
   const catalog = readCatalog(input.products, input.variants);
   if (!catalog) return { ok: false, code: "catalog_unavailable" };
@@ -68,7 +77,7 @@ export function harmonizeTrustedRoomFromRecords(input: Readonly<{
     background: input.background,
     scene: {
       afcGenerationId: sceneGenerationId,
-      objects: objects.objects,
+      objects: placed.objects,
     },
     catalog,
   };

@@ -72,26 +72,16 @@ export async function executeHarmonizeClaim(input: Readonly<{
     if (lost || !(await input.api.heartbeat(claim))) {
       return { outcome: "stale", code: "stale_claim", jobId: claim.jobId };
     }
-    if (generated.outputMime !== "image/jpeg") {
-      await input.api.fail(claim, {
-        code: "unexpected_output",
-        message: "Provider output was not a JPEG.",
-        retryable: false,
-        providerStatus: boundedToken(generated.providerStatus),
-        providerHttpStatus: generated.httpStatus,
-        latencyMs: generated.latencyMs,
-      });
-      return { outcome: "failed", code: "unexpected_output", jobId: claim.jobId };
-    }
     const assessed = await assessHarmonizeJobOutput(
       generated.output,
       claim.compositeWidth,
       claim.compositeHeight,
+      generated.outputMime,
     );
     if (!assessed.ok) {
       await input.api.fail(claim, {
         code: "unexpected_output",
-        message: "Provider output was not the expected 2K JPEG.",
+        message: "Provider output did not match the decoded JPEG.",
         retryable: false,
         providerStatus: boundedToken(generated.providerStatus),
         providerHttpStatus: generated.httpStatus,

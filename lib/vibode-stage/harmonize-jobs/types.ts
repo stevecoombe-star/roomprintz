@@ -142,7 +142,8 @@ export type HarmonizeTrustedLoad =
         | "scene_missing"
         | "authority_unavailable"
         | "catalog_unavailable"
-        | "source_unreadable";
+        | "source_unreadable"
+        | "stale_scene";
     }>;
 
 export type HarmonizeJobStatusView = Readonly<{

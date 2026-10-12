@@ -6,9 +6,7 @@ import {
   productionAfcJson,
 } from "@/lib/afc-v2-production/production-http";
 import { createProductionAfcStoreFromEnv } from "@/lib/afc-v2-production/production-persistence.server";
-import { mapSceneObjectsBetweenCameras } from "@/lib/afc-v2-runtime/effective-floor-remap";
-import { resolveEffectiveProductionAuthority } from "@/lib/afc-v2-runtime/effective-production-authority";
-import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
+import { editorSceneObjectsFromAuthority } from "@/lib/afc-v2-runtime/editor-scene-objects";
 import {
   AFC_V2_RUNTIME_COORDINATE_SPACE,
   type SceneObjectDefinition,
@@ -181,26 +179,18 @@ async function sceneObjectsForEditor(
   const store = createProductionAfcStoreFromEnv();
   if (!store) return { ok: false, status: 500, error: "Server misconfigured." };
   const generation = await store.getGeneration(generationId);
-  const validated = validateProductionRuntimeAuthority(generation?.productionAuthority);
-  if (!generation || !validated.ok) return { ok: true, objects };
-  const effective = resolveEffectiveProductionAuthority(
-    validated.authority,
-    generation.manualPerspective,
-  );
-  if (effective.kind !== "manual") return { ok: true, objects };
-  const from = direction === "to-effective"
-    ? validated.authority.frozenCamera
-    : effective.authority.frozenCamera;
-  const to = direction === "to-effective"
-    ? effective.authority.frozenCamera
-    : validated.authority.frozenCamera;
-  const mapped = mapSceneObjectsBetweenCameras(objects, from, to);
-  if (!mapped) {
+  const placed = editorSceneObjectsFromAuthority({
+    objects,
+    productionAuthority: generation?.productionAuthority,
+    manualPerspective: generation?.manualPerspective,
+    direction,
+  });
+  if (!placed.ok) {
     return {
       ok: false,
       status: 409,
       error: "Saved furniture cannot be placed in the manual perspective.",
     };
   }
-  return { ok: true, objects: mapped };
+  return { ok: true, objects: placed.objects };
 }

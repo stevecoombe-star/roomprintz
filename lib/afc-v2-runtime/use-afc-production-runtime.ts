@@ -36,6 +36,7 @@ export function useAfcProductionRuntime(
       originalImageUrl: null,
       generationId: null,
       trustedPath: null,
+      certifiedFrozenCamera: null,
     });
 
     async function load() {
@@ -66,6 +67,7 @@ export function useAfcProductionRuntime(
             originalImageUrl: interpreted.originalImageUrl,
             generationId: interpreted.generationId,
             trustedPath: interpreted.trustedPath,
+            certifiedFrozenCamera: interpreted.certifiedFrozenCamera,
           });
           return;
         }
@@ -76,6 +78,7 @@ export function useAfcProductionRuntime(
           originalImageUrl: null,
           generationId: interpreted.generationId,
           trustedPath: null,
+          certifiedFrozenCamera: null,
         });
       } catch (loadError) {
         if (cancelled) return;
@@ -88,6 +91,7 @@ export function useAfcProductionRuntime(
           originalImageUrl: null,
           generationId: null,
           trustedPath: null,
+          certifiedFrozenCamera: null,
         });
       }
     }

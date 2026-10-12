@@ -3,6 +3,7 @@ import {
   callHarmonizeNbpProof,
 } from "@/lib/vibode-stage/harmonize-nbp-proof";
 
+import { createHarmonizeFakeJpeg } from "./fake-jpeg";
 import { redactHarmonizeDiagnostic } from "./redaction";
 
 const REJECTED_HTTP = new Set([400, 401, 403, 413, 422]);
@@ -50,6 +51,50 @@ export function classifyHarmonizeProviderFailure(error: unknown): HarmonizeProvi
     providerStatus: null,
     providerHttpStatus: null,
     retryable: false,
+  };
+}
+
+export type HarmonizeWorkerProviderMode = "google" | "fake";
+
+/**
+ * Worker process setting. A browser request cannot select this.
+ * Fake mode starts only when the provider is explicitly `fake`,
+ * NODE_ENV is set to something other than production, and
+ * VIBODE_HARMONIZE_ALLOW_FAKE is exactly `1`. Any miss refuses startup.
+ * Unset provider stays on the real Nano Banana Pro client.
+ */
+export function readHarmonizeWorkerProviderMode(
+  env: NodeJS.ProcessEnv,
+): Readonly<{ ok: true; mode: HarmonizeWorkerProviderMode }> | Readonly<{ ok: false; code: "fake_forbidden" | "invalid_provider" }> {
+  const requested = env.VIBODE_HARMONIZE_PROVIDER?.trim().toLowerCase() ?? "";
+  if (requested === "" || requested === "google") return { ok: true, mode: "google" };
+  if (requested !== "fake") return { ok: false, code: "invalid_provider" };
+  const nodeEnv = env.NODE_ENV?.trim().toLowerCase() ?? "";
+  const allowFake = env.VIBODE_HARMONIZE_ALLOW_FAKE?.trim() ?? "";
+  if (!nodeEnv || nodeEnv === "production" || allowFake !== "1") {
+    return { ok: false, code: "fake_forbidden" };
+  }
+  return { ok: true, mode: "fake" };
+}
+
+/** Deterministic labeled JPEG. It does not call a network. */
+export function createHarmonizeFakeProvider(): HarmonizeProvider {
+  return async ({ signal }) => {
+    if (signal.aborted) {
+      throw new HarmonizeNbpProofError("timeout", "Fake Harmonize provider aborted before a result.");
+    }
+    const output = await createHarmonizeFakeJpeg();
+    if (signal.aborted) {
+      throw new HarmonizeNbpProofError("timeout", "Fake Harmonize provider aborted before a result.");
+    }
+    return {
+      output,
+      outputMime: "image/jpeg",
+      returnedModel: "fake-harmonize",
+      providerStatus: "FAKE",
+      httpStatus: 200,
+      latencyMs: 1,
+    };
   };
 }
 
