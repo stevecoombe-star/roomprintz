@@ -30,6 +30,7 @@ import {
   type PartnerCatalogVariantCreate,
   type PartnerCatalogVariantPatch,
 } from "./partner-catalog-sync";
+import { parseMaterialText, storedMaterial } from "./material-text";
 import { partnerReadyAssetIdSet } from "./partner-portal-assets";
 import {
   asFiniteNumber,
@@ -59,6 +60,8 @@ export const PARTNER_DRAFT_MUTATION_TYPES = Object.freeze([
   "product.set_image_url",
   "product.set_product_url",
   "product.set_price",
+  "product.set_primary_material",
+  "product.set_secondary_material",
   "product.deactivate",
   "product.reactivate",
   "product.create",
@@ -69,6 +72,8 @@ export const PARTNER_DRAFT_MUTATION_TYPES = Object.freeze([
   "variant.set_price",
   "variant.set_product_url",
   "variant.set_model_dimensions",
+  "variant.set_primary_material",
+  "variant.set_secondary_material",
   "variant.deactivate",
   "variant.reactivate",
   "variant.create",
@@ -88,6 +93,8 @@ export type PartnerDraftMutation =
   | Readonly<{ type: "product.set_image_url"; productId: string; imageUrl: string }>
   | Readonly<{ type: "product.set_product_url"; productId: string; productUrl: string | null }>
   | Readonly<{ type: "product.set_price"; productId: string; priceAmount: number }>
+  | Readonly<{ type: "product.set_primary_material"; productId: string; primaryMaterial: string | null }>
+  | Readonly<{ type: "product.set_secondary_material"; productId: string; secondaryMaterial: string | null }>
   | Readonly<{ type: "product.deactivate"; productId: string }>
   | Readonly<{ type: "product.reactivate"; productId: string }>
   | Readonly<{
@@ -123,6 +130,8 @@ export type PartnerDraftMutation =
       categoryId?: string;
       subcategoryId?: string | null;
       collectionIds?: readonly string[];
+      primaryMaterial?: string | null;
+      secondaryMaterial?: string | null;
     }>
   | Readonly<{ type: "product.create_remove"; productId: string }>
   | Readonly<{ type: "variant.set_finish_label"; variantId: string; finishLabel: string | null }>
@@ -137,6 +146,8 @@ export type PartnerDraftMutation =
       modelDepthM: number;
       modelSizingMode: ModelSizingMode;
     }>
+  | Readonly<{ type: "variant.set_primary_material"; variantId: string; primaryMaterial: string | null }>
+  | Readonly<{ type: "variant.set_secondary_material"; variantId: string; secondaryMaterial: string | null }>
   | Readonly<{ type: "variant.deactivate"; variantId: string }>
   | Readonly<{ type: "variant.reactivate"; variantId: string }>
   | Readonly<{
@@ -152,6 +163,8 @@ export type PartnerDraftMutation =
       modelHeightM?: number;
       modelDepthM?: number;
       modelSizingMode?: ModelSizingMode;
+      primaryMaterial?: string | null;
+      secondaryMaterial?: string | null;
     }>
   | Readonly<{
       type: "variant.create_edit";
@@ -165,6 +178,8 @@ export type PartnerDraftMutation =
       modelHeightM?: number;
       modelDepthM?: number;
       modelSizingMode?: ModelSizingMode;
+      primaryMaterial?: string | null;
+      secondaryMaterial?: string | null;
     }>
   | Readonly<{ type: "variant.create_remove"; variantId: string }>
   | Readonly<{ type: "collection.set_name"; collectionId: string; name: string }>
@@ -222,6 +237,8 @@ type WritableProductPatch = {
   retailer?: string;
   partnerId?: string;
   source?: string;
+  primaryMaterial?: string | null;
+  secondaryMaterial?: string | null;
 };
 
 type WritableVariantPatch = {
@@ -237,6 +254,8 @@ type WritableVariantPatch = {
   modelHeightM?: number;
   modelDepthM?: number;
   modelSizingMode?: ModelSizingMode;
+  primaryMaterial?: string | null;
+  secondaryMaterial?: string | null;
 };
 
 type WritableCollectionPatch = {
@@ -305,6 +324,14 @@ function cloneDocument(document: PartnerCatalogSyncDocument): MutablePatchDocume
 
 function extraKeys(value: Record<string, unknown>, allowed: readonly string[]): string[] {
   return Object.keys(value).filter((key) => !allowed.includes(key));
+}
+
+function draftMaterial(
+  value: unknown,
+  role: "product" | "variant",
+): string | null | undefined {
+  const parsed = parseMaterialText(value, role);
+  return parsed.ok ? parsed.value : undefined;
 }
 
 function nullableTrimmedString(value: unknown): string | null | undefined {
@@ -437,6 +464,22 @@ export function parsePartnerDraftMutation(
       const priceAmount = asFiniteNumber(value.priceAmount);
       if (!productId || priceAmount == null) return fail("invalid_mutation", "Invalid draft mutation.");
       return { ok: true, mutation: { type, productId, priceAmount } };
+    }
+    case "product.set_primary_material":
+    case "product.set_secondary_material": {
+      const field = type === "product.set_primary_material" ? "primaryMaterial" : "secondaryMaterial";
+      if (extraKeys(value, ["type", "productId", field]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const productId = asNonEmptyString(value.productId);
+      const material = draftMaterial(value[field], "product");
+      if (!productId || material === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
+      return {
+        ok: true,
+        mutation: type === "product.set_primary_material"
+          ? { type, productId, primaryMaterial: material }
+          : { type, productId, secondaryMaterial: material },
+      };
     }
     case "product.deactivate":
     case "product.reactivate": {
@@ -584,6 +627,8 @@ export function parsePartnerDraftMutation(
         "categoryId",
         "subcategoryId",
         "collectionIds",
+        "primaryMaterial",
+        "secondaryMaterial",
       ]).length > 0) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -599,6 +644,8 @@ export function parsePartnerDraftMutation(
         categoryId?: string;
         subcategoryId?: string | null;
         collectionIds?: readonly string[];
+        primaryMaterial?: string | null;
+        secondaryMaterial?: string | null;
       } = { type, productId };
       if ("name" in value) {
         const name = asNonEmptyString(value.name);
@@ -640,6 +687,16 @@ export function parsePartnerDraftMutation(
         }
         next.collectionIds = collectionIds;
       }
+      if ("primaryMaterial" in value) {
+        const primaryMaterial = draftMaterial(value.primaryMaterial, "product");
+        if (primaryMaterial === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
+        next.primaryMaterial = primaryMaterial;
+      }
+      if ("secondaryMaterial" in value) {
+        const secondaryMaterial = draftMaterial(value.secondaryMaterial, "product");
+        if (secondaryMaterial === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
+        next.secondaryMaterial = secondaryMaterial;
+      }
       if (
         next.name === undefined
         && next.imageUrl === undefined
@@ -648,6 +705,8 @@ export function parsePartnerDraftMutation(
         && next.categoryId === undefined
         && next.subcategoryId === undefined
         && next.collectionIds === undefined
+        && next.primaryMaterial === undefined
+        && next.secondaryMaterial === undefined
       ) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -725,6 +784,22 @@ export function parsePartnerDraftMutation(
         },
       };
     }
+    case "variant.set_primary_material":
+    case "variant.set_secondary_material": {
+      const field = type === "variant.set_primary_material" ? "primaryMaterial" : "secondaryMaterial";
+      if (extraKeys(value, ["type", "variantId", field]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const variantId = asNonEmptyString(value.variantId);
+      const material = draftMaterial(value[field], "variant");
+      if (!variantId || material === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
+      return {
+        ok: true,
+        mutation: type === "variant.set_primary_material"
+          ? { type, variantId, primaryMaterial: material }
+          : { type, variantId, secondaryMaterial: material },
+      };
+    }
     case "variant.create": {
       if (extraKeys(value, [
         "type",
@@ -739,6 +814,8 @@ export function parsePartnerDraftMutation(
         "modelHeightM",
         "modelDepthM",
         "modelSizingMode",
+        "primaryMaterial",
+        "secondaryMaterial",
       ]).length > 0) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -765,6 +842,14 @@ export function parsePartnerDraftMutation(
       }
       const createDimensions = mutationModelDimensions(value);
       if (!createDimensions.ok) return fail("invalid_mutation", "Invalid draft mutation.");
+      const primaryMaterial = "primaryMaterial" in value ? draftMaterial(value.primaryMaterial, "variant") : undefined;
+      const secondaryMaterial = "secondaryMaterial" in value ? draftMaterial(value.secondaryMaterial, "variant") : undefined;
+      if (primaryMaterial === undefined && "primaryMaterial" in value) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      if (secondaryMaterial === undefined && "secondaryMaterial" in value) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
       return {
         ok: true,
         mutation: {
@@ -777,6 +862,8 @@ export function parsePartnerDraftMutation(
           currentAssetId,
           ...(creationSlug !== undefined ? { creationSlug } : {}),
           ...(createDimensions.dimensions ? stageVariantModelFields(createDimensions.dimensions) : {}),
+          ...(primaryMaterial !== undefined ? { primaryMaterial } : {}),
+          ...(secondaryMaterial !== undefined ? { secondaryMaterial } : {}),
         },
       };
     }
@@ -793,6 +880,8 @@ export function parsePartnerDraftMutation(
         "modelHeightM",
         "modelDepthM",
         "modelSizingMode",
+        "primaryMaterial",
+        "secondaryMaterial",
       ]).length > 0) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -810,6 +899,8 @@ export function parsePartnerDraftMutation(
         modelHeightM?: number;
         modelDepthM?: number;
         modelSizingMode?: ModelSizingMode;
+        primaryMaterial?: string | null;
+        secondaryMaterial?: string | null;
       } = { type, variantId };
       if ("finishLabel" in value) {
         const finishLabel = nullableTrimmedString(value.finishLabel);
@@ -844,6 +935,16 @@ export function parsePartnerDraftMutation(
         next.modelDepthM = editDimensions.dimensions.depthM;
         next.modelSizingMode = editDimensions.dimensions.sizingMode;
       }
+      if ("primaryMaterial" in value) {
+        const primaryMaterial = draftMaterial(value.primaryMaterial, "variant");
+        if (primaryMaterial === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
+        next.primaryMaterial = primaryMaterial;
+      }
+      if ("secondaryMaterial" in value) {
+        const secondaryMaterial = draftMaterial(value.secondaryMaterial, "variant");
+        if (secondaryMaterial === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
+        next.secondaryMaterial = secondaryMaterial;
+      }
       if (
         next.finishLabel === undefined
         && next.sku === undefined
@@ -851,6 +952,8 @@ export function parsePartnerDraftMutation(
         && next.productUrl === undefined
         && next.currentAssetId === undefined
         && next.modelWidthM === undefined
+        && next.primaryMaterial === undefined
+        && next.secondaryMaterial === undefined
       ) {
         return fail("invalid_mutation", "Invalid draft mutation.");
       }
@@ -1377,6 +1480,23 @@ function applyOne(
       upsertById(working.products.update, "productId", mutation.productId, { productUrl: mutation.productUrl });
       return null;
     }
+    case "product.set_primary_material":
+    case "product.set_secondary_material": {
+      if (findPendingProduct(working, mutation.productId)) {
+        return fail("invalid_mutation", "Pending Product edits use create-edit semantics.");
+      }
+      const product = findProduct(catalog, mutation.productId);
+      if (!product) return fail("unknown_id", "Unknown Product.");
+      upsertById(
+        working.products.update,
+        "productId",
+        mutation.productId,
+        mutation.type === "product.set_primary_material"
+          ? { primaryMaterial: mutation.primaryMaterial }
+          : { secondaryMaterial: mutation.secondaryMaterial },
+      );
+      return null;
+    }
     case "product.set_price": {
       if (findPendingProduct(working, mutation.productId)) {
         return fail("invalid_mutation", "Pending Product edits use create-edit semantics.");
@@ -1482,6 +1602,8 @@ function applyOne(
         priceAmount: mutation.priceAmount ?? pending.priceAmount,
         categoryId: mutation.categoryId ?? pending.categoryId,
         subcategoryId: mutation.subcategoryId !== undefined ? mutation.subcategoryId : pending.subcategoryId,
+        ...(mutation.primaryMaterial !== undefined ? { primaryMaterial: mutation.primaryMaterial } : {}),
+        ...(mutation.secondaryMaterial !== undefined ? { secondaryMaterial: mutation.secondaryMaterial } : {}),
       };
       working.products.create = sortProductCreates(
         working.products.create.map((item) => (item.productId === mutation.productId ? nextProduct : item)),
@@ -1564,6 +1686,20 @@ function applyOne(
       });
       return null;
     }
+    case "variant.set_primary_material":
+    case "variant.set_secondary_material": {
+      const variant = findVariant(catalog, mutation.variantId);
+      if (!variant) return fail("unknown_id", "Unknown Variant.");
+      upsertById(
+        working.variants.update,
+        "variantId",
+        mutation.variantId,
+        mutation.type === "variant.set_primary_material"
+          ? { primaryMaterial: mutation.primaryMaterial }
+          : { secondaryMaterial: mutation.secondaryMaterial },
+      );
+      return null;
+    }
     case "variant.create": {
       if (findPendingProduct(working, mutation.productId)) {
         return fail("invalid_mutation", "Additional variants cannot target a pending Product.");
@@ -1596,6 +1732,8 @@ function applyOne(
         productUrl: mutation.productUrl,
         currentAssetId: mutation.currentAssetId,
         ...stageVariantModelFields(explicitModelDimensions(mutation)),
+        ...(mutation.primaryMaterial !== undefined ? { primaryMaterial: mutation.primaryMaterial } : {}),
+        ...(mutation.secondaryMaterial !== undefined ? { secondaryMaterial: mutation.secondaryMaterial } : {}),
       });
       working.variants.create = sortVariantCreates(working.variants.create);
       return null;
@@ -1619,6 +1757,8 @@ function applyOne(
         ...(mutation.modelWidthM !== undefined
           ? stageVariantModelFields(explicitModelDimensions(mutation))
           : {}),
+        ...(mutation.primaryMaterial !== undefined ? { primaryMaterial: mutation.primaryMaterial } : {}),
+        ...(mutation.secondaryMaterial !== undefined ? { secondaryMaterial: mutation.secondaryMaterial } : {}),
       };
       working.variants.create = sortVariantCreates(
         working.variants.create.map((item) => (item.variantId === mutation.variantId ? next : item)),
@@ -1780,6 +1920,18 @@ function normalizeProductPatch(
   if (patch.retailer !== undefined && !sameValue(patch.retailer, live.retailer)) next.retailer = patch.retailer;
   if (patch.partnerId !== undefined && !sameValue(patch.partnerId, live.partnerId)) next.partnerId = patch.partnerId;
   if (patch.source !== undefined && !sameValue(patch.source, live.source)) next.source = patch.source;
+  if (
+    patch.primaryMaterial !== undefined
+    && storedMaterial(patch.primaryMaterial) !== storedMaterial(live.primaryMaterial)
+  ) {
+    next.primaryMaterial = patch.primaryMaterial;
+  }
+  if (
+    patch.secondaryMaterial !== undefined
+    && storedMaterial(patch.secondaryMaterial) !== storedMaterial(live.secondaryMaterial)
+  ) {
+    next.secondaryMaterial = patch.secondaryMaterial;
+  }
   return Object.keys(next).length === 1 ? null : next;
 }
 
@@ -1819,6 +1971,18 @@ function normalizeVariantPatch(
       next.modelDepthM = nextDimensions.depthM;
       next.modelSizingMode = nextDimensions.sizingMode;
     }
+  }
+  if (
+    patch.primaryMaterial !== undefined
+    && storedMaterial(patch.primaryMaterial) !== storedMaterial(live.primaryMaterial)
+  ) {
+    next.primaryMaterial = patch.primaryMaterial;
+  }
+  if (
+    patch.secondaryMaterial !== undefined
+    && storedMaterial(patch.secondaryMaterial) !== storedMaterial(live.secondaryMaterial)
+  ) {
+    next.secondaryMaterial = patch.secondaryMaterial;
   }
   return Object.keys(next).length === 1 ? null : next;
 }

@@ -13,6 +13,10 @@ import {
 
 type AnySupabase = SupabaseClient;
 
+function missingMaterialColumn(error: string | null): boolean {
+  return Boolean(error && /primary_material|secondary_material/i.test(error));
+}
+
 async function selectRows(
   supabase: AnySupabase,
   table: string,
@@ -41,21 +45,44 @@ export async function loadDurableStageCatalogRows(
   );
   if (assets.error || !assets.rows) return { rows: null, error: assets.error };
 
-  const products = await selectRows(
+  const productColumns =
+    "product_id, name, brand, retailer, image_url, product_url, price_amount, price_currency, category_id, subcategory_id, source, partner_id, default_variant_id, status, sort_order";
+  const productMaterialColumns = `${productColumns}, primary_material, secondary_material`;
+  let products = await selectRows(
     supabase,
     STAGE_CATALOG_TABLES.products,
-    "product_id, name, brand, retailer, image_url, product_url, price_amount, price_currency, category_id, subcategory_id, source, partner_id, default_variant_id, status, sort_order",
+    productMaterialColumns,
     "sort_order",
   );
+  if (missingMaterialColumn(products.error)) {
+    products = await selectRows(
+      supabase,
+      STAGE_CATALOG_TABLES.products,
+      productColumns,
+      "sort_order",
+    );
+  }
   if (products.error || !products.rows) return { rows: null, error: products.error };
 
-  const variants = await selectRows(
+  const variantColumns =
+    "variant_id, product_id, current_asset_id, finish_label, sku, price_amount, price_currency, product_url, status, sort_order, model_width_m, model_height_m, model_depth_m, model_sizing_mode";
+  const variantMaterialColumns = `${variantColumns}, primary_material, secondary_material`;
+  let variants = await selectRows(
     supabase,
     STAGE_CATALOG_TABLES.variants,
-    "variant_id, product_id, current_asset_id, finish_label, sku, price_amount, price_currency, product_url, status, sort_order, model_width_m, model_height_m, model_depth_m, model_sizing_mode",
+    variantMaterialColumns,
     "sort_order",
     "variant_id",
   );
+  if (missingMaterialColumn(variants.error)) {
+    variants = await selectRows(
+      supabase,
+      STAGE_CATALOG_TABLES.variants,
+      variantColumns,
+      "sort_order",
+      "variant_id",
+    );
+  }
   if (variants.error || !variants.rows) return { rows: null, error: variants.error };
 
   const collections = await selectRows(

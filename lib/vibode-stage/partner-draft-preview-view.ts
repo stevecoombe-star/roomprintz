@@ -80,6 +80,8 @@ const COLUMN_LABELS: Readonly<Record<string, string>> = Object.freeze({
   price_currency: "Currency",
   finish_label: "Finish",
   sku: "SKU",
+  primary_material: "Primary Material / Finish",
+  secondary_material: "Secondary Material / Finish",
 });
 
 function displayValue(value: unknown): string {
@@ -215,6 +217,47 @@ function asCollectionCreates(value: unknown): PartnerDraftPreviewView["collectio
   });
 }
 
+function materialPreviewText(entity: "product" | "variant", value: unknown): string {
+  if (entity === "variant" && value === "") return "No material";
+  if (value == null || value === "") return entity === "variant" ? "Product default" : "—";
+  return String(value);
+}
+
+function appendMaterialPreviewChanges(
+  value: unknown,
+  productUpdates: Array<{ productId: string; changes: PartnerDraftPreviewChange[] }>,
+  variantUpdates: Array<{ variantId: string; productId: string; changes: PartnerDraftPreviewChange[] }>,
+): void {
+  if (!Array.isArray(value)) return;
+  for (const item of value) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const entity = record.entity === "variant" ? "variant" : record.entity === "product" ? "product" : null;
+    const column = record.column === "primary_material" || record.column === "secondary_material"
+      ? record.column
+      : null;
+    const productId = asString(record.productId);
+    if (!entity || !column || !productId) continue;
+    const change: PartnerDraftPreviewChange = {
+      column,
+      label: columnLabel(column),
+      previous: materialPreviewText(entity, record.previous),
+      next: materialPreviewText(entity, record.next),
+    };
+    if (entity === "product") {
+      const existing = productUpdates.find((entry) => entry.productId === productId);
+      if (existing) existing.changes.push(change);
+      else productUpdates.push({ productId, changes: [change] });
+      continue;
+    }
+    const variantId = asString(record.variantId);
+    if (!variantId) continue;
+    const existing = variantUpdates.find((entry) => entry.variantId === variantId);
+    if (existing) existing.changes.push(change);
+    else variantUpdates.push({ variantId, productId, changes: [change] });
+  }
+}
+
 export function presentPartnerDraftPreview(body: unknown): PartnerDraftPreviewView | Readonly<{ error: string }> {
   const record = asRecord(body);
   if (!record) return { error: "Preview request failed." };
@@ -250,6 +293,7 @@ export function presentPartnerDraftPreview(body: unknown): PartnerDraftPreviewVi
       return [{ variantId, productId: productId ?? "", changes: asChanges(next?.changes) }];
     })
     : [];
+  appendMaterialPreviewChanges(record.materialFieldUpdates, productUpdates, variantUpdates);
   const collectionUpdates = Array.isArray(record.collectionUpdates)
     ? record.collectionUpdates.flatMap((item) => {
       const next = asRecord(item);

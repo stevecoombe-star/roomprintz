@@ -24,22 +24,23 @@ const HarmonizeExportContext = createContext<HarmonizeExportContextValue | null>
 
 export function HarmonizeExportProvider({ children }: { children: ReactNode }) {
   const runnerRef = useRef<HarmonizeExportRunner | null>(null);
-  const [version, setVersion] = useState(0);
+  const [ready, setReady] = useState(false);
   const registerRunner = useCallback((next: HarmonizeExportRunner | null) => {
     runnerRef.current = next;
-    setVersion((current) => current + 1);
+    setReady(next != null);
+  }, []);
+  const run = useCallback(() => {
+    const current = runnerRef.current;
+    if (!current) {
+      return Promise.reject(new HarmonizeExportError("STAGE scene is not ready to export."));
+    }
+    return current();
   }, []);
   const value = useMemo<HarmonizeExportContextValue>(() => ({
-    ready: runnerRef.current != null,
-    run: () => {
-      const current = runnerRef.current;
-      if (!current) {
-        return Promise.reject(new HarmonizeExportError("STAGE scene is not ready to export."));
-      }
-      return current();
-    },
+    ready,
+    run,
     registerRunner,
-  }), [registerRunner, version]);
+  }), [ready, run, registerRunner]);
   return (
     <HarmonizeExportContext.Provider value={value}>
       {children}

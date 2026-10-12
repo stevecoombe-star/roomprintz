@@ -15,7 +15,7 @@ import {
   planPartnerCatalogSync,
 } from "./partner-catalog-sync";
 import type { PartnerCommercialEligibilityContext } from "./partner-commercial-assets";
-import { partnerRuntimePlanVersionForPublish } from "./partner-catalog-runtime-executor-v8";
+import { partnerRuntimePlanVersionForPublish } from "./partner-catalog-runtime-executor-v9";
 import type {
   PartnerCatalogSyncPlan,
   PlannedCollectionCreate,
@@ -44,7 +44,7 @@ export type PartnerCatalogPreviewDto = Readonly<{
   ok: boolean;
   noOp: boolean;
   partnerId: string | null;
-  planVersion: 1 | 4 | 5 | 6 | 7 | 8 | null;
+  planVersion: 1 | 4 | 5 | 6 | 7 | 8 | 9 | null;
   issues: readonly ProductVariantIssue[];
   partnerStatusTransition: PlannedPartnerStatusTransition | null;
   productCreates: readonly PlannedProductCreate[];
@@ -59,6 +59,7 @@ export type PartnerCatalogPreviewDto = Readonly<{
   productReactivations: readonly PlannedProductStatusTransition[];
   variantDeactivations: readonly PlannedVariantStatusTransition[];
   variantReactivations: readonly PlannedVariantStatusTransition[];
+  materialFieldUpdates?: PartnerCatalogSyncPlan["materialFieldUpdates"];
 }>;
 
 export type PartnerCatalogPreviewResult = Readonly<{
@@ -94,6 +95,7 @@ export function presentPartnerCatalogSyncPlan(
     | "variantDeactivations"
     | "variantReactivations"
     | "variantModelDimensionUpdates"
+    | "materialFieldUpdates"
   >,
 ): PartnerCatalogPreviewDto {
   return {
@@ -115,6 +117,9 @@ export function presentPartnerCatalogSyncPlan(
     productReactivations: plan.productReactivations,
     variantDeactivations: plan.variantDeactivations,
     variantReactivations: plan.variantReactivations,
+    ...(plan.materialFieldUpdates && plan.materialFieldUpdates.length > 0
+      ? { materialFieldUpdates: plan.materialFieldUpdates }
+      : {}),
   };
 }
 

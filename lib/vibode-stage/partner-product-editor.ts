@@ -15,6 +15,14 @@
 
 import { variantCreationSlugFor } from "./partner-catalog-ids";
 import {
+  displayProductMaterial,
+  displayVariantMaterial,
+  parseMaterialText,
+  variantMaterialMode,
+  variantMaterialStored,
+  type VariantMaterialMode,
+} from "./material-text";
+import {
   explicitModelDimensions,
   formatModelDimensionList,
   PARTNER_MODEL_DIMENSIONS_INVALID,
@@ -63,6 +71,8 @@ export type PartnerEditorMutation =
   | Readonly<{ type: "product.set_image_url"; productId: string; imageUrl: string }>
   | Readonly<{ type: "product.set_product_url"; productId: string; productUrl: string | null }>
   | Readonly<{ type: "product.set_price"; productId: string; priceAmount: number }>
+  | Readonly<{ type: "product.set_primary_material"; productId: string; primaryMaterial: string | null }>
+  | Readonly<{ type: "product.set_secondary_material"; productId: string; secondaryMaterial: string | null }>
   | Readonly<{ type: "product.deactivate"; productId: string }>
   | Readonly<{ type: "product.reactivate"; productId: string }>
   | Readonly<{ type: "variant.set_finish_label"; variantId: string; finishLabel: string | null }>
@@ -77,6 +87,8 @@ export type PartnerEditorMutation =
     modelDepthM: number;
     modelSizingMode: ModelSizingMode;
   }>
+  | Readonly<{ type: "variant.set_primary_material"; variantId: string; primaryMaterial: string | null }>
+  | Readonly<{ type: "variant.set_secondary_material"; variantId: string; secondaryMaterial: string | null }>
   | Readonly<{ type: "variant.deactivate"; variantId: string }>
   | Readonly<{ type: "variant.reactivate"; variantId: string }>
   | Readonly<{
@@ -105,6 +117,8 @@ export type PartnerEditorMutation =
     modelHeightM?: number;
     modelDepthM?: number;
     modelSizingMode?: ModelSizingMode;
+    primaryMaterial?: string | null;
+    secondaryMaterial?: string | null;
   }>
   | Readonly<{ type: "variant.create_remove"; variantId: string }>
   | Readonly<{ type: "collection.set_membership"; collectionId: string; productIds: readonly string[] }>
@@ -155,6 +169,8 @@ export type PartnerEditorProductFields = Readonly<{
   imageUrl: string;
   productUrl: string;
   price: string;
+  primaryMaterial: string;
+  secondaryMaterial: string;
 }>;
 
 export type PartnerEditorVariantFields = Readonly<{
@@ -162,6 +178,10 @@ export type PartnerEditorVariantFields = Readonly<{
   sku: string;
   price: string;
   productUrl: string;
+  primaryMaterialMode: VariantMaterialMode;
+  primaryMaterialText: string;
+  secondaryMaterialMode: VariantMaterialMode;
+  secondaryMaterialText: string;
 }>;
 
 const PRICE_MESSAGE = "Enter a price of zero or more.";
@@ -279,11 +299,15 @@ export function readPartnerProductFields(
 ): PartnerEditorProductFields {
   const patch = productPatch(document, product.productId);
   const price = effective(product.priceAmount, patch?.priceAmount);
+  const primary = effective(product.primaryMaterial ?? null, patch?.primaryMaterial);
+  const secondary = effective(product.secondaryMaterial ?? null, patch?.secondaryMaterial);
   return {
     name: effective(product.name, patch?.name),
     imageUrl: effective(product.imageUrl, patch?.imageUrl),
     productUrl: effective(product.productUrl, patch?.productUrl) ?? "",
     price: price == null ? "" : String(price),
+    primaryMaterial: typeof primary === "string" ? primary : "",
+    secondaryMaterial: typeof secondary === "string" ? secondary : "",
   };
 }
 
@@ -293,22 +317,34 @@ export function readPartnerVariantFields(
 ): PartnerEditorVariantFields {
   const patch = variantPatch(document, variant.variantId);
   const price = effective(variant.priceAmount, patch?.priceAmount);
+  const primary = variantMaterialMode(effective(variant.primaryMaterial, patch?.primaryMaterial));
+  const secondary = variantMaterialMode(effective(variant.secondaryMaterial, patch?.secondaryMaterial));
   return {
     finish: effective(variant.finishLabel, patch?.finishLabel) ?? "",
     sku: effective(variant.sku, patch?.sku) ?? "",
     price: price == null ? "" : String(price),
     productUrl: effective(variant.productUrl, patch?.productUrl) ?? "",
+    primaryMaterialMode: primary.mode,
+    primaryMaterialText: primary.text,
+    secondaryMaterialMode: secondary.mode,
+    secondaryMaterialText: secondary.text,
   };
 }
 
 export function readPendingVariantFields(
   create: PartnerCatalogSyncDocument["variants"]["create"][number],
 ): PartnerEditorVariantFields {
+  const primary = variantMaterialMode(create.primaryMaterial);
+  const secondary = variantMaterialMode(create.secondaryMaterial);
   return {
     finish: create.finishLabel ?? "",
     sku: create.sku ?? "",
     price: String(create.priceAmount ?? ""),
     productUrl: create.productUrl ?? "",
+    primaryMaterialMode: primary.mode,
+    primaryMaterialText: primary.text,
+    secondaryMaterialMode: secondary.mode,
+    secondaryMaterialText: secondary.text,
   };
 }
 
@@ -403,6 +439,69 @@ export function partnerVariantStatusChangeLabel(identity: string): string {
   const name = identity.trim();
   if (!name || name === "Variant") return "Variant status";
   return `Variant "${name}" status`;
+}
+
+export function commitPartnerProductMaterial(
+  productId: string,
+  field: "primary" | "secondary",
+  next: string,
+  saved: string,
+): PartnerEditorCommit {
+  const parsed = parseMaterialText(next, "product");
+  if (!parsed.ok) return { state: "invalid", message: parsed.message };
+  const savedParsed = parseMaterialText(saved, "product");
+  const savedValue = savedParsed.ok ? savedParsed.value : null;
+  if (parsed.value === savedValue) return { state: "unchanged" };
+  return field === "primary"
+    ? { state: "mutation", mutation: { type: "product.set_primary_material", productId, primaryMaterial: parsed.value } }
+    : { state: "mutation", mutation: { type: "product.set_secondary_material", productId, secondaryMaterial: parsed.value } };
+}
+
+function commitVariantMaterial(
+  variantId: string,
+  field: "primary" | "secondary",
+  next: Readonly<{ mode: VariantMaterialMode; text: string }>,
+  saved: Readonly<{ mode: VariantMaterialMode; text: string }>,
+  pending: boolean,
+): PartnerEditorCommit {
+  const stored = next.mode === "custom" ? parseMaterialText(next.text, "variant") : { ok: true as const, value: variantMaterialStored(next.mode, next.text) };
+  if (!stored.ok) return { state: "invalid", message: stored.message };
+  if (next.mode === "custom" && (!stored.value || stored.value.length === 0)) {
+    return { state: "invalid", message: "Enter a material description, or choose another option." };
+  }
+  if (stored.value === variantMaterialStored(saved.mode, saved.text)) return { state: "unchanged" };
+  if (pending) {
+    return {
+      state: "mutation",
+      mutation: field === "primary"
+        ? { type: "variant.create_edit", variantId, primaryMaterial: stored.value }
+        : { type: "variant.create_edit", variantId, secondaryMaterial: stored.value },
+    };
+  }
+  return {
+    state: "mutation",
+    mutation: field === "primary"
+      ? { type: "variant.set_primary_material", variantId, primaryMaterial: stored.value }
+      : { type: "variant.set_secondary_material", variantId, secondaryMaterial: stored.value },
+  };
+}
+
+export function commitPartnerVariantMaterial(
+  variantId: string,
+  field: "primary" | "secondary",
+  next: Readonly<{ mode: VariantMaterialMode; text: string }>,
+  saved: Readonly<{ mode: VariantMaterialMode; text: string }>,
+): PartnerEditorCommit {
+  return commitVariantMaterial(variantId, field, next, saved, false);
+}
+
+export function commitPendingVariantMaterial(
+  variantId: string,
+  field: "primary" | "secondary",
+  next: Readonly<{ mode: VariantMaterialMode; text: string }>,
+  saved: Readonly<{ mode: VariantMaterialMode; text: string }>,
+): PartnerEditorCommit {
+  return commitVariantMaterial(variantId, field, next, saved, true);
 }
 
 export function commitPartnerProductPrice(productId: string, next: string, saved: string): PartnerEditorCommit {
@@ -824,6 +923,12 @@ export function describeSavedPartnerProductChanges(input: Readonly<{
   if (patch?.priceAmount !== undefined) {
     pushChange(lines, "Price", display(input.product.priceAmount), display(patch.priceAmount));
   }
+  if (patch?.primaryMaterial !== undefined) {
+    pushChange(lines, "Primary Material / Finish", displayProductMaterial(input.product.primaryMaterial), displayProductMaterial(patch.primaryMaterial));
+  }
+  if (patch?.secondaryMaterial !== undefined) {
+    pushChange(lines, "Secondary Material / Finish", displayProductMaterial(input.product.secondaryMaterial), displayProductMaterial(patch.secondaryMaterial));
+  }
   pushProductStatusChange(
     lines,
     partnerEditorPendingProductStatus(input.document, input.product.productId),
@@ -850,6 +955,22 @@ export function describeSavedPartnerProductChanges(input: Readonly<{
     }
     if (variantUpdate.productUrl !== undefined) {
       pushChange(lines, `${heading} · Product URL`, display(variant.productUrl), display(variantUpdate.productUrl));
+    }
+    if (variantUpdate.primaryMaterial !== undefined) {
+      pushChange(
+        lines,
+        `${heading} · Primary Material / Finish`,
+        displayVariantMaterial(variant.primaryMaterial),
+        displayVariantMaterial(variantUpdate.primaryMaterial),
+      );
+    }
+    if (variantUpdate.secondaryMaterial !== undefined) {
+      pushChange(
+        lines,
+        `${heading} · Secondary Material / Finish`,
+        displayVariantMaterial(variant.secondaryMaterial),
+        displayVariantMaterial(variantUpdate.secondaryMaterial),
+      );
     }
     const nextDimensions = explicitModelDimensions(variantUpdate);
     if (nextDimensions) {

@@ -49,6 +49,10 @@ import {
   partnerRuntimePlanNeedsV8,
   toRuntimeApplyPayloadV8,
 } from "./partner-catalog-runtime-executor-v8";
+import {
+  partnerRuntimePlanNeedsV9,
+  toRuntimeApplyPayloadV9,
+} from "./partner-catalog-runtime-executor-v9";
 import { persistablePartnerPatchDocument } from "./partner-draft-mutations";
 import {
   parsePartnerDraftTouchedBase,
@@ -82,6 +86,7 @@ export const STAGE_PARTNER_APPLY_RPC_V5 = "vibode_stage_apply_partner_patch_v5";
 export const STAGE_PARTNER_APPLY_RPC_V6 = "vibode_stage_apply_partner_patch_v6";
 export const STAGE_PARTNER_APPLY_RPC_V7 = "vibode_stage_apply_partner_patch_v7";
 export const STAGE_PARTNER_APPLY_RPC_V8 = "vibode_stage_apply_partner_patch_v8";
+export const STAGE_PARTNER_APPLY_RPC_V9 = "vibode_stage_apply_partner_patch_v9";
 
 export const PARTNER_PUBLISH_REJECT_BODY_KEYS = Object.freeze([
   "partnerId",
@@ -225,6 +230,27 @@ export function detectPartnerPublishConflicts(input: Readonly<{
         field: "model_dimensions",
         expected: base.model_dimensions,
         live,
+      });
+    }
+  }
+
+  for (const update of input.plan.materialFieldUpdates ?? []) {
+    const base = update.entity === "product"
+      ? input.touchedBase.products[update.productId]
+      : input.touchedBase.variants[update.variantId ?? ""];
+    const id = update.entity === "product" ? update.productId : update.variantId ?? "";
+    if (!base || !(update.column in base)) {
+      missingCoverage = true;
+      continue;
+    }
+    const expected = (base as Record<string, unknown>)[update.column];
+    if (!sameTouchedValue(expected, update.previous)) {
+      conflicts.push({
+        entity: update.entity,
+        id,
+        field: update.column,
+        expected,
+        live: update.previous,
       });
     }
   }
@@ -571,6 +597,7 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
     const variantModelDimensions = Array.isArray(payload.variantModelDimensions)
       ? payload.variantModelDimensions
       : [];
+    const materialUpdates = Array.isArray(payload.materialUpdates) ? payload.materialUpdates : [];
     const isNoop = (
       productUpdates.length
       + variantUpdates.length
@@ -583,6 +610,7 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
       + productStatusTransitions.length
       + variantStatusTransitions.length
       + variantModelDimensions.length
+      + materialUpdates.length
     ) === 0;
     const status = isNoop ? "noop" : "accepted";
     const plan: Record<string, unknown> = {
@@ -594,7 +622,15 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
       membershipAdds,
       membershipRemoves,
     };
-    if (payload.planVersion === 8) {
+    if (payload.planVersion === 9) {
+      plan.productCreates = productCreates;
+      plan.variantCreates = variantCreates;
+      plan.collectionCreates = collectionCreates;
+      plan.productStatusTransitions = productStatusTransitions;
+      plan.variantStatusTransitions = variantStatusTransitions;
+      plan.variantModelDimensions = variantModelDimensions;
+      plan.materialUpdates = materialUpdates;
+    } else if (payload.planVersion === 8) {
       plan.productCreates = productCreates;
       plan.variantCreates = variantCreates;
       plan.collectionCreates = collectionCreates;
@@ -841,7 +877,9 @@ export async function publishPartnerPatchDraft(input: Readonly<{
     });
   }
 
-  const serialized = partnerRuntimePlanNeedsV8(plan)
+  const serialized = partnerRuntimePlanNeedsV9(plan)
+    ? toRuntimeApplyPayloadV9(plan)
+    : partnerRuntimePlanNeedsV8(plan)
     ? toRuntimeApplyPayloadV8(plan)
     : partnerRuntimePlanNeedsV7(plan)
     ? toRuntimeApplyPayloadV7(plan)

@@ -12,6 +12,15 @@ import {
   classifyAfcR3cImagePairCompatibility,
 } from "@/app/admin/3d-room-lab/research/afc-r3c-image-pair-compatibility";
 
+import {
+  assembleHarmonizePrompt,
+  HARMONIZE_PROMPT_ASSEMBLY_VERSION,
+  HARMONIZE_PROMPT_FILE,
+  type HarmonizePromptManifest,
+} from "./harmonize-prompt";
+import type { HarmonizeMaterialCatalog } from "./harmonize-materials";
+import { HARMONIZE_UNIVERSAL_PROMPT_VERSION } from "./harmonize-universal-prompt-v2";
+
 export const HARMONIZE_EXPORT_VERSION = "harmonize-export/1" as const;
 
 /** Same admission bound as AFC image-pair compatibility. */
@@ -27,6 +36,7 @@ export const HARMONIZE_EXPORT_FILES = Object.freeze({
   furniture: "C-furniture-only.png",
   matte: "D-furniture-matte.png",
   referenceEmpty: "E-authoritative-empty.png",
+  prompt: HARMONIZE_PROMPT_FILE,
   manifest: "manifest.json",
 });
 
@@ -37,6 +47,7 @@ export const HARMONIZE_EXPORT_LIMITATIONS = Object.freeze([
   "The certified camera keeps its frame aspect, vertical FOV, and pose. Normalized image coordinates map onto the viewport background grid. The live viewport is unchanged.",
   "D marks a pixel white when furniture alpha is greater than zero, including antialiased edges.",
   "Certified EMPTY is included as E only when it is not already the active viewport background. E is a reference file and is not the harmonization background.",
+  "Material lines use the placed product and variant only. Image left and right come from the certified camera. A finish name does not assign a material when two objects of the same product cannot be separated in the image. Those assignments are left out of the prompt and recorded in the manifest.",
 ]);
 
 const PNG_SIGNATURE = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
@@ -91,6 +102,8 @@ export type HarmonizeFurnitureCapture = Readonly<{
   certifiedMetricScale: number;
   effectiveMetricScale: number;
   generationId: string;
+  /** Frozen with the furniture pixels. Absent means this capture had no catalog. */
+  materialCatalog?: HarmonizeMaterialCatalog | null;
 }>;
 
 export type HarmonizeFurnitureCapturer = (
@@ -184,6 +197,7 @@ export type HarmonizeManifest = Readonly<{
   objects: readonly HarmonizeExportObject[];
   unmountedObjectIds: readonly string[];
   sceneSnapshotSha256: string;
+  harmonizePrompt: HarmonizePromptManifest;
   limitations: readonly string[];
 }>;
 
@@ -826,6 +840,8 @@ export async function buildHarmonizeZip(input: Readonly<{
   capture: HarmonizeFurnitureCapture;
   alignment: HarmonizeFrameSuccess;
   referenceEmptyBytes?: Uint8Array | null;
+  /** Test hook. Production uses the verified universal prompt constant. */
+  promptCore?: string;
 }>): Promise<Readonly<{ fileName: string; bytes: Uint8Array; manifest: HarmonizeManifest }>> {
   if (input.alignment == null || input.background == null) {
     throw new HarmonizeExportError(
@@ -953,6 +969,18 @@ export async function buildHarmonizeZip(input: Readonly<{
       unmountedObjectIds,
     }),
   ));
+  const prompt = assembleHarmonizePrompt({
+    objects,
+    camera: input.capture.camera,
+    catalog: input.capture.materialCatalog ?? null,
+    ...(input.promptCore !== undefined ? { core: input.promptCore } : {}),
+  });
+  let promptSha256: string | null = null;
+  if (prompt.text) {
+    const promptBytes = utf8(prompt.text);
+    promptSha256 = await sha256HexBytes(promptBytes);
+    packageFiles.push({ name: HARMONIZE_EXPORT_FILES.prompt, data: promptBytes });
+  }
   const manifest: HarmonizeManifest = {
     exportVersion: HARMONIZE_EXPORT_VERSION,
     roomId: input.roomId,
@@ -971,6 +999,16 @@ export async function buildHarmonizeZip(input: Readonly<{
     objects,
     unmountedObjectIds,
     sceneSnapshotSha256,
+    harmonizePrompt: {
+      coreVersion: HARMONIZE_UNIVERSAL_PROMPT_VERSION,
+      assemblyVersion: HARMONIZE_PROMPT_ASSEMBLY_VERSION,
+      coreAvailable: prompt.coreAvailable,
+      sha256: promptSha256,
+      sceneSnapshotSha256,
+      materialGuidanceIncluded: prompt.materialGuidanceIncluded,
+      catalogCapturedWithScene: input.capture.materialCatalog != null,
+      objects: prompt.objects,
+    },
     emptyReference,
     limitations: HARMONIZE_EXPORT_LIMITATIONS,
   };

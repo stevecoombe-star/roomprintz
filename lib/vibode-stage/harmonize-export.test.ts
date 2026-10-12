@@ -39,6 +39,7 @@ import {
   type HarmonizeFrameSuccess,
   type HarmonizeFurnitureCapture,
 } from "./harmonize-export";
+import { HARMONIZE_UNIVERSAL_PROMPT_V2 } from "./harmonize-universal-prompt-v2";
 
 const ROOM_ID = "11111111-1111-4111-8111-111111111111";
 const GENERATION_ID = "22222222-2222-4222-8222-222222222222";
@@ -305,8 +306,11 @@ test("package aligns B C and D to the active EMPTY viewport and preserves its sa
     HARMONIZE_EXPORT_FILES.composite,
     HARMONIZE_EXPORT_FILES.furniture,
     HARMONIZE_EXPORT_FILES.matte,
+    HARMONIZE_EXPORT_FILES.prompt,
     HARMONIZE_EXPORT_FILES.manifest,
   ]);
+  const promptText = new TextDecoder().decode(files.get(HARMONIZE_EXPORT_FILES.prompt));
+  assert.equal(promptText.startsWith(HARMONIZE_UNIVERSAL_PROMPT_V2), true);
   assert.deepEqual(files.get(HARMONIZE_EXPORT_FILES.empty), emptyBytes);
   const composite = await decodePngRgba(files.get(HARMONIZE_EXPORT_FILES.composite)!);
   const cutout = await decodePngRgba(files.get(HARMONIZE_EXPORT_FILES.furniture)!);

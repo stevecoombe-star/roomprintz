@@ -29,6 +29,7 @@ import {
   stageCommercialStatus,
 } from "./catalog";
 import { FORBIDDEN_STAGE_CATALOG_TABLES } from "./catalog-store";
+import { parseMaterialText, storedMaterial, withMaterialFields } from "./material-text";
 import {
   explicitModelDimensions,
   parseModelDimensionFields,
@@ -92,6 +93,7 @@ import type {
   PlannedCollectionCreate,
   PlannedCollectionUpdate,
   PlannedFieldChange,
+  PlannedMaterialFieldUpdate,
   PlannedMembership,
   PlannedPartnerStatusTransition,
   PlannedProductCreate,
@@ -119,6 +121,7 @@ export type {
   PlannedCollectionCreate,
   PlannedCollectionUpdate,
   PlannedFieldChange,
+  PlannedMaterialFieldUpdate,
   PlannedMembership,
   PlannedPartnerStatusTransition,
   PlannedProductCreate,
@@ -166,6 +169,8 @@ const PRODUCT_UPDATE_KEYS = Object.freeze([
   "retailer",
   "partnerId",
   "source",
+  "primaryMaterial",
+  "secondaryMaterial",
 ]);
 
 const VARIANT_UPDATE_KEYS = Object.freeze([
@@ -181,6 +186,8 @@ const VARIANT_UPDATE_KEYS = Object.freeze([
   "modelHeightM",
   "modelDepthM",
   "modelSizingMode",
+  "primaryMaterial",
+  "secondaryMaterial",
 ]);
 
 const VARIANT_CREATE_KEYS = VARIANT_UPDATE_KEYS;
@@ -195,6 +202,8 @@ const PRODUCT_CREATE_KEYS = Object.freeze([
   "categoryId",
   "subcategoryId",
   "defaultVariantId",
+  "primaryMaterial",
+  "secondaryMaterial",
 ]);
 
 const COLLECTION_CREATE_KEYS = Object.freeze([
@@ -475,6 +484,8 @@ export type PartnerCatalogProductPatch = Readonly<{
   retailer?: string;
   partnerId?: string;
   source?: string;
+  primaryMaterial?: string | null;
+  secondaryMaterial?: string | null;
 }>;
 
 export type PartnerCatalogVariantPatch = Readonly<{
@@ -490,6 +501,8 @@ export type PartnerCatalogVariantPatch = Readonly<{
   modelHeightM?: number;
   modelDepthM?: number;
   modelSizingMode?: ModelDimensions["sizingMode"];
+  primaryMaterial?: string | null;
+  secondaryMaterial?: string | null;
 }>;
 
 export type PartnerCatalogVariantCreate = Readonly<{
@@ -505,6 +518,8 @@ export type PartnerCatalogVariantCreate = Readonly<{
   modelHeightM?: number;
   modelDepthM?: number;
   modelSizingMode?: ModelDimensions["sizingMode"];
+  primaryMaterial?: string | null;
+  secondaryMaterial?: string | null;
 }>;
 
 export type PartnerCatalogProductCreate = Readonly<{
@@ -517,6 +532,8 @@ export type PartnerCatalogProductCreate = Readonly<{
   categoryId: string;
   subcategoryId: string | null;
   defaultVariantId: string;
+  primaryMaterial?: string | null;
+  secondaryMaterial?: string | null;
 }>;
 
 export type PartnerCatalogCollectionCreate = Readonly<{
@@ -609,6 +626,8 @@ function parseProductPatch(
     retailer?: string;
     partnerId?: string;
     source?: string;
+    primaryMaterial?: string | null;
+    secondaryMaterial?: string | null;
   } = { productId };
   if ("name" in value) {
     const name = asNonEmptyString(value.name);
@@ -684,6 +703,7 @@ function parseProductPatch(
       issues.push(issue("IDENTITY_IMMUTABLE", `products.update[${index}].source must be a non-empty string.`));
     } else patch.source = source;
   }
+  if (!copyParsedMaterials(patch, value, issues, `products.update[${index}]`, "product")) return null;
   return patch;
 }
 
@@ -708,6 +728,25 @@ function copyParsedModelDimensions<T extends {
     target.modelHeightM = parsed.dimensions.heightM;
     target.modelDepthM = parsed.dimensions.depthM;
     target.modelSizingMode = parsed.dimensions.sizingMode;
+  }
+  return true;
+}
+
+function copyParsedMaterials(
+  target: { primaryMaterial?: string | null; secondaryMaterial?: string | null },
+  value: Record<string, unknown>,
+  issues: ProductVariantIssue[],
+  label: string,
+  role: "product" | "variant",
+): boolean {
+  for (const field of ["primaryMaterial", "secondaryMaterial"] as const) {
+    if (!(field in value)) continue;
+    const parsed = parseMaterialText(value[field], role);
+    if (!parsed.ok) {
+      issues.push(issue("INVALID_JSON", `${label}.${field} ${parsed.message}`));
+      return false;
+    }
+    target[field] = parsed.value;
   }
   return true;
 }
@@ -765,6 +804,8 @@ function parseVariantPatch(
     modelHeightM?: number;
     modelDepthM?: number;
     modelSizingMode?: ModelDimensions["sizingMode"];
+    primaryMaterial?: string | null;
+    secondaryMaterial?: string | null;
   } = { variantId };
   if ("productId" in value) {
     const productId = asNonEmptyString(value.productId);
@@ -809,6 +850,7 @@ function parseVariantPatch(
     } else patch.currentAssetId = currentAssetId;
   }
   if (!copyParsedModelDimensions(patch, value, issues, `variants.update[${index}]`)) return null;
+  if (!copyParsedMaterials(patch, value, issues, `variants.update[${index}]`, "variant")) return null;
   return patch;
 }
 
@@ -877,6 +919,8 @@ function parseVariantCreate(
     modelHeightM?: number;
     modelDepthM?: number;
     modelSizingMode?: ModelDimensions["sizingMode"];
+    primaryMaterial?: string | null;
+    secondaryMaterial?: string | null;
   } = {
     variantId,
     productId,
@@ -888,6 +932,7 @@ function parseVariantCreate(
     currentAssetId,
   };
   if (!copyParsedModelDimensions(create, value, issues, `variants.create[${index}]`)) return null;
+  if (!copyParsedMaterials(create, value, issues, `variants.create[${index}]`, "variant")) return null;
   return create;
 }
 
@@ -961,7 +1006,7 @@ function parseProductCreate(
   ) {
     return null;
   }
-  return {
+  const create: PartnerCatalogProductCreate = {
     productId,
     name,
     imageUrl,
@@ -972,6 +1017,8 @@ function parseProductCreate(
     subcategoryId,
     defaultVariantId,
   };
+  if (!copyParsedMaterials(create, value, issues, `products.create[${index}]`, "product")) return null;
+  return create;
 }
 
 function parseCollectionCreate(
@@ -1590,7 +1637,7 @@ export function planPartnerCatalogSync(input: Readonly<{
     if (patch.retailer != null && patch.retailer !== partner.name) {
       issues.push(issue("PARTNER_NAME_MISMATCH", `Product ${patch.productId} retailer must match Partner name.`));
     }
-    const next: StageProduct = {
+    const next: StageProduct = withMaterialFields({
       ...current,
       name: patch.name ?? current.name,
       imageUrl: patch.imageUrl ?? current.imageUrl,
@@ -1601,7 +1648,10 @@ export function planPartnerCatalogSync(input: Readonly<{
       defaultVariantId: patch.defaultVariantId ?? current.defaultVariantId,
       brand: partner.name,
       retailer: partner.name,
-    };
+    }, patch, {
+      primary: patch.primaryMaterial !== undefined,
+      secondary: patch.secondaryMaterial !== undefined,
+    });
     issues.push(...validateRequiredAbsoluteHttpsUrl(next.productUrl));
     issues.push(...validatePartnerCatalogImageUrl(next.imageUrl, repoRoot));
     issues.push(...validateBrowseTaxonomy(next.categoryId, next.subcategoryId));
@@ -1662,6 +1712,10 @@ export function planPartnerCatalogSync(input: Readonly<{
         next = { ...next, ...stageVariantModelFields(dimensions) };
       }
     }
+    next = withMaterialFields(next, patch, {
+      primary: patch.primaryMaterial !== undefined,
+      secondary: patch.secondaryMaterial !== undefined,
+    });
     if (next.priceAmount != null) {
       issues.push(...validateFiniteNonNegativePrice(next.priceAmount, "Variant"));
     }
@@ -1747,11 +1801,21 @@ export function planPartnerCatalogSync(input: Readonly<{
       issues.push(...registration.errors);
       continue;
     }
-    working.products.push({
+    working.products.push(withMaterialFields({
       ...registration.parsed.product,
       collectionIds: [...registration.parsed.product.collectionIds],
-    });
-    working.variants.push(variantWithModelDimensions(registration.parsed.variant, defaultCreate));
+    }, create, {
+      primary: create.primaryMaterial !== undefined,
+      secondary: create.secondaryMaterial !== undefined,
+    }));
+    working.variants.push(withMaterialFields(
+      variantWithModelDimensions(registration.parsed.variant, defaultCreate),
+      defaultCreate,
+      {
+        primary: defaultCreate.primaryMaterial !== undefined,
+        secondary: defaultCreate.secondaryMaterial !== undefined,
+      },
+    ));
     pendingProductIds.add(create.productId);
     consumedDefaultVariantIds.add(create.defaultVariantId);
     seenVariantCreates.add(create.defaultVariantId);
@@ -1802,7 +1866,14 @@ export function planPartnerCatalogSync(input: Readonly<{
       issues.push(...extraValidation.errors);
       continue;
     }
-    working.variants.push(variantWithModelDimensions(extraValidation.parsed.variant, create));
+    working.variants.push(withMaterialFields(
+      variantWithModelDimensions(extraValidation.parsed.variant, create),
+      create,
+      {
+        primary: create.primaryMaterial !== undefined,
+        secondary: create.secondaryMaterial !== undefined,
+      },
+    ));
   }
 
   for (const patch of input.document.collections.update) {
@@ -2200,6 +2271,45 @@ export function planPartnerCatalogSync(input: Readonly<{
     });
   }
 
+  const materialFieldUpdates: PlannedMaterialFieldUpdate[] = [];
+  const pushMaterialDiff = (
+    entity: "product" | "variant",
+    productId: string,
+    variantId: string | null,
+    previous: Readonly<{ primaryMaterial?: string | null; secondaryMaterial?: string | null }>,
+    next: Readonly<{ primaryMaterial?: string | null; secondaryMaterial?: string | null }>,
+  ) => {
+    const fields = [
+      ["primary_material", "primaryMaterial"],
+      ["secondary_material", "secondaryMaterial"],
+    ] as const;
+    for (const [column, field] of fields) {
+      const before = storedMaterial(previous[field]);
+      const after = storedMaterial(next[field]);
+      if (before === after) continue;
+      materialFieldUpdates.push({
+        entity,
+        productId,
+        variantId,
+        column,
+        previous: before,
+        next: after,
+      });
+    }
+  };
+  for (const next of nextState.products) {
+    const previous = input.current.products.find((item) => item.productId === next.productId);
+    if (!previous || next.partnerId !== partner.partnerId) continue;
+    pushMaterialDiff("product", next.productId, null, previous, next);
+  }
+  for (const next of nextState.variants) {
+    const previous = input.current.variants.find((item) => item.variantId === next.variantId);
+    if (!previous) continue;
+    const product = nextState.products.find((item) => item.productId === next.productId);
+    if (!product || product.partnerId !== partner.partnerId) continue;
+    pushMaterialDiff("variant", next.productId, next.variantId, previous, next);
+  }
+
   const variantCreates: PlannedVariantCreate[] = nextState.variants
     .filter((variant) => !input.current.variants.some((item) => item.variantId === variant.variantId))
     .map((variant) => ({ variant }));
@@ -2299,7 +2409,8 @@ export function planPartnerCatalogSync(input: Readonly<{
     productReactivations.length === 0 &&
     variantDeactivations.length === 0 &&
     variantReactivations.length === 0 &&
-    variantModelDimensionUpdates.length === 0
+    variantModelDimensionUpdates.length === 0 &&
+    materialFieldUpdates.length === 0
   );
 
   const timestamp = input.migrationTimestamp ?? utcTimestamp();
@@ -2326,6 +2437,7 @@ export function planPartnerCatalogSync(input: Readonly<{
         variantDeactivations,
         variantReactivations,
         variantModelDimensionUpdates,
+        materialFieldUpdates,
         current: input.current,
       }),
       migration,
@@ -2350,6 +2462,7 @@ export function planPartnerCatalogSync(input: Readonly<{
     variantDeactivations,
     variantReactivations,
     ...(variantModelDimensionUpdates.length > 0 ? { variantModelDimensionUpdates } : {}),
+    ...(materialFieldUpdates.length > 0 ? { materialFieldUpdates } : {}),
     sqlPlan,
     nextState,
   };
@@ -2393,6 +2506,7 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
   variantDeactivations?: readonly PlannedVariantStatusTransition[];
   variantReactivations?: readonly PlannedVariantStatusTransition[];
   variantModelDimensionUpdates?: readonly PlannedVariantModelDimensions[];
+  materialFieldUpdates?: readonly PlannedMaterialFieldUpdate[];
   current: FoldedPartnerCatalogState;
 }>): string {
   const parts: string[] = [];
@@ -2685,6 +2799,77 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
           `    )`,
       ],
     }));
+  }
+
+  const materialUpdates = [...(input.materialFieldUpdates ?? [])].sort((left, right) => (
+    left.entity.localeCompare(right.entity)
+    || left.productId.localeCompare(right.productId)
+    || (left.variantId ?? "").localeCompare(right.variantId ?? "")
+    || left.column.localeCompare(right.column)
+  ));
+  for (const update of materialUpdates) {
+    const ownedVariant = update.entity === "variant"
+      ? `exists (\n` +
+        `      select 1 from public.vibode_stage_products products\n` +
+        `      where products.product_id = ${sqlString(update.productId)}\n` +
+        `        and products.partner_id = ${sqlString(input.partner.partnerId)}\n` +
+        `        and products.source = 'partner_catalog'\n` +
+        `    )`
+      : null;
+    parts.push(renderGuardedUpdate({
+      table: update.entity === "product"
+        ? "public.vibode_stage_products"
+        : "public.vibode_stage_variants",
+      setClauses: [`${update.column} = ${sqlNullableString(update.next)}`],
+      whereClauses: update.entity === "product"
+        ? [
+          `product_id = ${sqlString(update.productId)}`,
+          `partner_id = ${sqlString(input.partner.partnerId)}`,
+          `source = 'partner_catalog'`,
+          sqlIsNotDistinctFrom(update.column, update.previous),
+        ]
+        : [
+          `variant_id = ${sqlString(update.variantId ?? "")}`,
+          `product_id = ${sqlString(update.productId)}`,
+          sqlIsNotDistinctFrom(update.column, update.previous),
+          ownedVariant ?? "true",
+        ],
+    }));
+  }
+  for (const create of productCreates) {
+    for (const [column, value] of [
+      ["primary_material", create.product.primaryMaterial],
+      ["secondary_material", create.product.secondaryMaterial],
+    ] as const) {
+      if (typeof value !== "string" || value.length === 0) continue;
+      parts.push(renderGuardedUpdate({
+        table: "public.vibode_stage_products",
+        setClauses: [`${column} = ${sqlString(value)}`],
+        whereClauses: [
+          `product_id = ${sqlString(create.product.productId)}`,
+          `partner_id = ${sqlString(input.partner.partnerId)}`,
+          `source = 'partner_catalog'`,
+          `${column} is not distinct from null`,
+        ],
+      }));
+    }
+  }
+  for (const create of input.variantCreates) {
+    for (const [column, value] of [
+      ["primary_material", create.variant.primaryMaterial],
+      ["secondary_material", create.variant.secondaryMaterial],
+    ] as const) {
+      if (typeof value !== "string") continue;
+      parts.push(renderGuardedUpdate({
+        table: "public.vibode_stage_variants",
+        setClauses: [`${column} = ${sqlNullableString(value)}`],
+        whereClauses: [
+          `variant_id = ${sqlString(create.variant.variantId)}`,
+          `product_id = ${sqlString(create.variant.productId)}`,
+          `${column} is not distinct from null`,
+        ],
+      }));
+    }
   }
 
   for (const update of [...input.collectionUpdates].sort((a, b) => (

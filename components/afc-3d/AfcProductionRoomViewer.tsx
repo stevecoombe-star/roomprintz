@@ -91,6 +91,10 @@ import {
   type HarmonizeFurnitureCapturer,
 } from "@/lib/vibode-stage/harmonize-export";
 import {
+  cloneHarmonizeMaterialCatalog,
+  type HarmonizeMaterialCatalog,
+} from "@/lib/vibode-stage/harmonize-materials";
+import {
   renderHarmonizeFurniturePixels,
   stageCameraMatchesRealized,
 } from "@/lib/vibode-stage/harmonize-export-scene";
@@ -172,6 +176,7 @@ type Props = Readonly<{
   roomScaleMultiplier?: number;
   trustedPath?: TrustedPathBaseline | null;
   trustedPathVisible?: boolean;
+  harmonizeMaterialCatalog?: HarmonizeMaterialCatalog | null;
 }>;
 
 type ReadyProps = Readonly<{
@@ -200,6 +205,7 @@ type ReadyProps = Readonly<{
   roomScaleMultiplier?: number;
   trustedPath?: TrustedPathBaseline | null;
   trustedPathVisible?: boolean;
+  harmonizeMaterialCatalog?: HarmonizeMaterialCatalog | null;
 }>;
 
 export function AfcProductionRoomViewer({
@@ -226,6 +232,7 @@ export function AfcProductionRoomViewer({
   roomScaleMultiplier = ROOM_SCALE_DEFAULT,
   trustedPath = null,
   trustedPathVisible = false,
+  harmonizeMaterialCatalog = null,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -279,6 +286,7 @@ export function AfcProductionRoomViewer({
       roomScaleMultiplier={roomScaleMultiplier}
       trustedPath={trustedPath}
       trustedPathVisible={trustedPathVisible}
+      harmonizeMaterialCatalog={harmonizeMaterialCatalog}
     />
   );
 }
@@ -307,6 +315,7 @@ function AfcProductionRoomViewerReady({
   roomScaleMultiplier = ROOM_SCALE_DEFAULT,
   trustedPath = null,
   trustedPathVisible = false,
+  harmonizeMaterialCatalog = null,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -345,10 +354,12 @@ function AfcProductionRoomViewerReady({
   const harmonizeAuthorityRef = useRef(authority);
   const harmonizeBackgroundUrlRef = useRef(visualImageUrl);
   const harmonizeOriginalUrlRef = useRef(originalImageUrl ?? null);
+  const harmonizeMaterialCatalogRef = useRef(harmonizeMaterialCatalog);
   harmonizeRoomIdRef.current = roomId;
   harmonizeAuthorityRef.current = authority;
   harmonizeBackgroundUrlRef.current = visualImageUrl;
   harmonizeOriginalUrlRef.current = originalImageUrl ?? null;
+  harmonizeMaterialCatalogRef.current = harmonizeMaterialCatalog;
   useLayoutEffect(() => {
     roomScaleRef.current = roomScaleMultiplier;
   }, [roomScaleMultiplier]);
@@ -1809,6 +1820,7 @@ function AfcProductionRoomViewerReady({
           certifiedMetricScale: activeWorld.certifiedMetricScale,
           effectiveMetricScale: activeWorld.metricScale,
           generationId: activeWorld.generationId,
+          materialCatalog: cloneHarmonizeMaterialCatalog(harmonizeMaterialCatalogRef.current),
         };
       } finally {
         exportLocked = false;

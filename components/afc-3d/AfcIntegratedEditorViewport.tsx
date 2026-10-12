@@ -23,6 +23,7 @@ import {
   type ModelAxisScale,
 } from "@/lib/afc-v2-runtime/model-axis-scale";
 import { stageModelAxisScale } from "@/lib/vibode-stage/furniture-model-scale";
+import { harmonizeMaterialCatalogFromStage } from "@/lib/vibode-stage/harmonize-materials";
 import type { StageCatalogSnapshot, StageVariant } from "@/lib/vibode-stage/types";
 
 type Props = Readonly<{
@@ -104,6 +105,14 @@ export function AfcIntegratedEditorViewport({
   const sceneCrud = useAfcSceneObjectCrudSession();
   const showTransformGizmos = useStageTransformGizmos();
   const stage = useOptionalStageEditor();
+  const harmonizeMaterialCatalog = stage
+    ? harmonizeMaterialCatalogFromStage({
+      products: stage.catalog.products,
+      variants: stage.catalog.variants,
+      extraProducts: stage.extraProducts,
+      extraVariants: stage.extraVariants,
+    })
+    : null;
   const bindScene = stage?.bindScene;
   const stageCatalog = stage?.catalog;
   const stageExtraVariants = stage?.extraVariants;
@@ -237,6 +246,7 @@ export function AfcIntegratedEditorViewport({
         roomScaleMultiplier={stage?.roomScaleMultiplier}
         trustedPath={stage?.trustedPath ?? null}
         trustedPathVisible={stage?.trustedPathVisible === true}
+        harmonizeMaterialCatalog={harmonizeMaterialCatalog}
       />
       <StageFurnitureToolbar />
       {!persistedScene.sceneReady ? (

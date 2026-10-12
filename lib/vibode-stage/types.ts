@@ -77,6 +77,12 @@ export type StageVariant = Readonly<{
   modelHeightM?: number;
   modelDepthM?: number;
   modelSizingMode?: "uniform" | "exact";
+  /**
+   * Optional descriptive material. Null or absent inherits the Product.
+   * An empty string is an intentional clear and does not inherit.
+   */
+  primaryMaterial?: string | null;
+  secondaryMaterial?: string | null;
 }>;
 
 export type StageProduct = Readonly<{
@@ -97,6 +103,9 @@ export type StageProduct = Readonly<{
   status?: StageCommercialStatus;
   /** Durable manual catalog position. Absent on in-memory fixtures that have no row order. */
   sortOrder?: number;
+  /** Optional product-level material default. Absent means no default. */
+  primaryMaterial?: string | null;
+  secondaryMaterial?: string | null;
 }>;
 
 export type StageCollection = Readonly<{

@@ -47,6 +47,15 @@ export type PlannedVariantModelDimensions = Readonly<{
   next: ModelDimensions;
 }>;
 
+export type PlannedMaterialFieldUpdate = Readonly<{
+  entity: "product" | "variant";
+  productId: string;
+  variantId: string | null;
+  column: "primary_material" | "secondary_material";
+  previous: string | null;
+  next: string | null;
+}>;
+
 export type PlannedVariantCreate = Readonly<{
   variant: StageVariant;
 }>;
@@ -109,6 +118,8 @@ export type PartnerCatalogSyncPlan = Readonly<{
   variantUpdates: readonly PlannedVariantUpdate[];
   /** Present only when a publish changes Variant physical dimensions. */
   variantModelDimensionUpdates?: readonly PlannedVariantModelDimensions[];
+  /** Present only when a publish changes material descriptions. */
+  materialFieldUpdates?: readonly PlannedMaterialFieldUpdate[];
   collectionCreates: readonly PlannedCollectionCreate[];
   collectionUpdates: readonly PlannedCollectionUpdate[];
   membershipAdds: readonly PlannedMembership[];

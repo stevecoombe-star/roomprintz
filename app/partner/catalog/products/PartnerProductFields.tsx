@@ -1,4 +1,5 @@
 import { FIELD } from "./editor-ui";
+import { PartnerProductMaterialFields } from "./PartnerMaterialFields";
 
 export function PartnerProductFields(props: Readonly<{
   name: string;
@@ -23,6 +24,14 @@ export function PartnerProductFields(props: Readonly<{
   onImageCommit: () => void;
   onProductUrlChange: (value: string) => void;
   onProductUrlCommit: () => void;
+  primaryMaterial: string;
+  secondaryMaterial: string;
+  primaryPending?: boolean;
+  secondaryPending?: boolean;
+  onPrimaryMaterialChange: (value: string) => void;
+  onPrimaryMaterialCommit: () => void;
+  onSecondaryMaterialChange: (value: string) => void;
+  onSecondaryMaterialCommit: () => void;
   onCollectionToggle: (collectionId: string, checked: boolean) => void;
 }>) {
   return (
@@ -70,6 +79,17 @@ export function PartnerProductFields(props: Readonly<{
           />
         </label>
       </div>
+      <PartnerProductMaterialFields
+        primary={props.primaryMaterial}
+        secondary={props.secondaryMaterial}
+        disabled={props.disabled}
+        primaryPending={props.primaryPending}
+        secondaryPending={props.secondaryPending}
+        onPrimaryChange={props.onPrimaryMaterialChange}
+        onPrimaryCommit={props.onPrimaryMaterialCommit}
+        onSecondaryChange={props.onSecondaryMaterialChange}
+        onSecondaryCommit={props.onSecondaryMaterialCommit}
+      />
       <dl className="grid gap-3 text-sm sm:grid-cols-2">
         <div>
           <dt className="text-xs text-slate-400">Category</dt>
