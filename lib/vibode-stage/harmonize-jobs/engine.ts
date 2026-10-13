@@ -4,9 +4,12 @@
  * Production locking lives in Postgres (`FOR UPDATE SKIP LOCKED`, the
  * partial unique index, and the fencing checks). This module is the local
  * certification double and must stay aligned with
- * supabase/migrations/20261012090000_vibode_harmonize_generations.sql.
+ * supabase/migrations/20261012090000_vibode_harmonize_generations.sql and
+ * supabase/migrations/20261013010000_vibode_harmonize_exact_claim.sql.
  *
- * A job that has recorded provider contact is never claimed again.
+ * A supplied job id claims that row or nothing. It never falls through to
+ * another queued job. A job that has recorded provider contact is never
+ * claimed again.
  */
 
 import { randomUUID } from "node:crypto";
@@ -152,26 +155,21 @@ export function enqueueHarmonizeJob(
 export function claimNextHarmonizeJob(
   db: HarmonizeJobDatabase,
   nowMs: number,
+  jobId: string | null = null,
 ): HarmonizeClaim | null {
-  reapHarmonizeLeases(db, nowMs);
+  if (jobId !== null) {
+    reapHarmonizeLeases(db, nowMs, jobId);
+    const job = findJob(db, jobId);
+    if (!job || job.status !== "queued" || job.notBeforeMs > nowMs) return null;
+    return claimQueuedJob(db, job, nowMs);
+  }
+  reapHarmonizeLeases(db, nowMs, null);
   const queued = db.jobs
     .filter((job) => job.status === "queued" && job.notBeforeMs <= nowMs)
     .sort((left, right) => left.createdAtMs - right.createdAtMs);
   for (const job of queued) {
-    if (harmonizeProviderStartedCount(db, job.userId, nowMs) >= HARMONIZE_DAILY_PROVIDER_LIMIT) {
-      failClosed(job, nowMs, "daily_limit", "Daily Harmonize provider limit was reached.");
-      continue;
-    }
-    job.status = "running";
-    job.attemptCount += 1;
-    job.claimedAtMs = nowMs;
-    job.heartbeatAtMs = nowMs;
-    job.claimExpiresAtMs = nowMs + HARMONIZE_JOB_CLAIM_LEASE_MS;
-    job.claimNonce = randomUUID();
-    job.updatedAtMs = nowMs;
-    job.failureCode = null;
-    job.failureMessage = null;
-    return claimFrom(job);
+    const claimed = claimQueuedJob(db, job, nowMs);
+    if (claimed) return claimed;
   }
   return null;
 }
@@ -308,8 +306,34 @@ export function readHarmonizeJob(
   return findJob(db, jobId) ?? null;
 }
 
-function reapHarmonizeLeases(db: HarmonizeJobDatabase, nowMs: number): void {
+function claimQueuedJob(
+  db: HarmonizeJobDatabase,
+  job: HarmonizeJobRow,
+  nowMs: number,
+): HarmonizeClaim | null {
+  if (harmonizeProviderStartedCount(db, job.userId, nowMs) >= HARMONIZE_DAILY_PROVIDER_LIMIT) {
+    failClosed(job, nowMs, "daily_limit", "Daily Harmonize provider limit was reached.");
+    return null;
+  }
+  job.status = "running";
+  job.attemptCount += 1;
+  job.claimedAtMs = nowMs;
+  job.heartbeatAtMs = nowMs;
+  job.claimExpiresAtMs = nowMs + HARMONIZE_JOB_CLAIM_LEASE_MS;
+  job.claimNonce = randomUUID();
+  job.updatedAtMs = nowMs;
+  job.failureCode = null;
+  job.failureMessage = null;
+  return claimFrom(job);
+}
+
+function reapHarmonizeLeases(
+  db: HarmonizeJobDatabase,
+  nowMs: number,
+  onlyJobId: string | null,
+): void {
   for (const job of db.jobs) {
+    if (onlyJobId !== null && job.id !== onlyJobId) continue;
     if (job.status !== "running" || job.claimExpiresAtMs == null || job.claimExpiresAtMs > nowMs) {
       continue;
     }

@@ -550,7 +550,10 @@ test("status and diagnostics omit prompts, keys, and image bytes", () => {
 });
 
 test("migration and routes stay isolated from thumbnails, scenes, and the paid provider", () => {
-  const sql = source("supabase/migrations/20261012090000_vibode_harmonize_generations.sql");
+  const sql = [
+    source("supabase/migrations/20261012090000_vibode_harmonize_generations.sql"),
+    source("supabase/migrations/20261013010000_vibode_harmonize_exact_claim.sql"),
+  ].join("\n");
   const server = source("lib/vibode-stage/harmonize-jobs/jobs.server.ts");
   const plan = source("lib/vibode-stage/harmonize-jobs/plan.ts");
   const worker = source("harmonize-worker/src/index.ts");

@@ -1,3 +1,4 @@
+import { isHarmonizeJobId } from "@/lib/vibode-stage/harmonize-jobs/job-id";
 import {
   HARMONIZE_JOB_HEADER,
   HARMONIZE_NONCE_HEADER,
@@ -41,12 +42,20 @@ export function readHarmonizeWorkerProcessEnv(
 
 export function createHttpHarmonizeWorkerApi(
   env: HarmonizeWorkerProcessEnv,
-  fetchImpl: typeof fetch = fetch,
+  options: Readonly<{ fetchImpl?: typeof fetch; jobId?: string | null }> = {},
 ): HarmonizeWorkerApi {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const requestedJobId = options.jobId && isHarmonizeJobId(options.jobId) ? options.jobId.toLowerCase() : null;
+  if (options.jobId && !requestedJobId) {
+    throw new Error("claim_job_invalid");
+  }
   const headers = { [HARMONIZE_WORKER_HEADER]: env.workerSecret };
+  const claimUrl = requestedJobId
+    ? `${env.appBaseUrl}/api/internal/vibode-harmonize-jobs?action=claim-exact&jobId=${encodeURIComponent(requestedJobId)}`
+    : `${env.appBaseUrl}/api/internal/vibode-harmonize-jobs?action=claim`;
   return {
     async claim() {
-      const response = await fetchImpl(`${env.appBaseUrl}/api/internal/vibode-harmonize-jobs?action=claim`, {
+      const response = await fetchImpl(claimUrl, {
         method: "POST",
         headers,
       });
@@ -55,6 +64,7 @@ export function createHttpHarmonizeWorkerApi(
       if (!body.job) return null;
       const claim = readClaim(body.job);
       if (!claim) throw new Error("claim_malformed");
+      if (requestedJobId && claim.jobId !== requestedJobId) throw new Error("claim_mismatch");
       return claim;
     },
     async composite(claim) {

@@ -31,6 +31,9 @@ export async function executeHarmonizeClaim(input: Readonly<{
         lost = true;
         controller.abort();
       }
+    }, () => {
+      // A transport failure is not a lost lease. Handle it so Node does
+      // not terminate the process, and leave the provider call running.
     });
   }, intervalMs);
   try {

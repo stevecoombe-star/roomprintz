@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { harmonizeJson } from "@/lib/vibode-stage/harmonize-jobs/http";
+import { isHarmonizeJobId } from "@/lib/vibode-stage/harmonize-jobs/job-id";
 import {
   claimHarmonizeGeneration,
   completeHarmonizeGeneration,
@@ -21,9 +22,14 @@ export async function POST(request: Request) {
   const url = new URL(request.url);
   const action = url.searchParams.get("action");
   if (action === "claim") {
-    const claimed = await claimHarmonizeGeneration();
-    if (!claimed.ok) return harmonizeJson({ ok: false, code: claimed.code }, 503);
-    return harmonizeJson({ ok: true, job: claimed.job }, 200);
+    return claimResponse(null);
+  }
+  if (action === "claim-exact") {
+    const requested = url.searchParams.get("jobId");
+    if (!requested || !isHarmonizeJobId(requested)) {
+      return harmonizeJson({ ok: false, code: "invalid_submission" }, 400);
+    }
+    return claimResponse(requested.toLowerCase());
   }
   const payload = await readJson(request);
   const jobId = text(payload?.jobId);
@@ -96,6 +102,15 @@ export async function PUT(request: Request) {
     latencyMs: numberHeader(request, "x-vibode-harmonize-latency-ms") ?? -1,
   });
   return harmonizeJson(completed, completed.ok ? 200 : 409);
+}
+
+async function claimResponse(jobId: string | null): Promise<NextResponse> {
+  const claimed = await claimHarmonizeGeneration(jobId);
+  if (!claimed.ok) {
+    const status = claimed.code === "invalid_submission" ? 400 : 503;
+    return harmonizeJson({ ok: false, code: claimed.code }, status);
+  }
+  return harmonizeJson({ ok: true, job: claimed.job }, 200);
 }
 
 function deny(request: Request): NextResponse | null {

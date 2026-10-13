@@ -5,6 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 import { validatePersistedSceneObjects } from "@/lib/afc-v2-runtime/persisted-scene";
 
+import { isHarmonizeJobId } from "./job-id";
 import { planHarmonizeEnqueue, readHarmonizeEnqueueIds } from "./plan";
 import {
   HARMONIZE_COMPOSITE_MAX_BYTES,
@@ -153,13 +154,18 @@ export async function readHarmonizeGenerationOutput(input: Readonly<{
   return downloadObject(supabase, bucket, path);
 }
 
-export async function claimHarmonizeGeneration(): Promise<
+export async function claimHarmonizeGeneration(jobId: string | null = null): Promise<
   | Readonly<{ ok: true; job: HarmonizeWorkerClaim | null }>
   | Readonly<{ ok: false; code: string }>
 > {
   const supabase = getServiceRoleSupabaseClient();
   if (!supabase) return { ok: false, code: "unavailable" };
-  const claimed = await callRpc(supabase, "claim_next_vibode_harmonize_generation", {});
+  if (jobId !== null && !isHarmonizeJobId(jobId)) return { ok: false, code: "invalid_submission" };
+  const claimed = await callRpc(
+    supabase,
+    "claim_next_vibode_harmonize_generation",
+    jobId === null ? {} : { p_job_id: jobId },
+  );
   if (!claimed.ok) return claimed;
   if (claimed.row.job == null) return { ok: true, job: null };
   const job = workerClaim(claimed.row.job);

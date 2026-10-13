@@ -197,6 +197,7 @@ test("postgres 16 executes the harmonize migration and job functions", { timeout
     assert.equal(activeCount, 1);
 
     await raceContactAgainstExpiry();
+    await exactJobClaim();
     await permissionsAndStorage();
   } finally {
     await removeContainer();
@@ -265,6 +266,103 @@ async function raceContactAgainstExpiry(): Promise<void> {
   await release(freshId, String(recovered.claimNonce));
 }
 
+async function exactJobClaim(): Promise<void> {
+  await psql(`
+    update public.vibode_harmonize_generations
+      set status = 'failed',
+          failure_code = 'worker_interrupted',
+          failure_message = 'cleared before exact claim',
+          completed_at = now(),
+          claim_nonce = null,
+          claim_expires_at = null
+    where user_id in ('${USER_B}', '${USER_C}') and status in ('queued', 'running')
+  `);
+  const target = await enqueue(USER_B, ROOM_B, ASSET_B, key(400));
+  const other = await enqueue(USER_C, ROOM_C, ASSET_C, key(401));
+  assert.equal(target.created, true);
+  assert.equal(other.created, true);
+  const targetId = String(target.jobId);
+  const otherId = String(other.jobId);
+
+  const claimed = await claimExactWhileRowIsLocked(targetId, otherId);
+  assert.equal((await job(targetId)).provider_started_at, null);
+  assert.equal(await claimExact(targetId), null);
+  assert.equal((await job(targetId)).attempt_count, 1);
+  assert.equal((await job(otherId)).status, "queued");
+
+  const nullClaim = await call("select public.claim_next_vibode_harmonize_generation(null::uuid)");
+  assert.equal(nullClaim.job, null);
+  assert.equal(await claimExact("00000000-0000-4000-8000-0000000000aa"), null);
+  assert.equal((await job(targetId)).status, "running");
+  assert.equal((await job(otherId)).status, "queued");
+
+  const contacted = await contact(targetId, String(claimed.claimNonce));
+  assert.equal(contacted.ok, true);
+  assert.equal(await claimExact(targetId), null);
+  assert.equal((await job(targetId)).status, "running");
+  assert.ok((await job(targetId)).provider_started_at);
+  assert.equal((await job(otherId)).status, "queued");
+  await expire(targetId);
+  assert.equal(await claimExact(targetId), null);
+  const uncertain = await job(targetId);
+  assert.equal(uncertain.status, "failed");
+  assert.equal(uncertain.failure_code, "provider_uncertain");
+  assert.equal((await job(otherId)).status, "queued");
+
+  await psql(`update public.vibode_harmonize_generations set not_before = now() + interval '1 hour' where id = '${otherId}'`);
+  assert.equal(await claimExact(otherId), null);
+  assert.equal((await job(otherId)).status, "queued");
+
+  const exhausted = await enqueue(USER_B, ROOM_B, ASSET_B, key(402));
+  const exhaustedId = String(exhausted.jobId);
+  const exhaustedClaim = await claimExact(exhaustedId);
+  assert.equal(exhaustedClaim?.jobId, exhaustedId);
+  await psql(`
+    update public.vibode_harmonize_generations
+      set attempt_count = 3,
+          claim_expires_at = now() - interval '1 second'
+    where id = '${exhaustedId}'
+  `);
+  assert.equal(await claimExact(exhaustedId), null);
+  const exhaustedRow = await job(exhaustedId);
+  assert.equal(exhaustedRow.status, "failed");
+  assert.equal(exhaustedRow.failure_code, "attempts_exhausted");
+  assert.equal(exhaustedRow.provider_started_at, null);
+  assert.equal((await job(otherId)).status, "queued");
+
+  await psql(`update public.vibode_harmonize_generations set not_before = now() where id = '${otherId}'`);
+  const released = await claimExact(otherId);
+  await release(otherId, String(released?.claimNonce));
+}
+
+async function claimExactWhileRowIsLocked(targetId: string, otherId: string): Promise<Json> {
+  const holder = psql(`
+    begin;
+    select id from public.vibode_harmonize_generations where id = '${targetId}' for update;
+    select pg_advisory_lock(0, 424250);
+    select pg_sleep(3);
+    commit;
+    select pg_advisory_unlock(0, 424250);
+  `);
+  await waitForAdvisory(424250);
+  const blocked = await claimExact(targetId);
+  assert.equal(blocked, null);
+  assert.equal((await job(targetId)).status, "queued");
+  assert.equal((await job(otherId)).status, "queued");
+  const running = Number(await psql(
+    `select count(*) from public.vibode_harmonize_generations where status = 'running' and id in ('${targetId}', '${otherId}')`,
+  ));
+  assert.equal(running, 0);
+  await holder;
+  const claimed = await claimExact(targetId);
+  if (!claimed) throw new Error("expected the locked row to be claimable after release");
+  assert.equal(claimed.jobId, targetId);
+  assert.equal((await job(targetId)).status, "running");
+  assert.equal((await job(targetId)).attempt_count, 1);
+  assert.equal((await job(otherId)).status, "queued");
+  return claimed;
+}
+
 async function permissionsAndStorage(): Promise<void> {
   const deniedTable = await psqlError("set role anon; select * from public.vibode_harmonize_generations");
   assert.match(deniedTable, /permission denied/);
@@ -272,6 +370,16 @@ async function permissionsAndStorage(): Promise<void> {
     `set role authenticated; select public.enqueue_vibode_harmonize_generation('${USER_A}', '{}'::jsonb)`,
   );
   assert.match(deniedFunction, /permission denied/);
+  const deniedExact = await psqlError(
+    "set role authenticated; select public.claim_next_vibode_harmonize_generation('00000000-0000-4000-8000-000000000001'::uuid)",
+  );
+  assert.match(deniedExact, /permission denied/);
+  const exactGrant = await psql(`
+    select has_function_privilege('anon', 'public.claim_next_vibode_harmonize_generation(uuid)', 'execute')::text
+      || ',' || has_function_privilege('authenticated', 'public.claim_next_vibode_harmonize_generation(uuid)', 'execute')::text
+      || ',' || has_function_privilege('service_role', 'public.claim_next_vibode_harmonize_generation(uuid)', 'execute')::text
+  `);
+  assert.equal(exactGrant, "false,false,true");
 
   const visibleToServiceRole = lastNumber(await psql(
     "set role service_role; select count(*) from public.vibode_harmonize_generations",
@@ -382,6 +490,11 @@ async function applyMigration(): Promise<void> {
     "utf8",
   );
   await psql(migration);
+  const exact = readFileSync(
+    path.join(process.cwd(), "supabase/migrations/20261013010000_vibode_harmonize_exact_claim.sql"),
+    "utf8",
+  );
+  await psql(exact);
 }
 
 async function seedOwner(userId: string, roomId: string, assetId: string): Promise<void> {
@@ -432,6 +545,13 @@ async function claimJob(): Promise<Json> {
 
 async function claim(): Promise<Json | null> {
   const result = await call("select public.claim_next_vibode_harmonize_generation()");
+  const value = result.job;
+  if (value == null) return null;
+  return value as Json;
+}
+
+async function claimExact(jobId: string): Promise<Json | null> {
+  const result = await call(`select public.claim_next_vibode_harmonize_generation('${jobId}'::uuid)`);
   const value = result.job;
   if (value == null) return null;
   return value as Json;

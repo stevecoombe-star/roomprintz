@@ -21,10 +21,11 @@ export function createMemoryHarmonizeWorkerApi(input: Readonly<{
   composites: Map<string, Uint8Array>;
   outputs: Map<string, Uint8Array>;
   clock: { nowMs: number };
+  jobId?: string | null;
 }>): HarmonizeWorkerApi {
   return {
     async claim() {
-      const claimed = claimNextHarmonizeJob(input.db, input.clock.nowMs);
+      const claimed = claimNextHarmonizeJob(input.db, input.clock.nowMs, input.jobId ?? null);
       if (!claimed) return null;
       return {
         jobId: claimed.jobId,
