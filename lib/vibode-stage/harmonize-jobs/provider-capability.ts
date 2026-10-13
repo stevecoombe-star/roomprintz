@@ -1,34 +1,32 @@
 /**
- * Approved Nano Banana Pro shapes.
+ * Nano Banana Pro shapes Harmonize will request.
  *
- * 4:3 is the only ratio with a verified direct generation. The job table and
- * claim lifecycle do not encode that ratio. Callers ask this module before
- * enqueueing a composite or accepting provider bytes.
+ * The ratio comes from the shared AFC classifier. The job table and claim
+ * lifecycle do not store it. Callers ask this module before enqueueing a
+ * composite or accepting provider bytes.
  */
 
-import { HARMONIZE_ASPECT_RELATIVE_TOLERANCE } from "@/lib/vibode-stage/harmonize-export";
 import {
-  HARMONIZE_NBP_ASPECT_RATIO,
-  assessHarmonizeNbpFraming,
-} from "@/lib/vibode-stage/harmonize-nbp-proof";
+  classifyNanoBananaProAspectRatio,
+  type NanoBananaProAspectRatio,
+} from "@/lib/afc-image-models";
 
-const APPROVED_ASPECT_RATIOS = [HARMONIZE_NBP_ASPECT_RATIO] as const;
+import { assessHarmonizeNbpFraming } from "@/lib/vibode-stage/harmonize-nbp-proof";
 
 export function harmonizeProviderAcceptsComposite(
   width: number,
   height: number,
-): Readonly<{ ok: true; aspectRatio: typeof HARMONIZE_NBP_ASPECT_RATIO }> | Readonly<{ ok: false; code: "unsupported_aspect" | "unsupported_dimensions" }> {
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
-    return { ok: false, code: "unsupported_dimensions" };
+): Readonly<{ ok: true; aspectRatio: NanoBananaProAspectRatio }> | Readonly<{ ok: false; code: "unsupported_aspect" | "unsupported_dimensions" }> {
+  const classified = classifyNanoBananaProAspectRatio(width, height);
+  if (!classified.ok) {
+    return {
+      ok: false,
+      code: classified.reason === "Source image dimensions are not positive integers."
+        ? "unsupported_dimensions"
+        : "unsupported_aspect",
+    };
   }
-  const approved = APPROVED_ASPECT_RATIOS.find((ratio) => ratio === HARMONIZE_NBP_ASPECT_RATIO);
-  if (!approved) return { ok: false, code: "unsupported_aspect" };
-  const target = ratioValue(approved);
-  const aspectError = Math.abs(width / height - target) / target;
-  if (aspectError > HARMONIZE_ASPECT_RELATIVE_TOLERANCE) {
-    return { ok: false, code: "unsupported_aspect" };
-  }
-  return { ok: true, aspectRatio: approved };
+  return { ok: true, aspectRatio: classified.ratio };
 }
 
 export function harmonizeProviderAcceptsOutput(input: Readonly<{
@@ -38,9 +36,4 @@ export function harmonizeProviderAcceptsOutput(input: Readonly<{
   inputHeight: number;
 }>): boolean {
   return assessHarmonizeNbpFraming(input).accepted;
-}
-
-function ratioValue(ratio: typeof HARMONIZE_NBP_ASPECT_RATIO): number {
-  const [width, height] = ratio.split(":").map(Number);
-  return width / height;
 }

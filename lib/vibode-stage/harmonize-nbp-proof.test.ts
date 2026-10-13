@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { classifyNanoBananaProAspectRatio } from "@/lib/afc-image-models";
+
 import {
   encodeRgbaPng,
   readPngSize,
@@ -12,8 +14,10 @@ import {
   HARMONIZE_NBP_ASPECT_RATIO,
   HARMONIZE_NBP_ENDPOINT,
   HARMONIZE_NBP_IMAGE_SIZE,
+  HARMONIZE_NBP_MIN_2K_LONG_EDGE,
   HARMONIZE_NBP_MODEL_ID,
   HARMONIZE_NBP_OUTPUT_HEIGHT,
+  HARMONIZE_NBP_OUTPUT_MAX_EDGE,
   HARMONIZE_NBP_OUTPUT_WIDTH,
   HARMONIZE_NBP_TIMEOUT_MS,
   HarmonizeNbpProofError,
@@ -34,6 +38,7 @@ test("request sends the exact prompt, one PNG, and 2K 4:3", () => {
   const request = buildHarmonizeNbpRequest({
     prompt: PROMPT,
     pngBase64: png.toString("base64"),
+    aspectRatio: HARMONIZE_NBP_ASPECT_RATIO,
   });
   const parsed = JSON.parse(JSON.stringify(request)) as {
     model: string;
@@ -59,6 +64,94 @@ test("request sends the exact prompt, one PNG, and 2K 4:3", () => {
   assert.equal(parsed.generationConfig, undefined);
   assert.equal(HARMONIZE_NBP_TIMEOUT_MS, 120_000);
   assert.equal(HARMONIZE_NBP_ENDPOINT.endsWith("/interactions"), true);
+});
+
+const STANDARD_RATIOS = [
+  ["1:1", 1024, 1024],
+  ["3:2", 1264, 848],
+  ["2:3", 848, 1264],
+  ["4:3", 1200, 896],
+  ["3:4", 896, 1200],
+  ["5:4", 1152, 928],
+  ["4:5", 928, 1152],
+  ["16:9", 1376, 768],
+  ["9:16", 768, 1376],
+  ["21:9", 1584, 672],
+] as const;
+
+test("each standard family selects that ratio and keeps the 2K JPEG request", () => {
+  const png = Buffer.from("png-bytes").toString("base64");
+  for (const [ratio, width, height] of STANDARD_RATIOS) {
+    const classified = classifyNanoBananaProAspectRatio(width, height);
+    assert.equal(classified.ok, true);
+    if (!classified.ok) continue;
+    assert.equal(classified.ratio, ratio);
+    assert.ok(Math.max(classified.gridWidth, classified.gridHeight) < HARMONIZE_NBP_MIN_2K_LONG_EDGE);
+    const request = buildHarmonizeNbpRequest({
+      prompt: PROMPT,
+      pngBase64: png,
+      aspectRatio: classified.ratio,
+    });
+    assert.equal(request.model, HARMONIZE_NBP_MODEL_ID);
+    assert.equal(request.input.length, 2);
+    assert.equal(request.input[1]?.data, png);
+    assert.deepEqual(request.response_format, {
+      type: "image",
+      mime_type: "image/jpeg",
+      aspect_ratio: ratio,
+      image_size: "2K",
+    });
+  }
+  assert.equal(HARMONIZE_NBP_MIN_2K_LONG_EDGE, HARMONIZE_NBP_OUTPUT_HEIGHT);
+  assert.equal(HARMONIZE_NBP_OUTPUT_MAX_EDGE, 4096);
+});
+
+test("1264x848 requests 3:2 once and does not rewrite the PNG", async () => {
+  const png = pngHeader(1264, 848);
+  let calls = 0;
+  let posted = "";
+  await assert.rejects(
+    () => callHarmonizeNbpProof({
+      prompt: PROMPT,
+      png,
+      apiKey: "test-key",
+      fetchImpl: (_url, init) => {
+        calls += 1;
+        posted = String(init?.body ?? "");
+        return Promise.resolve(new Response("no", { status: 500 }));
+      },
+    }),
+    (error: unknown) => error instanceof HarmonizeNbpProofError && error.code === "provider_http",
+  );
+  assert.equal(calls, 1);
+  const body = JSON.parse(posted) as {
+    input: Array<{ data?: string }>;
+    response_format: { aspect_ratio: string; image_size: string; mime_type: string };
+  };
+  assert.equal(body.response_format.aspect_ratio, "3:2");
+  assert.equal(body.response_format.image_size, "2K");
+  assert.equal(body.response_format.mime_type, "image/jpeg");
+  assert.deepEqual(Buffer.from(body.input[1]?.data ?? "", "base64"), Buffer.from(png));
+});
+
+test("1800x1600 is refused before a provider create", async () => {
+  const png = pngHeader(1800, 1600);
+  let calls = 0;
+  await assert.rejects(
+    () => callHarmonizeNbpProof({
+      prompt: PROMPT,
+      png,
+      apiKey: "test-key",
+      fetchImpl: () => {
+        calls += 1;
+        return Promise.resolve(new Response("no", { status: 500 }));
+      },
+    }),
+    (error: unknown) => error instanceof HarmonizeNbpProofError && error.code === "invalid_package",
+  );
+  assert.equal(calls, 0);
+  const classified = classifyNanoBananaProAspectRatio(1800, 1600);
+  assert.equal(classified.ok, false);
 });
 
 test("2K 4:3 frame passes and the 1K grid does not", () => {
@@ -89,6 +182,118 @@ test("2K 4:3 frame passes and the 1K grid does not", () => {
   });
   assert.equal(cropped.withinToleranceOfInput, false);
   assert.equal(cropped.accepted, false);
+
+  const originalFourThree = assessHarmonizeNbpFraming({
+    width: 2400,
+    height: 1792,
+    inputWidth: 2048,
+    inputHeight: 1536,
+  });
+  assert.equal(originalFourThree.requestedRatio, "4:3");
+  assert.equal(originalFourThree.accepted, true);
+});
+
+test("3:2 accepts a 2K-class frame and rejects a 4:3 or 1K result", () => {
+  const accepted = assessHarmonizeNbpFraming({
+    width: 2528,
+    height: 1696,
+    inputWidth: 1264,
+    inputHeight: 848,
+  });
+  assert.equal(accepted.requestedRatio, "3:2");
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.matches2kFourThree, false);
+
+  const fourThree = assessHarmonizeNbpFraming({
+    width: 2400,
+    height: 1792,
+    inputWidth: 1264,
+    inputHeight: 848,
+  });
+  assert.equal(fourThree.accepted, false);
+  assert.equal(fourThree.withinToleranceOfInput, false);
+
+  const oneK = assessHarmonizeNbpFraming({
+    width: 1264,
+    height: 848,
+    inputWidth: 1264,
+    inputHeight: 848,
+  });
+  assert.equal(oneK.meets2kClass, false);
+  assert.equal(oneK.accepted, false);
+
+  const offGrid = assessHarmonizeNbpFraming({
+    width: 2528,
+    height: 1696,
+    inputWidth: 1800,
+    inputHeight: 1600,
+  });
+  assert.equal(offGrid.requestedRatio, null);
+  assert.equal(offGrid.accepted, false);
+});
+
+test("twice a documented 1K grid passes, and only 4:3 requires those exact pixels", () => {
+  for (const [ratio, width, height] of STANDARD_RATIOS) {
+    const doubled = assessHarmonizeNbpFraming({
+      width: width * 2,
+      height: height * 2,
+      inputWidth: width,
+      inputHeight: height,
+    });
+    assert.equal(doubled.requestedRatio, ratio);
+    assert.equal(doubled.accepted, true);
+    const oneK = assessHarmonizeNbpFraming({
+      width,
+      height,
+      inputWidth: width,
+      inputHeight: height,
+    });
+    assert.equal(oneK.accepted, false);
+    if (ratio === "4:3") {
+      assert.equal(width * 2, HARMONIZE_NBP_OUTPUT_WIDTH);
+      assert.equal(height * 2, HARMONIZE_NBP_OUTPUT_HEIGHT);
+    } else {
+      assert.equal(doubled.matches2kFourThree, false);
+    }
+  }
+  const nearThreeTwo = assessHarmonizeNbpFraming({
+    width: 2000,
+    height: 1342,
+    inputWidth: 1264,
+    inputHeight: 848,
+  });
+  assert.equal(nearThreeTwo.requestedRatio, "3:2");
+  assert.equal(nearThreeTwo.accepted, true);
+  assert.equal(nearThreeTwo.matches2kFourThree, false);
+});
+
+test("portrait and ultrawide 2K-class frames pass and an oversized frame does not", () => {
+  const portrait = assessHarmonizeNbpFraming({
+    width: 1536,
+    height: 2752,
+    inputWidth: 768,
+    inputHeight: 1376,
+  });
+  assert.equal(portrait.requestedRatio, "9:16");
+  assert.equal(portrait.accepted, true);
+
+  const ultrawide = assessHarmonizeNbpFraming({
+    width: 3168,
+    height: 1344,
+    inputWidth: 1584,
+    inputHeight: 672,
+  });
+  assert.equal(ultrawide.requestedRatio, "21:9");
+  assert.equal(ultrawide.accepted, true);
+
+  const tooWide = assessHarmonizeNbpFraming({
+    width: 4200,
+    height: 1800,
+    inputWidth: 1584,
+    inputHeight: 672,
+  });
+  assert.equal(tooWide.meets2kClass, false);
+  assert.equal(tooWide.accepted, false);
 });
 
 test("missing credentials fail before any request", async () => {
@@ -418,7 +623,20 @@ test("proof modules do not use the compositor or legacy Nano Banana proxy", () =
   assert.equal(source.includes("callCompositor"), false);
   assert.equal(source.includes("enhancePhoto"), false);
   assert.equal(source.includes("gemini-3-pro-image-preview"), false);
+  assert.equal(source.includes(".resize("), false);
+  assert.equal(source.includes(".extract("), false);
 });
+
+function pngHeader(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(32);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(8, 13);
+  bytes.set([0x49, 0x48, 0x44, 0x52], 12);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
+}
 
 async function tinyPng(): Promise<Uint8Array> {
   return encodeRgbaPng(new Uint8Array([10, 20, 30, 255]), 1, 1);

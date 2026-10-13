@@ -11,7 +11,10 @@ import {
   AFC_V2_RUNTIME_CAMERA_NEAR,
   type SceneObjectDefinition,
 } from "@/lib/afc-v2-runtime/types";
+import { classifyNanoBananaProAspectRatio } from "@/lib/afc-image-models";
 import {
+  HARMONIZE_ASPECT_RELATIVE_TOLERANCE,
+  decideHarmonizeExportFrame,
   harmonizeExportObject,
   harmonizeSceneCanonical,
   sha256HexBytes,
@@ -22,7 +25,7 @@ import {
   resolveHarmonizeMaterials,
   type HarmonizeMaterialCatalog,
 } from "@/lib/vibode-stage/harmonize-materials";
-import { HarmonizeNbpProofError } from "@/lib/vibode-stage/harmonize-nbp-proof";
+import { HARMONIZE_NBP_OUTPUT_MAX_EDGE, HarmonizeNbpProofError } from "@/lib/vibode-stage/harmonize-nbp-proof";
 import { assembleHarmonizePrompt } from "@/lib/vibode-stage/harmonize-prompt";
 import { effectiveMetricScale } from "@/lib/vibode-stage/room-scale";
 
@@ -44,6 +47,7 @@ import { planHarmonizeEnqueue } from "./harmonize-jobs/plan";
 import { harmonizeProviderAcceptsComposite } from "./harmonize-jobs/provider-capability";
 import {
   HARMONIZE_COMPOSITE_MAX_BYTES,
+  HARMONIZE_COMPOSITE_MAX_EDGE,
   HARMONIZE_JOB_CLAIM_LEASE_MS,
   HARMONIZE_PRECONTACT_BACKOFF_MS,
 } from "./harmonize-jobs/policy";
@@ -224,7 +228,7 @@ test("ten provider-started jobs block another enqueue, including rejected attemp
   });
 });
 
-test("oversized and non-4:3 composites are refused", async () => {
+test("oversized and off-grid composites are refused", async () => {
   const fixture = await matchingFixture();
   await withAdmin(async () => {
     const tooBig = await planHarmonizeEnqueue({
@@ -245,16 +249,64 @@ test("oversized and non-4:3 composites are refused", async () => {
     });
     assert.equal(wide.ok, false);
     if (!wide.ok) assert.equal(wide.code, "unsupported_dimensions");
-    const threeTwo = await planHarmonizeEnqueue({
+    const offGrid = png(1800, 1600);
+    const refused = await planHarmonizeEnqueue({
       actor: admin(),
-      submission: { ...fixture.submission, compositeSha256: "22".repeat(32) },
-      composite: png(1264, 848),
+      submission: { ...fixture.submission, compositeSha256: await sha256HexBytes(offGrid) },
+      composite: offGrid,
       loadTrusted: async () => ({ ok: true, room: fixture.room }),
       mode: "admin",
     });
-    assert.equal(threeTwo.ok, false);
-    if (!threeTwo.ok) assert.equal(threeTwo.code, "unsupported_aspect");
+    assert.equal(refused.ok, false);
+    if (!refused.ok) assert.equal(refused.code, "unsupported_aspect");
   });
+});
+
+test("a geometry-compatible frame outside the ratio family still uses the composite ratio", async () => {
+  const frame = { width: 911, height: 670 };
+  const compositeSize = { width: 951, height: 700 };
+  const frameClass = classifyNanoBananaProAspectRatio(frame.width, frame.height);
+  const compositeClass = classifyNanoBananaProAspectRatio(compositeSize.width, compositeSize.height);
+  assert.equal(frameClass.ok, false);
+  assert.equal(compositeClass.ok && compositeClass.ratio, "4:3");
+  const frameAspect = frame.width / frame.height;
+  const compositeAspect = compositeSize.width / compositeSize.height;
+  const geometryError = Math.abs(compositeAspect - frameAspect) / frameAspect;
+  assert.ok(geometryError <= HARMONIZE_ASPECT_RELATIVE_TOLERANCE);
+  const alignment = decideHarmonizeExportFrame({
+    imageWidth: compositeSize.width,
+    imageHeight: compositeSize.height,
+    frameWidth: frame.width,
+    frameHeight: frame.height,
+    authorityFrameWidth: frame.width,
+    authorityFrameHeight: frame.height,
+  });
+  assert.equal(alignment.ok, true);
+  const fixture = await matchingFixture(null, {
+    frameWidth: frame.width,
+    frameHeight: frame.height,
+    compositeWidth: compositeSize.width,
+    compositeHeight: compositeSize.height,
+  });
+  const planned = await withAdmin(() => accept(fixture, fixture.room));
+  assert.equal(planned.ok, true);
+  if (!planned.ok) return;
+  assert.equal(planned.insert.compositeWidth, compositeSize.width);
+  assert.equal(planned.insert.compositeHeight, compositeSize.height);
+});
+
+test("1264x848 is accepted when the certified frame is the same 3:2 family", async () => {
+  const fixture = await matchingFixture(null, {
+    frameWidth: 1264,
+    frameHeight: 848,
+    compositeWidth: 1264,
+    compositeHeight: 848,
+  });
+  const planned = await withAdmin(() => accept(fixture, fixture.room));
+  assert.equal(planned.ok, true);
+  if (!planned.ok) return;
+  assert.equal(planned.insert.compositeWidth, 1264);
+  assert.equal(planned.insert.compositeHeight, 848);
 });
 
 test("scene, generation, background, and catalog changes are stale", async () => {
@@ -582,10 +634,13 @@ test("migration and routes stay isolated from thumbnails, scenes, and the paid p
   assert.match(enqueue, /readHarmonizeActor/);
   assert.doesNotMatch(enqueue, /callHarmonizeNbpProof|generativelanguage/);
   assert.doesNotMatch(sql, /2400|1792|4:3/);
+  assert.doesNotMatch(sql, /aspect_ratio/);
   assert.match(sql, /p_output_width/);
   assert.match(sql, /p_output_height/);
   assert.doesNotMatch(plan, /4 \/ 3/);
-  assert.match(source("lib/vibode-stage/harmonize-jobs/provider-capability.ts"), /HARMONIZE_NBP_ASPECT_RATIO/);
+  assert.equal(HARMONIZE_NBP_OUTPUT_MAX_EDGE, HARMONIZE_COMPOSITE_MAX_EDGE);
+  assert.match(source("lib/vibode-stage/harmonize-jobs/provider-capability.ts"), /classifyNanoBananaProAspectRatio/);
+  assert.doesNotMatch(source("lib/vibode-stage/harmonize-nbp-proof.ts"), /\.resize\(|\.extract\(/);
   const completion = server.slice(
     server.indexOf("export async function completeHarmonizeGeneration"),
     server.indexOf("export async function failHarmonizeGeneration"),
@@ -599,12 +654,30 @@ test("migration and routes stay isolated from thumbnails, scenes, and the paid p
   assert.match(internal, /declaredMime: request.headers.get\("content-type"\)/);
 });
 
-test("the job row stores measured dimensions while 4:3 stays a provider gate", async () => {
+test("the job row stores measured dimensions for every standard ratio family", async () => {
+  const families = [
+    ["1:1", 1024, 1024],
+    ["3:2", 1264, 848],
+    ["2:3", 848, 1264],
+    ["4:3", 1200, 896],
+    ["3:4", 896, 1200],
+    ["5:4", 1152, 928],
+    ["4:5", 928, 1152],
+    ["16:9", 1376, 768],
+    ["9:16", 768, 1376],
+    ["21:9", 1584, 672],
+  ] as const;
+  for (const [ratio, width, height] of families) {
+    const approved = harmonizeProviderAcceptsComposite(width, height);
+    assert.equal(approved.ok && approved.aspectRatio, ratio);
+  }
+  const offGrid = harmonizeProviderAcceptsComposite(1800, 1600);
+  assert.equal(offGrid.ok, false);
+  if (!offGrid.ok) assert.equal(offGrid.code, "unsupported_aspect");
   const approved = harmonizeProviderAcceptsComposite(1200, 896);
   const wide = harmonizeProviderAcceptsComposite(1264, 848);
   assert.equal(approved.ok && approved.aspectRatio, "4:3");
-  assert.equal(wide.ok, false);
-  if (!wide.ok) assert.equal(wide.code, "unsupported_aspect");
+  assert.equal(wide.ok && wide.aspectRatio, "3:2");
   const wrongFrame = await solidJpeg(800, 600);
   const wrongMeta = await sharp(wrongFrame).metadata();
   assert.equal(wrongMeta.format, "jpeg");
@@ -729,6 +802,33 @@ test("the fake provider is worker configuration and is refused in production", a
   assert.equal(declaredMismatch.ok, false);
   const headerOnly = await assessHarmonizeJobOutput(jpeg(2400, 1792), 1200, 896, "image/jpeg");
   assert.equal(headerOnly.ok, false);
+  const threeTwo = await solidJpeg(2528, 1696);
+  const threeTwoMeta = await sharp(threeTwo).metadata();
+  assert.equal(threeTwoMeta.format, "jpeg");
+  assert.equal(threeTwoMeta.width, 2528);
+  assert.equal(threeTwoMeta.height, 1696);
+  const acceptedThreeTwo = await assessHarmonizeJobOutput(threeTwo, 1264, 848, "image/jpeg");
+  assert.equal(acceptedThreeTwo.ok, true);
+  if (acceptedThreeTwo.ok) {
+    assert.equal(acceptedThreeTwo.width, 2528);
+    assert.equal(acceptedThreeTwo.height, 1696);
+  }
+  const fourThreeOnThreeTwo = await assessHarmonizeJobOutput(generated.output, 1264, 848, "image/jpeg");
+  assert.equal(fourThreeOnThreeTwo.ok, false);
+  const lowResolution = await assessHarmonizeJobOutput(await solidJpeg(1264, 848), 1264, 848, "image/jpeg");
+  assert.equal(lowResolution.ok, false);
+  const portrait = await assessHarmonizeJobOutput(await solidJpeg(1536, 2752), 768, 1376, "image/jpeg");
+  assert.equal(portrait.ok, true);
+  if (portrait.ok) {
+    assert.equal(portrait.width, 1536);
+    assert.equal(portrait.height, 2752);
+  }
+  const ultrawide = await assessHarmonizeJobOutput(await solidJpeg(3168, 1344), 1584, 672, "image/jpeg");
+  assert.equal(ultrawide.ok, true);
+  if (ultrawide.ok) {
+    assert.equal(ultrawide.width, 3168);
+    assert.equal(ultrawide.height, 1344);
+  }
   await assert.rejects(() => sharp(jpeg(2400, 1792)).raw().toBuffer());
   const aborted = new AbortController();
   aborted.abort();
@@ -755,6 +855,59 @@ test("the fake provider is worker configuration and is refused in production", a
   assert.match(source("lib/vibode-stage/harmonize-jobs/provider.ts"), /callHarmonizeNbpProof/);
   assert.doesNotMatch(source("lib/vibode-stage/harmonize-jobs/provider.ts"), /generativelanguage.googleapis.com/);
   assert.match(source("lib/vibode-stage/harmonize-jobs/output.ts"), /decoded.info.width !== meta.width/);
+  assert.doesNotMatch(source("lib/vibode-stage/harmonize-jobs/plan.ts"), /harmonizeCompositeMatchesCertifiedFrame/);
+  assert.doesNotMatch(source("lib/vibode-stage/harmonize-jobs/fake-jpeg.ts"), /GEMINI_API_KEY|GOOGLE_API_KEY|generativelanguage/);
+});
+
+test("the fake provider labels every standard ratio and still refuses an off-grid composite", async () => {
+  const families = [
+    [1024, 1024],
+    [1264, 848],
+    [848, 1264],
+    [1200, 896],
+    [896, 1200],
+    [1152, 928],
+    [928, 1152],
+    [1376, 768],
+    [768, 1376],
+    [1584, 672],
+  ] as const;
+  const fake = createHarmonizeFakeProvider();
+  for (const [width, height] of families) {
+    const generated = await fake({
+      prompt: "Photorealistic Furniture Harmonization",
+      png: png(width, height),
+      signal: new AbortController().signal,
+    });
+    const again = await createHarmonizeFakeJpeg(width * 2, height * 2);
+    assert.deepEqual(generated.output, again);
+    assert.equal(generated.providerStatus, "FAKE");
+    assert.ok(Buffer.from(generated.output).includes(Buffer.from(HARMONIZE_FAKE_JPEG_COMMENT)));
+    const assessed = await assessHarmonizeJobOutput(generated.output, width, height, "image/jpeg");
+    assert.equal(assessed.ok, true);
+    if (!assessed.ok) continue;
+    assert.equal(assessed.width, width * 2);
+    assert.equal(assessed.height, height * 2);
+    const raster = await sharp(generated.output).raw().toBuffer();
+    let visibleLabel = false;
+    for (let index = 0; index < raster.length; index += 3) {
+      if (raster[index] === 255 && raster[index + 1] === 255 && raster[index + 2] === 255) {
+        visibleLabel = true;
+        break;
+      }
+    }
+    assert.equal(visibleLabel, true);
+  }
+  const fourThree = await createHarmonizeFakeJpeg();
+  assert.deepEqual(fourThree, await createHarmonizeFakeJpeg(2400, 1792));
+  await assert.rejects(
+    () => fake({
+      prompt: "Photorealistic Furniture Harmonization",
+      png: png(1800, 1600),
+      signal: new AbortController().signal,
+    }),
+    (error: unknown) => error instanceof HarmonizeNbpProofError && error.code === "invalid_package",
+  );
 });
 
 test("a JPEG header without a decodable image does not complete the job", async () => {
@@ -815,8 +968,21 @@ type Fixture = {
   composite: Uint8Array;
 };
 
-async function matchingFixture(variantPrimary: string | null = null): Promise<Fixture> {
-  const composite = png(1200, 896);
+async function matchingFixture(
+  variantPrimary: string | null = null,
+  pixels?: Readonly<{
+    frameWidth: number;
+    frameHeight: number;
+    compositeWidth: number;
+    compositeHeight: number;
+  }>,
+): Promise<Fixture> {
+  const camera: HarmonizeExportCamera = pixels ? {
+    ...CAMERA,
+    aspect: pixels.frameWidth / pixels.frameHeight,
+    frame: { width: pixels.frameWidth, height: pixels.frameHeight },
+  } : CAMERA;
+  const composite = png(pixels?.compositeWidth ?? 1200, pixels?.compositeHeight ?? 896);
   const background = new TextEncoder().encode("viewport-background");
   const object = harmonizeExportObject({
     objectId: "chair-1",
@@ -830,15 +996,15 @@ async function matchingFixture(variantPrimary: string | null = null): Promise<Fi
   });
   const objects = sortHarmonizeObjects([object]);
   const catalog = chairCatalog(variantPrimary);
-  const room = trustedRoom(background, catalog);
-  const materials = resolveHarmonizeMaterials({ objects, camera: CAMERA, catalog }).map((entry) => ({
+  const room = trustedRoom(background, catalog, camera);
+  const materials = resolveHarmonizeMaterials({ objects, camera, catalog }).map((entry) => ({
     objectId: entry.objectId,
     primaryText: entry.primary.text,
     secondaryText: entry.secondary.text,
     primaryProvenance: entry.primary.provenance,
     secondaryProvenance: entry.secondary.provenance,
   }));
-  const assembled = assembleHarmonizePrompt({ objects, camera: CAMERA, catalog });
+  const assembled = assembleHarmonizePrompt({ objects, camera, catalog });
   if (!assembled.text) throw new Error("prompt");
   const promptSha256 = await sha256HexBytes(new TextEncoder().encode(assembled.text));
   const sceneSnapshotSha256 = await sha256HexBytes(new TextEncoder().encode(harmonizeSceneCanonical({
@@ -846,7 +1012,7 @@ async function matchingFixture(variantPrimary: string | null = null): Promise<Fi
     roomScaleMultiplier: 1,
     certifiedMetricScale: 1,
     effectiveMetricScale: effectiveMetricScale(1, 1),
-    camera: CAMERA,
+    camera,
     objects,
     unmountedObjectIds: [],
   })));
@@ -862,7 +1028,7 @@ async function matchingFixture(variantPrimary: string | null = null): Promise<Fi
     roomScaleMultiplier: 1,
     certifiedMetricScale: 1,
     effectiveMetricScale: effectiveMetricScale(1, 1),
-    camera: CAMERA,
+    camera,
     objects: objects.map((entry) => ({ ...entry, uniformScale: 1 })),
     unmountedObjectIds: [],
     materials,
@@ -870,7 +1036,11 @@ async function matchingFixture(variantPrimary: string | null = null): Promise<Fi
   return { room, submission, composite };
 }
 
-function trustedRoom(background: Uint8Array, catalog: HarmonizeMaterialCatalog): HarmonizeTrustedRoom {
+function trustedRoom(
+  background: Uint8Array,
+  catalog: HarmonizeMaterialCatalog,
+  camera: HarmonizeExportCamera = CAMERA,
+): HarmonizeTrustedRoom {
   const sceneObject: SceneObjectDefinition = {
     objectId: "chair-1",
     assetId: "asset-chair-1",
@@ -889,9 +1059,9 @@ function trustedRoom(background: Uint8Array, catalog: HarmonizeMaterialCatalog):
     roomScaleMultiplier: 1,
     certifiedMetricScale: 1,
     camera: {
-      verticalFovDeg: CAMERA.verticalFovDeg,
-      frame: CAMERA.frame,
-      pose: CAMERA.pose,
+      verticalFovDeg: camera.verticalFovDeg,
+      frame: camera.frame,
+      pose: camera.pose,
     },
     sourceUserId: USER,
     sourceRoomId: ROOM,

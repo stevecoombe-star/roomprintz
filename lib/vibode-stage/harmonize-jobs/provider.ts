@@ -1,3 +1,5 @@
+import { classifyNanoBananaProAspectRatio } from "@/lib/afc-image-models";
+import { readPngSize } from "@/lib/vibode-stage/harmonize-export";
 import {
   HarmonizeNbpProofError,
   callHarmonizeNbpProof,
@@ -77,13 +79,28 @@ export function readHarmonizeWorkerProviderMode(
   return { ok: true, mode: "fake" };
 }
 
-/** Deterministic labeled JPEG. It does not call a network. */
+/**
+ * Deterministic labeled JPEG for the composite's ratio family.
+ * The output size is twice the documented 1K grid. For 4:3 that is the
+ * verified 2400×1792 frame. The other sizes are fixtures, not verified
+ * provider dimensions. This function does not call a network.
+ */
 export function createHarmonizeFakeProvider(): HarmonizeProvider {
-  return async ({ signal }) => {
+  return async ({ png, signal }) => {
     if (signal.aborted) {
       throw new HarmonizeNbpProofError("timeout", "Fake Harmonize provider aborted before a result.");
     }
-    const output = await createHarmonizeFakeJpeg();
+    const measured = readPngSize(png);
+    const classified = measured
+      ? classifyNanoBananaProAspectRatio(measured.width, measured.height)
+      : null;
+    if (!measured || !classified?.ok) {
+      throw new HarmonizeNbpProofError(
+        "invalid_package",
+        "B-stage-composite.png is outside the supported Nano Banana Pro aspect ratios.",
+      );
+    }
+    const output = await createHarmonizeFakeJpeg(classified.gridWidth * 2, classified.gridHeight * 2);
     if (signal.aborted) {
       throw new HarmonizeNbpProofError("timeout", "Fake Harmonize provider aborted before a result.");
     }

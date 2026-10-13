@@ -10,6 +10,7 @@ import {
   afcImageGenerationProvenance,
   defaultAfcImageModelSettings,
   isAfcImageModelChoice,
+  classifyNanoBananaProAspectRatio,
   normalizeAfcSunburstOutputSize,
   afcTiledCertificationFromStoredEvidence,
   certifyAfcTiledModelIdentity,
@@ -96,6 +97,40 @@ test("Sunburst size uses the Nano Banana Pro 1K grid and refuses to crop", () =>
   assert.equal(betweenPresets.ok, false);
   if (betweenPresets.ok) return;
   assert.match(betweenPresets.reason, /Refusing to crop/);
+  const classifiedOffGrid = classifyNanoBananaProAspectRatio(1800, 1600);
+  assert.equal(classifiedOffGrid.ok, false);
+  if (classifiedOffGrid.ok) return;
+  assert.equal(classifiedOffGrid.reason, betweenPresets.reason);
+});
+
+test("shared classifier names every Nano Banana Pro family and does not resize the source", () => {
+  const families = [
+    ["1:1", 1024, 1024],
+    ["3:2", 1264, 848],
+    ["2:3", 848, 1264],
+    ["3:4", 896, 1200],
+    ["4:3", 1200, 896],
+    ["4:5", 928, 1152],
+    ["5:4", 1152, 928],
+    ["9:16", 768, 1376],
+    ["16:9", 1376, 768],
+    ["21:9", 1584, 672],
+  ] as const;
+  for (const [ratio, width, height] of families) {
+    const classified = classifyNanoBananaProAspectRatio(width, height);
+    assert.equal(classified.ok, true);
+    if (!classified.ok) continue;
+    assert.equal(classified.ratio, ratio);
+    assert.equal(classified.gridWidth, width);
+    assert.equal(classified.gridHeight, height);
+    const sized = normalizeAfcSunburstOutputSize(width, height);
+    assert.equal(sized.ok && sized.size, `${width}x${height}`);
+    assert.equal(sized.ok && sized.strategy, "source-dimensions");
+  }
+  const original = classifyNanoBananaProAspectRatio(2048, 1536);
+  assert.equal(original.ok && original.ratio, "4:3");
+  const wide = classifyNanoBananaProAspectRatio(1264, 848);
+  assert.equal(wide.ok && wide.ratio, "3:2");
 });
 
 test("certified TILED identity accepts only the catalog pair", () => {

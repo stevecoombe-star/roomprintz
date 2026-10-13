@@ -6,6 +6,11 @@
  */
 
 import {
+  classifyNanoBananaProAspectRatio,
+  type NanoBananaProAspectRatio,
+} from "@/lib/afc-image-models";
+
+import {
   HARMONIZE_ASPECT_RELATIVE_TOLERANCE,
   readPngSize,
   sha256HexBytes,
@@ -28,6 +33,23 @@ export const HARMONIZE_NBP_IMAGE_SIZE = "2K" as const;
 export const HARMONIZE_NBP_OUTPUT_WIDTH = 2400;
 
 export const HARMONIZE_NBP_OUTPUT_HEIGHT = 1792;
+
+/**
+ * Long-edge floor for a non-4:3 result requested at image_size 2K.
+ *
+ * The only verified 2K frame is 4:3 at 2400×1792. Its short edge is 1792.
+ * Every documented 1K grid has a long edge of at most 1584, so this floor
+ * rejects those grids. Exact 2K pixel sizes for the other nine ratios are
+ * not verified and are not required. A result below 1792 on its long edge
+ * is rejected. A result at or above 1792 can still fail the aspect checks.
+ */
+export const HARMONIZE_NBP_MIN_2K_LONG_EDGE = HARMONIZE_NBP_OUTPUT_HEIGHT;
+
+/**
+ * Decode and acceptance cap. This matches the composite edge cap.
+ * It is not a verified provider maximum.
+ */
+export const HARMONIZE_NBP_OUTPUT_MAX_EDGE = 4096;
 
 export const HARMONIZE_NBP_TIMEOUT_MS = 120_000;
 
@@ -89,7 +111,7 @@ export type HarmonizeNbpRequest = Readonly<{
   response_format: Readonly<{
     type: "image";
     mime_type: typeof JPEG_MIME;
-    aspect_ratio: typeof HARMONIZE_NBP_ASPECT_RATIO;
+    aspect_ratio: NanoBananaProAspectRatio;
     image_size: typeof HARMONIZE_NBP_IMAGE_SIZE;
   }>;
 }>;
@@ -121,9 +143,13 @@ export type HarmonizeNbpCallResult = Readonly<{
 }>;
 
 export type HarmonizeNbpFraming = Readonly<{
+  requestedRatio: NanoBananaProAspectRatio | null;
+  aspectErrorVsRequested: number;
   aspectErrorVsFourThree: number;
   aspectErrorVsInput: number;
   matches2kFourThree: boolean;
+  meets2kClass: boolean;
+  withinToleranceOfRequested: boolean;
   withinToleranceOfInput: boolean;
   accepted: boolean;
 }>;
@@ -145,6 +171,7 @@ export function readHarmonizeNbpApiKey(
 export function buildHarmonizeNbpRequest(input: Readonly<{
   prompt: string;
   pngBase64: string;
+  aspectRatio: NanoBananaProAspectRatio;
 }>): HarmonizeNbpRequest {
   return {
     model: HARMONIZE_NBP_MODEL_ID,
@@ -155,7 +182,7 @@ export function buildHarmonizeNbpRequest(input: Readonly<{
     response_format: {
       type: "image",
       mime_type: JPEG_MIME,
-      aspect_ratio: HARMONIZE_NBP_ASPECT_RATIO,
+      aspect_ratio: input.aspectRatio,
       image_size: HARMONIZE_NBP_IMAGE_SIZE,
     },
   };
@@ -167,6 +194,12 @@ export function assessHarmonizeNbpFraming(input: Readonly<{
   inputWidth: number;
   inputHeight: number;
 }>): HarmonizeNbpFraming {
+  const classified = classifyNanoBananaProAspectRatio(input.inputWidth, input.inputHeight);
+  const requestedRatio = classified.ok ? classified.ratio : null;
+  const requestedAspect = requestedRatio ? nominalAspect(requestedRatio) : 0;
+  const aspectErrorVsRequested = requestedRatio
+    ? relativeAspectError(input.width, input.height, requestedAspect)
+    : Number.POSITIVE_INFINITY;
   const aspectErrorVsFourThree = relativeAspectError(input.width, input.height, 4 / 3);
   const aspectErrorVsInput = relativeAspectError(
     input.width,
@@ -175,13 +208,28 @@ export function assessHarmonizeNbpFraming(input: Readonly<{
   );
   const matches2kFourThree =
     input.width === HARMONIZE_NBP_OUTPUT_WIDTH && input.height === HARMONIZE_NBP_OUTPUT_HEIGHT;
+  const longEdge = Math.max(input.width, input.height);
+  const meets2kClass = longEdge >= HARMONIZE_NBP_MIN_2K_LONG_EDGE
+    && input.width <= HARMONIZE_NBP_OUTPUT_MAX_EDGE
+    && input.height <= HARMONIZE_NBP_OUTPUT_MAX_EDGE;
+  const withinToleranceOfRequested = aspectErrorVsRequested <= HARMONIZE_ASPECT_RELATIVE_TOLERANCE;
   const withinToleranceOfInput = aspectErrorVsInput <= HARMONIZE_ASPECT_RELATIVE_TOLERANCE;
+  const accepted = requestedRatio === HARMONIZE_NBP_ASPECT_RATIO
+    ? matches2kFourThree && withinToleranceOfInput
+    : requestedRatio != null
+      && meets2kClass
+      && withinToleranceOfRequested
+      && withinToleranceOfInput;
   return {
+    requestedRatio,
+    aspectErrorVsRequested,
     aspectErrorVsFourThree,
     aspectErrorVsInput,
     matches2kFourThree,
+    meets2kClass,
+    withinToleranceOfRequested,
     withinToleranceOfInput,
-    accepted: matches2kFourThree && withinToleranceOfInput,
+    accepted,
   };
 }
 
@@ -269,9 +317,20 @@ export async function callHarmonizeNbpProof(input: Readonly<{
   const fetchImpl = input.fetchImpl ?? fetch;
   const timeoutMs = input.timeoutMs ?? HARMONIZE_NBP_TIMEOUT_MS;
   const pollIntervalMs = input.pollIntervalMs ?? 2_000;
+  const measured = readPngSize(input.png);
+  const classified = measured
+    ? classifyNanoBananaProAspectRatio(measured.width, measured.height)
+    : null;
+  if (!measured || !classified?.ok) {
+    throw new HarmonizeNbpProofError(
+      "invalid_package",
+      "B-stage-composite.png is outside the supported Nano Banana Pro aspect ratios.",
+    );
+  }
   const request = buildHarmonizeNbpRequest({
     prompt: input.prompt,
     pngBase64: Buffer.from(input.png).toString("base64"),
+    aspectRatio: classified.ratio,
   });
   const started = Date.now();
   const deadline = started + timeoutMs;
@@ -355,6 +414,11 @@ export async function callHarmonizeNbpProof(input: Readonly<{
   } finally {
     clearTimeout(timer);
   }
+}
+
+function nominalAspect(ratio: NanoBananaProAspectRatio): number {
+  const [width, height] = ratio.split(":").map(Number);
+  return width / height;
 }
 
 function relativeAspectError(width: number, height: number, target: number): number {

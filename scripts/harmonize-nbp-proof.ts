@@ -10,6 +10,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { classifyNanoBananaProAspectRatio } from "../lib/afc-image-models";
 import { sha256HexBytes } from "../lib/vibode-stage/harmonize-export";
 import {
   HARMONIZE_NBP_ASPECT_RATIO,
@@ -94,13 +95,16 @@ async function main() {
   const zipBytes = new Uint8Array(await readFile(zipPath));
   const proof = await readHarmonizeProofPackage(zipBytes);
   const credential = readHarmonizeNbpApiKey(process.env);
+  const classified = classifyNanoBananaProAspectRatio(proof.inputWidth, proof.inputHeight);
   const plan = {
     mode: confirmPaid ? "paid" : "dry-run",
     endpoint: HARMONIZE_NBP_ENDPOINT,
     requestedModel: HARMONIZE_NBP_MODEL_ID,
-    aspectRatio: HARMONIZE_NBP_ASPECT_RATIO,
+    aspectRatio: classified.ok ? classified.ratio : null,
     imageSize: HARMONIZE_NBP_IMAGE_SIZE,
-    expectedOutput: { width: HARMONIZE_NBP_OUTPUT_WIDTH, height: HARMONIZE_NBP_OUTPUT_HEIGHT },
+    expectedOutput: classified.ok && classified.ratio === HARMONIZE_NBP_ASPECT_RATIO
+      ? { width: HARMONIZE_NBP_OUTPUT_WIDTH, height: HARMONIZE_NBP_OUTPUT_HEIGHT }
+      : null,
     timeoutMs: HARMONIZE_NBP_TIMEOUT_MS,
     inputWidth: proof.inputWidth,
     inputHeight: proof.inputHeight,
@@ -115,6 +119,13 @@ async function main() {
     publishedImageInputUsd: HARMONIZE_NBP_PUBLISHED_IMAGE_INPUT_USD,
     retries: 0,
   };
+  if (!classified.ok) {
+    printPlan({ ...plan, providerCalled: false });
+    throw new HarmonizeNbpProofError(
+      "invalid_package",
+      "B-stage-composite.png is outside the supported Nano Banana Pro aspect ratios.",
+    );
+  }
   if (!confirmPaid) {
     printPlan({ ...plan, providerCalled: false });
     return;

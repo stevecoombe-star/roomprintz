@@ -314,6 +314,11 @@ test("QA submits the certified camera when room scale is 0.52", async () => {
     harmonizeQaErrorMessage("stale_scene"),
     "The current room view does not match its saved Harmonize references. Please refresh the room or report this issue.",
   );
+  assert.equal(
+    harmonizeQaErrorMessage("unsupported_aspect"),
+    "This view is outside the supported room aspect ratios.",
+  );
+  assert.equal(harmonizeQaErrorMessage("unsupported_aspect").includes("4:3"), false);
 });
 
 test("QA accepts the stored frozen camera and the server rejects the manual camera", async () => {

@@ -102,7 +102,7 @@ export function harmonizeQaErrorMessage(code: string): string {
     case "daily_limit":
       return "The daily Harmonize test limit was reached.";
     case "unsupported_aspect":
-      return "This view is not a 4:3 frame Harmonize can test.";
+      return "This view is outside the supported room aspect ratios.";
     case "unsupported_dimensions":
       return "This view is too large to test.";
     case "composite_too_large":

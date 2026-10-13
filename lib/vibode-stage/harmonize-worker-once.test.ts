@@ -486,7 +486,7 @@ async function runOnce(
 }
 
 function workerApi(db: HarmonizeJobDatabase, jobId: string | null) {
-  const composites = new Map(db.jobs.map((job) => [job.id, new Uint8Array([1, 2, 3, 4])]));
+  const composites = new Map(db.jobs.map((job) => [job.id, pngHeader(1200, 896)]));
   return createMemoryHarmonizeWorkerApi({
     db,
     composites,
@@ -498,7 +498,7 @@ function workerApi(db: HarmonizeJobDatabase, jobId: string | null) {
 
 function pair(): HarmonizeJobDatabase {
   const db = createHarmonizeJobDatabase();
-  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const bytes = pngHeader(1200, 896);
   const older = enqueueHarmonizeJob(db, insert(USER_A, ROOM_A, "older", PROMPT, bytes), 0, OLDER);
   const newer = enqueueHarmonizeJob(db, insert(USER_B, ROOM_B, "newer", PROMPT, bytes), 1, NEWER);
   if (!older.ok || !newer.ok) throw new Error("enqueue failed");
@@ -570,6 +570,17 @@ function row(db: HarmonizeJobDatabase, jobId: string): HarmonizeJobRow {
 
 function status(db: HarmonizeJobDatabase, jobId: string): string {
   return row(db, jobId).status;
+}
+
+function pngHeader(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(32);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(8, 13);
+  bytes.set([0x49, 0x48, 0x44, 0x52], 12);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
 }
 
 function sha(value: string | Uint8Array): string {

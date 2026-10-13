@@ -3,15 +3,14 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 
 import {
-  HARMONIZE_NBP_OUTPUT_HEIGHT,
-  HARMONIZE_NBP_OUTPUT_WIDTH,
+  HARMONIZE_NBP_OUTPUT_MAX_EDGE,
   readHarmonizeNbpImageSize,
 } from "@/lib/vibode-stage/harmonize-nbp-proof";
 
 import { HARMONIZE_OUTPUT_MAX_BYTES } from "./policy";
 import { harmonizeProviderAcceptsOutput } from "./provider-capability";
 
-const MAX_DECODED_PIXELS = HARMONIZE_NBP_OUTPUT_WIDTH * HARMONIZE_NBP_OUTPUT_HEIGHT;
+const MAX_DECODED_PIXELS = HARMONIZE_NBP_OUTPUT_MAX_EDGE * HARMONIZE_NBP_OUTPUT_MAX_EDGE;
 
 export async function assessHarmonizeJobOutput(
   bytes: Uint8Array,

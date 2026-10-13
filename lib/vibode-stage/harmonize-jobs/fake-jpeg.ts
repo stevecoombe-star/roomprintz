@@ -29,20 +29,31 @@ const GLYPHS: Readonly<Record<string, readonly string[]>> = {
   Z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
 };
 
-let cached: Promise<Uint8Array> | null = null;
+const cached = new Map<string, Promise<Uint8Array>>();
 
-/** Same bytes for every call in this process. */
-export function createHarmonizeFakeJpeg(): Promise<Uint8Array> {
-  cached ??= encodeHarmonizeFakeJpeg().catch((error: unknown) => {
-    cached = null;
+/**
+ * Deterministic JPEG for one output size.
+ * The no-argument call remains the verified 4:3 frame, 2400×1792.
+ */
+export function createHarmonizeFakeJpeg(
+  width = HARMONIZE_NBP_OUTPUT_WIDTH,
+  height = HARMONIZE_NBP_OUTPUT_HEIGHT,
+): Promise<Uint8Array> {
+  const key = `${width}x${height}`;
+  const existing = cached.get(key);
+  if (existing) return existing;
+  const pending = encodeHarmonizeFakeJpeg(width, height).catch((error: unknown) => {
+    cached.delete(key);
     throw error;
   });
-  return cached;
+  cached.set(key, pending);
+  return pending;
 }
 
-async function encodeHarmonizeFakeJpeg(): Promise<Uint8Array> {
-  const width = HARMONIZE_NBP_OUTPUT_WIDTH;
-  const height = HARMONIZE_NBP_OUTPUT_HEIGHT;
+async function encodeHarmonizeFakeJpeg(width: number, height: number): Promise<Uint8Array> {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 16 || height < 16) {
+    throw new Error("Fake Harmonize JPEG size is not a positive frame.");
+  }
   const encoded = await sharp(renderFakeRgb(width, height), {
     raw: { width, height, channels: 3 },
   }).jpeg({
@@ -59,6 +70,30 @@ async function encodeHarmonizeFakeJpeg(): Promise<Uint8Array> {
 }
 
 function renderFakeRgb(width: number, height: number): Buffer {
+  const rgb = fillFakePattern(width, height);
+  if (width === HARMONIZE_NBP_OUTPUT_WIDTH && height === HARMONIZE_NBP_OUTPUT_HEIGHT) {
+    fillRect(rgb, width, 80, 520, width - 80, 1680, [12, 12, 12]);
+    paintText(rgb, width, "FAKE", 620, 56);
+    paintText(rgb, width, "HARMONIZE", 1040, 40);
+    paintText(rgb, width, "NOT A ROOM", 1380, 32);
+    return rgb;
+  }
+  const lines = fitFakeLines(width, [
+    ["FAKE", 56],
+    ["HARMONIZE", 40],
+    ["NOT A ROOM", 32],
+  ]);
+  const gap = 16;
+  const block = lines.reduce((sum, line) => sum + line.height, 0) + gap * (lines.length - 1);
+  let top = Math.max(36, Math.round((height - block) / 2));
+  for (const line of lines) {
+    paintText(rgb, width, line.text, top, line.scale);
+    top += line.height + gap;
+  }
+  return rgb;
+}
+
+function fillFakePattern(width: number, height: number): Buffer {
   const rgb = Buffer.alloc(width * height * 3);
   for (let y = 0; y < height; y += 1) {
     const yBand = Math.floor(y / 64) % 2;
@@ -74,10 +109,19 @@ function renderFakeRgb(width: number, height: number): Buffer {
     }
   }
   fillRect(rgb, width, 80, 520, width - 80, 1680, [12, 12, 12]);
-  paintText(rgb, width, "FAKE", 620, 56);
-  paintText(rgb, width, "HARMONIZE", 1040, 40);
-  paintText(rgb, width, "NOT A ROOM", 1380, 32);
   return rgb;
+}
+
+function fitFakeLines(
+  imageWidth: number,
+  lines: readonly (readonly [string, number])[],
+): readonly Readonly<{ text: string; scale: number; height: number }>[] {
+  const limit = Math.max(8, imageWidth - 64);
+  return lines.map(([text, preferred]) => {
+    let scale = preferred;
+    while (scale > 2 && textWidth(text, scale) > limit) scale -= 1;
+    return { text, scale, height: 7 * scale };
+  });
 }
 
 function fillRect(
