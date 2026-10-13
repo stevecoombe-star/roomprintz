@@ -359,6 +359,68 @@ test("scene, generation, background, and catalog changes are stale", async () =>
   });
 });
 
+test("publication backdrop and canonical objects are trusted, then a missing authority does not enqueue", async () => {
+  const fixture = await matchingFixture();
+  const backgroundSha = String(fixture.submission.backgroundSha256);
+  const originalSha = "22".repeat(32);
+  const otherSha = "33".repeat(32);
+  const planSource = source("lib/vibode-stage/harmonize-jobs/plan.ts");
+  const serverSource = source("lib/vibode-stage/harmonize-jobs/jobs.server.ts");
+  assert.match(planSource, /harmonizePublicationFields/);
+  assert.match(planSource, /sceneObjects: publication\.sceneObjects/);
+  assert.doesNotMatch(planSource, /value\.backdropKind|submission\.backdropKind|sceneObjects:\s*objects\.objects/);
+  const readyAt = serverSource.indexOf("vibode_harmonize_publication_enqueue_ready");
+  const enqueueAt = serverSource.indexOf("enqueue_vibode_harmonize_generation");
+  assert.ok(readyAt > 0 && enqueueAt > readyAt);
+  await withAdmin(async () => {
+    const cases = [
+      { emptySha256: backgroundSha, originalSha256: originalSha, kind: "afc_empty" },
+      { emptySha256: backgroundSha, originalSha256: backgroundSha, kind: "afc_empty" },
+      { emptySha256: otherSha, originalSha256: backgroundSha, kind: "afc_original" },
+      { emptySha256: otherSha, originalSha256: originalSha, kind: "room_asset" },
+    ] as const;
+    for (const item of cases) {
+      const planned = await planHarmonizeEnqueue({
+        actor: admin(),
+        submission: { ...fixture.submission, backdropKind: "afc_empty" },
+        composite: fixture.composite,
+        loadTrusted: async () => ({
+          ok: true,
+          room: { ...fixture.room, emptySha256: item.emptySha256, originalSha256: item.originalSha256 },
+        }),
+        mode: "admin",
+      });
+      assert.equal(planned.ok, true, item.kind);
+      if (!planned.ok) continue;
+      assert.equal(planned.insert.backdropKind, item.kind);
+      assert.deepEqual(planned.insert.sceneObjects, fixture.room.persistedObjects);
+      assert.notEqual(planned.insert.sceneObjects, fixture.room.scene.objects);
+    }
+    const db = createHarmonizeJobDatabase();
+    const missing = await planHarmonizeEnqueue({
+      actor: admin(),
+      submission: fixture.submission,
+      composite: fixture.composite,
+      loadTrusted: async () => ({
+        ok: true,
+        room: { ...fixture.room, emptySha256: null, originalSha256: null },
+      }),
+      mode: "admin",
+    });
+    assert.equal(missing.ok, false);
+    if (!missing.ok) assert.equal(missing.code, "publication_authority_unavailable");
+    assert.equal(db.jobs.length, 0);
+    const rejected = enqueueHarmonizeJob(db, {
+      ...(await acceptOk(fixture)),
+      backdropKind: "client-label",
+    } as unknown as HarmonizeJobInsert, 0);
+    assert.equal(rejected.ok, false);
+    if (!rejected.ok) assert.equal(rejected.code, "invalid_submission");
+    assert.equal(db.jobs.length, 0);
+    assert.equal(db.jobs[0]?.providerStartedAtMs ?? null, null);
+  });
+});
+
 test("materials inherit, override, and intentionally clear", async () => {
   const inherited = await matchingFixture(null);
   const overridden = await matchingFixture("Top-grain leather");
@@ -1066,6 +1128,9 @@ function trustedRoom(
     sourceUserId: USER,
     sourceRoomId: ROOM,
     background,
+    emptySha256: "11".repeat(32),
+    originalSha256: "22".repeat(32),
+    persistedObjects: [sceneObject],
     scene: { afcGenerationId: GENERATION, objects: [sceneObject] },
     catalog,
   };

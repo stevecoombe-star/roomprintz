@@ -34,6 +34,7 @@ import { HARMONIZE_UNIVERSAL_PROMPT_VERSION } from "@/lib/vibode-stage/harmonize
 import { effectiveMetricScale } from "@/lib/vibode-stage/room-scale";
 
 import { harmonizeActorDecision, harmonizeMode, type HarmonizeMode } from "./access";
+import { harmonizePublicationFields } from "./backdrop-kind";
 import {
   HARMONIZE_COMPOSITE_MAX_BYTES,
   HARMONIZE_COMPOSITE_MAX_EDGE,
@@ -222,6 +223,17 @@ export async function planHarmonizeEnqueue(input: Readonly<{
     note("scene_hash", { hashMatch: false });
     return { ok: false, code: "stale_scene" };
   }
+  const publication = harmonizePublicationFields({
+    backgroundSha256,
+    emptySha256: trusted.room.emptySha256,
+    originalSha256: trusted.room.originalSha256,
+    persistedObjects: trusted.room.persistedObjects,
+    effectiveObjectIds: trusted.room.scene.objects.map((object) => object.objectId),
+  });
+  if (!publication.ok) {
+    note("publication", { ready: false });
+    return { ok: false, code: "publication_authority_unavailable" };
+  }
   const requestSha256 = await sha256HexBytes(new TextEncoder().encode(canonicalJson({
     roomId: parsed.value.roomId,
     sourceVersionId: parsed.value.sourceVersionId,
@@ -272,6 +284,8 @@ export async function planHarmonizeEnqueue(input: Readonly<{
     roomUserId: trusted.room.userId,
     sourceUserId: trusted.room.sourceUserId,
     sourceRoomId: trusted.room.sourceRoomId,
+    backdropKind: publication.backdropKind,
+    sceneObjects: publication.sceneObjects,
   };
   return { ok: true, insert };
 }

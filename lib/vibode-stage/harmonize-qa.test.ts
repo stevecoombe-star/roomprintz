@@ -152,6 +152,9 @@ function roomFor(
     sourceUserId: USER,
     sourceRoomId: ROOM,
     background,
+    emptySha256: "11".repeat(32),
+    originalSha256: "22".repeat(32),
+    persistedObjects: scene,
     scene: { afcGenerationId: GENERATION, objects: scene },
     catalog: catalog(),
   };

@@ -36,7 +36,7 @@ export type HarmonizeEnqueueResult =
   | Readonly<{ ok: true; created: boolean; job: HarmonizeJobRow }>
   | Readonly<{
       ok: false;
-      code: "not_found" | "source_version_not_found" | "active_job" | "daily_limit" | "idempotency_conflict";
+      code: "not_found" | "source_version_not_found" | "active_job" | "daily_limit" | "idempotency_conflict" | "invalid_submission";
     }>;
 
 export type HarmonizeClaim = Readonly<{
@@ -81,6 +81,7 @@ export function enqueueHarmonizeJob(
   nowMs: number,
   id: string = randomUUID(),
 ): HarmonizeEnqueueResult {
+  if (!publicationInsertReady(insert)) return { ok: false, code: "invalid_submission" };
   if (insert.roomUserId !== insert.userId) return { ok: false, code: "not_found" };
   if (insert.sourceUserId !== insert.userId || insert.sourceRoomId !== insert.roomId) {
     return { ok: false, code: "source_version_not_found" };
@@ -147,6 +148,8 @@ export function enqueueHarmonizeJob(
     createdAtMs: nowMs,
     updatedAtMs: nowMs,
     completedAtMs: null,
+    backdropKind: insert.backdropKind,
+    sceneObjects: structuredClone(insert.sceneObjects),
   };
   db.jobs.push(job);
   return { ok: true, created: true, job };
@@ -400,6 +403,14 @@ function claimFrom(job: HarmonizeJobRow): HarmonizeClaim {
 
 function findJob(db: HarmonizeJobDatabase, jobId: string): HarmonizeJobRow | null {
   return db.jobs.find((job) => job.id === jobId) ?? null;
+}
+
+function publicationInsertReady(insert: HarmonizeJobInsert): boolean {
+  return (insert.backdropKind === "afc_empty"
+    || insert.backdropKind === "afc_original"
+    || insert.backdropKind === "room_asset")
+    && Array.isArray(insert.sceneObjects)
+    && insert.sceneObjects.length <= 32;
 }
 
 function isActive(job: HarmonizeJobRow): boolean {

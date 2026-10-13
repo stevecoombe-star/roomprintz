@@ -82,6 +82,10 @@ import {
   useRegisterHarmonizeQa,
 } from "@/components/stage/HarmonizeExportContext";
 import {
+  harmonizeCaptureBoundaryMessage,
+  runHarmonizeCaptureBoundary,
+} from "@/lib/vibode-stage/harmonize-capture-boundary";
+import {
   displayedHarmonizeBackgroundUrl,
   executeHarmonizeExport,
   executeHarmonizeQaSubmission,
@@ -185,6 +189,8 @@ type Props = Readonly<{
   harmonizeMaterialCatalog?: HarmonizeMaterialCatalog | null;
   harmonizeSourceVersionId?: string | null;
   harmonizeCertifiedCamera?: CertifiedFrozenCamera | null;
+  harmonizeFlushScene?: () => Promise<boolean>;
+  harmonizeFlushRoomScale?: () => Promise<boolean>;
 }>;
 
 type ReadyProps = Readonly<{
@@ -216,6 +222,8 @@ type ReadyProps = Readonly<{
   harmonizeMaterialCatalog?: HarmonizeMaterialCatalog | null;
   harmonizeSourceVersionId?: string | null;
   harmonizeCertifiedCamera?: CertifiedFrozenCamera | null;
+  harmonizeFlushScene?: () => Promise<boolean>;
+  harmonizeFlushRoomScale?: () => Promise<boolean>;
 }>;
 
 export function AfcProductionRoomViewer({
@@ -245,6 +253,8 @@ export function AfcProductionRoomViewer({
   harmonizeMaterialCatalog = null,
   harmonizeSourceVersionId = null,
   harmonizeCertifiedCamera = null,
+  harmonizeFlushScene,
+  harmonizeFlushRoomScale,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -301,6 +311,8 @@ export function AfcProductionRoomViewer({
       harmonizeMaterialCatalog={harmonizeMaterialCatalog}
       harmonizeSourceVersionId={harmonizeSourceVersionId}
       harmonizeCertifiedCamera={harmonizeCertifiedCamera}
+      harmonizeFlushScene={harmonizeFlushScene}
+      harmonizeFlushRoomScale={harmonizeFlushRoomScale}
     />
   );
 }
@@ -332,6 +344,8 @@ function AfcProductionRoomViewerReady({
   harmonizeMaterialCatalog = null,
   harmonizeSourceVersionId = null,
   harmonizeCertifiedCamera = null,
+  harmonizeFlushScene,
+  harmonizeFlushRoomScale,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -373,6 +387,10 @@ function AfcProductionRoomViewerReady({
   const harmonizeMaterialCatalogRef = useRef(harmonizeMaterialCatalog);
   const harmonizeSourceVersionIdRef = useRef(harmonizeSourceVersionId);
   const harmonizeCertifiedCameraRef = useRef(harmonizeCertifiedCamera);
+  const harmonizeGestureRef = useRef(false);
+  const harmonizeSceneIdentityRef = useRef("");
+  const harmonizeFlushSceneRef = useRef(harmonizeFlushScene);
+  const harmonizeFlushRoomScaleRef = useRef(harmonizeFlushRoomScale);
   harmonizeRoomIdRef.current = roomId;
   harmonizeAuthorityRef.current = authority;
   harmonizeBackgroundUrlRef.current = visualImageUrl;
@@ -380,6 +398,9 @@ function AfcProductionRoomViewerReady({
   harmonizeMaterialCatalogRef.current = harmonizeMaterialCatalog;
   harmonizeSourceVersionIdRef.current = harmonizeSourceVersionId;
   harmonizeCertifiedCameraRef.current = harmonizeCertifiedCamera;
+  harmonizeFlushSceneRef.current = harmonizeFlushScene;
+  harmonizeFlushRoomScaleRef.current = harmonizeFlushRoomScale;
+  harmonizeSceneIdentityRef.current = `${harmonizeSourceVersionId ?? ""}:${authority.generationId}:${sceneInstanceIdProp ?? ""}`;
   useLayoutEffect(() => {
     roomScaleRef.current = roomScaleMultiplier;
   }, [roomScaleMultiplier]);
@@ -758,10 +779,14 @@ function AfcProductionRoomViewerReady({
       emitPresentation();
     };
 
+    const publishHarmonizeGesture = () => {
+      harmonizeGestureRef.current = gizmoDragging || bodyDrag?.active === true;
+    };
     const endBodyDrag = () => {
       const session = bodyDrag;
       if (!session) return;
       bodyDrag = null;
+      publishHarmonizeGesture();
       controls.enabled = showTransformGizmosRef.current === true;
       releaseBodyDragCapture(session.pointerId);
       if (!session.active) return;
@@ -1035,6 +1060,7 @@ function AfcProductionRoomViewerReady({
       if (!session.active) {
         if (!shouldActivateObjectBodyDrag(movement)) return;
         session.active = true;
+        publishHarmonizeGesture();
       }
       shiftHeld = event.shiftKey;
       session.lastClientX = event.clientX;
@@ -1087,6 +1113,7 @@ function AfcProductionRoomViewerReady({
     const draggingChangedListener = (event: { value?: unknown }) => {
       const starting = event.value === true;
       gizmoDragging = starting;
+      publishHarmonizeGesture();
       if (starting) {
         if (bodyDrag) endBodyDrag();
         const objectId = selectedObjectIdRef.current;
@@ -1935,27 +1962,40 @@ function AfcProductionRoomViewerReady({
     });
     registerHarmonizeQa?.({
       roomId,
-      run: (idempotencyKey) => {
+      run: async (idempotencyKey) => {
         const sourceVersionId = harmonizeSourceVersionIdRef.current;
         if (!sourceVersionId) {
-          return Promise.reject(new HarmonizeExportError("Save this room version before testing Harmonize."));
+          throw new HarmonizeExportError("Save this room version before testing Harmonize.");
         }
         const capture = begin();
         if (capture instanceof Promise) return capture;
-        return executeHarmonizeQaSubmission({
-          roomId: harmonizeRoomIdRef.current,
-          sourceVersionId,
-          idempotencyKey,
-          authority: harmonizeAuthorityRef.current,
-          backgroundUrl: displayedHarmonizeBackgroundUrl({
-            image: backgroundImage(),
-            fallbackUrl: harmonizeBackgroundUrlRef.current,
-          }),
-          originalImageUrl: harmonizeOriginalUrlRef.current,
-          captureFurniture: capture,
-        }).finally(() => {
+        try {
+          const prepared = await runHarmonizeCaptureBoundary({
+            furnitureGestureActive: () => harmonizeGestureRef.current,
+            sourceVersionId: () => harmonizeSourceVersionIdRef.current,
+            sceneIdentity: () => harmonizeSceneIdentityRef.current,
+            flushScene: () => harmonizeFlushSceneRef.current?.() ?? Promise.resolve(false),
+            flushRoomScale: () => harmonizeFlushRoomScaleRef.current?.() ?? Promise.resolve(false),
+            capture: () => executeHarmonizeQaSubmission({
+              roomId: harmonizeRoomIdRef.current,
+              sourceVersionId,
+              idempotencyKey,
+              authority: harmonizeAuthorityRef.current,
+              backgroundUrl: displayedHarmonizeBackgroundUrl({
+                image: backgroundImage(),
+                fallbackUrl: harmonizeBackgroundUrlRef.current,
+              }),
+              originalImageUrl: harmonizeOriginalUrlRef.current,
+              captureFurniture: capture,
+            }),
+          });
+          if (!prepared.ok) {
+            throw new HarmonizeExportError(harmonizeCaptureBoundaryMessage(prepared.code));
+          }
+          return prepared.value;
+        } finally {
           harmonizeInFlightRef.current = false;
-        });
+        }
       },
     });
     return () => {

@@ -154,6 +154,8 @@ function trustedRoom(manualPerspective: unknown): HarmonizeTrustedRoom {
       status: "ready",
       production_authority: authority(),
       manual_perspective: manualPerspective,
+      empty_sha256: "11".repeat(32),
+      original_sha256: "22".repeat(32),
     },
     products: [{
       product_id: "nico",
@@ -345,6 +347,10 @@ test("a manual-perspective scene passes after the shared effective remap", async
   assert.equal(built.submission.objects[0]?.positionM.y, effective.y);
   assert.equal(built.submission.objects[0]?.positionM.z, effective.z);
   assert.equal(planned.insert.sceneSnapshotSha256, built.submission.sceneSnapshotSha256);
+  assert.deepEqual(planned.insert.sceneObjects[0]?.transform.position, chair().transform.position);
+  assert.notEqual(planned.insert.sceneObjects[0]?.transform.position.x, effective.x);
+  assert.equal(planned.insert.snapshot.objects[0]?.positionM.x, effective.x);
+  assert.deepEqual(room.persistedObjects[0]?.transform.position, chair().transform.position);
   const storedHash = await sha256HexBytes(new TextEncoder().encode(harmonizeSceneCanonical({
     generationId: GENERATION,
     roomScaleMultiplier: built.submission.roomScaleMultiplier,

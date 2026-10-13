@@ -72,6 +72,10 @@ export async function enqueueHarmonizeGeneration(input: Readonly<{
   if (!ids) return { ok: false, code: "invalid_submission" };
   const supabase = getServiceRoleSupabaseClient();
   if (!supabase) return { ok: false, code: "unavailable" };
+  const publicationReady = await supabase.rpc("vibode_harmonize_publication_enqueue_ready");
+  if (publicationReady.error || publicationReady.data !== true) {
+    return { ok: false, code: "publication_schema_unavailable" };
+  }
   const path = harmonizeCompositePath(ids.roomId, input.userId, ids.idempotencyKey);
   const downloaded = await downloadObject(supabase, VIBODE_HARMONIZE_BUCKET, path);
   if (!downloaded) return { ok: false, code: "invalid_composite" };
@@ -318,7 +322,7 @@ async function loadTrustedRoom(
   });
   const generationId = text(room.current_afc_generation_id);
   const generation = generationId
-    ? await maybeOne(supabase, "vibode_afc_generations", "id, room_id, user_id, status, production_authority, manual_perspective", {
+    ? await maybeOne(supabase, "vibode_afc_generations", "id, room_id, user_id, status, production_authority, manual_perspective, empty_sha256, original_sha256", {
         id: generationId,
       })
     : null;
@@ -415,6 +419,8 @@ function enqueuePayload(insert: HarmonizeJobInsert): Record<string, unknown> {
     compositeByteLength: insert.compositeByteLength,
     compositeWidth: insert.compositeWidth,
     compositeHeight: insert.compositeHeight,
+    backdropKind: insert.backdropKind,
+    sceneObjects: insert.sceneObjects,
   };
 }
 

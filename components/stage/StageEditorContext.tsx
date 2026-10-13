@@ -135,6 +135,7 @@ type StageEditorContextValue = Readonly<{
   noteSelectedObjectTranslated: (objectId: string) => void;
   roomScaleMultiplier: number;
   setRoomScaleMultiplier: (value: number) => void;
+  flushRoomScale: () => Promise<boolean>;
   trustedPath: TrustedPathBaseline | null;
   trustedPathVisible: boolean;
   toggleTrustedPath: () => void;
@@ -565,6 +566,7 @@ export function StageEditorProvider({
     noteSelectedObjectTranslated,
     roomScaleMultiplier: roomScale.roomScaleMultiplier,
     setRoomScaleMultiplier: roomScale.setRoomScaleMultiplier,
+    flushRoomScale: roomScale.flushRoomScale,
     trustedPath,
     trustedPathVisible,
     toggleTrustedPath,
@@ -614,6 +616,7 @@ export function StageEditorProvider({
     noteSelectedObjectTranslated,
     roomScale.roomScaleMultiplier,
     roomScale.setRoomScaleMultiplier,
+    roomScale.flushRoomScale,
     trustedPath,
     trustedPathVisible,
     toggleTrustedPath,

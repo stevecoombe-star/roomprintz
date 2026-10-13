@@ -5,6 +5,8 @@ import type {
   HarmonizeMaterialProvenance,
 } from "@/lib/vibode-stage/harmonize-materials";
 
+import type { HarmonizeBackdropKind } from "./backdrop-kind";
+
 export type HarmonizeJobStatus =
   | "queued"
   | "running"
@@ -58,6 +60,8 @@ export type HarmonizeJobInsert = Readonly<{
   roomUserId: string;
   sourceUserId: string;
   sourceRoomId: string;
+  backdropKind: HarmonizeBackdropKind;
+  sceneObjects: readonly SceneObjectDefinition[];
 }>;
 
 export type HarmonizeJobRow = {
@@ -108,6 +112,8 @@ export type HarmonizeJobRow = {
   createdAtMs: number;
   updatedAtMs: number;
   completedAtMs: number | null;
+  backdropKind: HarmonizeBackdropKind;
+  sceneObjects: readonly SceneObjectDefinition[];
 };
 
 export type HarmonizeTrustedCamera = Readonly<{
@@ -125,6 +131,9 @@ export type HarmonizeTrustedRoom = Readonly<{
   sourceUserId: string;
   sourceRoomId: string;
   background: Uint8Array;
+  emptySha256: string | null;
+  originalSha256: string | null;
+  persistedObjects: readonly SceneObjectDefinition[];
   scene: Readonly<{
     afcGenerationId: string;
     objects: readonly SceneObjectDefinition[];

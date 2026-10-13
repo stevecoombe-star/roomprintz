@@ -535,6 +535,8 @@ function insert(
     roomUserId: userId,
     sourceUserId: userId,
     sourceRoomId: roomId,
+    backdropKind: "room_asset",
+    sceneObjects: [],
     snapshot: {
       generationId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
       roomScaleMultiplier: 1,

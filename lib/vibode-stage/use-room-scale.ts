@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
 
+import { createRoomScalePersistence } from "./room-scale-persistence";
 import {
   ROOM_SCALE_DEFAULT,
   clampRoomScaleMultiplier,
@@ -30,6 +31,7 @@ async function authorizedFetch(url: string, init: RequestInit): Promise<Response
 export function useRoomScale(roomId: string | null): {
   roomScaleMultiplier: number;
   setRoomScaleMultiplier: (value: number) => void;
+  flushRoomScale: () => Promise<boolean>;
 } {
   const [stored, setStored] = useState<{ roomId: string | null; multiplier: number }>({
     roomId,
@@ -39,9 +41,6 @@ export function useRoomScale(roomId: string | null): {
     ? stored.multiplier
     : ROOM_SCALE_DEFAULT;
   const localEditRef = useRef(0);
-  const pendingRef = useRef<{ roomId: string; multiplier: number } | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const persist = useCallback(async (targetRoomId: string, multiplier: number) => {
     const response = await authorizedFetch(
       `${ROOM_SCALE_URL}?roomId=${encodeURIComponent(targetRoomId)}`,
@@ -52,17 +51,22 @@ export function useRoomScale(roomId: string | null): {
     );
     return response?.ok === true;
   }, []);
-
-  const flushPending = useCallback(() => {
-    const pending = pendingRef.current;
-    pendingRef.current = null;
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    if (!pending) return;
-    void persist(pending.roomId, pending.multiplier);
+  const writerRef = useRef<ReturnType<typeof createRoomScalePersistence> | null>(null);
+  const ensureWriter = useCallback(() => {
+    const existing = writerRef.current;
+    if (existing) return existing;
+    const created = createRoomScalePersistence({
+      delayMs: 200,
+      persist: (write) => persist(write.roomId, write.multiplier),
+      schedule: (run, delayMs) => {
+        const timer = setTimeout(run, delayMs);
+        return () => clearTimeout(timer);
+      },
+    });
+    writerRef.current = created;
+    return created;
   }, [persist]);
+  const flushRoomScale = useCallback(() => ensureWriter().flush(), [ensureWriter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,25 +90,17 @@ export function useRoomScale(roomId: string | null): {
     })();
     return () => {
       cancelled = true;
-      flushPending();
+      void flushRoomScale();
     };
-  }, [flushPending, roomId]);
+  }, [flushRoomScale, roomId]);
 
   const setRoomScaleMultiplier = useCallback((value: number) => {
     const next = clampRoomScaleMultiplier(value);
     localEditRef.current += 1;
     setStored({ roomId, multiplier: next });
     if (!roomId) return;
-    pendingRef.current = { roomId, multiplier: next };
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => {
-      timerRef.current = null;
-      const pending = pendingRef.current;
-      pendingRef.current = null;
-      if (!pending) return;
-      void persist(pending.roomId, pending.multiplier);
-    }, 200);
-  }, [persist, roomId]);
+    ensureWriter().queue({ roomId, multiplier: next });
+  }, [ensureWriter, roomId]);
 
-  return { roomScaleMultiplier, setRoomScaleMultiplier };
+  return { roomScaleMultiplier, setRoomScaleMultiplier, flushRoomScale };
 }

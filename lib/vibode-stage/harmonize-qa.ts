@@ -113,6 +113,10 @@ export function harmonizeQaErrorMessage(code: string): string {
       return "Save this room version before testing Harmonize.";
     case "invalid_composite":
       return "The composite did not upload.";
+    case "publication_schema_unavailable":
+      return "Harmonize cannot queue until the History publication database update is applied.";
+    case "publication_authority_unavailable":
+      return "This room view cannot be saved to History yet.";
     case "unavailable":
     case "disabled":
     case "Not found.":

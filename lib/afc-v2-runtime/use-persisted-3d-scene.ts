@@ -38,6 +38,7 @@ import {
   versionScenePutBody,
   versionSceneUrl,
 } from "./scene-persistence-client";
+import { createSceneSaveGate, type SceneSaveJob } from "./scene-save-gate";
 import type { StageFurnitureBaseline } from "@/lib/vibode-stage/catalog-drawer-preference";
 import type {
   FurnitureAssetDefinition,
@@ -74,6 +75,7 @@ export type Persisted3dSceneState = Readonly<{
   canUndo: boolean;
   undo: () => void;
   onObjectTransformCommitted: (scene: SerializedRuntimeScene) => void;
+  flushPersistedScene: () => Promise<boolean>;
 }>;
 
 type LoadedVersionScene = Readonly<{
@@ -136,8 +138,6 @@ export function usePersisted3dScene(input: Readonly<{
   const loadRevisionRef = useRef(0);
   const loadedRef = useRef<LoadedVersionScene | null>(null);
   const identityRef = useRef<PersistedSceneIdentity | null>(identity);
-  const pendingSaveRef = useRef<PendingSave | null>(null);
-  const saveGateRef = useRef<Promise<boolean> | null>(null);
   const undoStackRef = useRef<SceneObjectDefinition[][]>([]);
   const applyingUndoRef = useRef(false);
   identityRef.current = identity;
@@ -147,75 +147,77 @@ export function usePersisted3dScene(input: Readonly<{
     setCanUndo(false);
   }, []);
 
+  const sceneSaveRef = useRef<(job: SceneSaveJob<PendingSave>) => Promise<boolean>>(
+    async () => false,
+  );
+  const sceneGateRef = useRef(createSceneSaveGate<PendingSave>((job) => sceneSaveRef.current(job)));
+  const sceneGate = sceneGateRef.current;
+  sceneSaveRef.current = async (job) => {
+    const target = job.value.identity;
+    const serialized = job.value.serialized;
+    try {
+      const token = await getSupabaseBrowserAccessToken();
+      if (!token) {
+        setSaveError(PI4C_SCENE_SAVE_ERROR_MESSAGE);
+        return false;
+      }
+      const response = await fetch(versionSceneUrl(target), {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(versionScenePutBody(target, serialized)),
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => null);
+      const interpreted = interpretVersionSceneSaveResponse({
+        ok: response.ok,
+        payload,
+      });
+      if (interpreted.status !== "saved") {
+        setSaveError(PI4C_SCENE_SAVE_ERROR_MESSAGE);
+        return false;
+      }
+      if (sceneGate.superseded(job.generation)) return true;
+      if (loadedRef.current && sceneIdentitiesEqual(loadedRef.current.identity, target)) {
+        loadedRef.current = {
+          ...loadedRef.current,
+          objects: persistenceSafeSceneObjects(serialized.objects),
+          origin: "persisted",
+          dirty: false,
+          furnitureBaseline: "persisted",
+        };
+      }
+      if (sceneIdentitiesEqual(identityRef.current, target)) {
+        setOrigin("persisted");
+        setFurnitureBaseline("persisted");
+        setSaveError(null);
+      }
+      return true;
+    } catch {
+      setSaveError(PI4C_SCENE_SAVE_ERROR_MESSAGE);
+      return false;
+    }
+  };
+
   const persistIdentity = useCallback((
     target: PersistedSceneIdentity,
     serialized: SerializedRuntimeScene,
   ): Promise<boolean> => {
-    pendingSaveRef.current = { identity: target, serialized };
-    if (saveGateRef.current) return saveGateRef.current;
+    return sceneGate.submit({ identity: target, serialized });
+  }, [sceneGate]);
 
-    const gate = (async () => {
-      let ok = true;
-      try {
-        while (pendingSaveRef.current) {
-          const job = pendingSaveRef.current;
-          pendingSaveRef.current = null;
-          try {
-            const token = await getSupabaseBrowserAccessToken();
-            if (!token) {
-              ok = false;
-              setSaveError(PI4C_SCENE_SAVE_ERROR_MESSAGE);
-              continue;
-            }
-            const response = await fetch(versionSceneUrl(job.identity), {
-              method: "PUT",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${token}`,
-              },
-              body: JSON.stringify(versionScenePutBody(job.identity, job.serialized)),
-              cache: "no-store",
-            });
-            const payload = await response.json().catch(() => null);
-            const interpreted = interpretVersionSceneSaveResponse({
-              ok: response.ok,
-              payload,
-            });
-            if (interpreted.status !== "saved") {
-              ok = false;
-              setSaveError(PI4C_SCENE_SAVE_ERROR_MESSAGE);
-              continue;
-            }
-            if (
-              loadedRef.current &&
-              sceneIdentitiesEqual(loadedRef.current.identity, job.identity)
-            ) {
-              loadedRef.current = {
-                ...loadedRef.current,
-                objects: persistenceSafeSceneObjects(job.serialized.objects),
-                origin: "persisted",
-                dirty: false,
-                furnitureBaseline: "persisted",
-              };
-            }
-            if (sceneIdentitiesEqual(identityRef.current, job.identity)) {
-              setOrigin("persisted");
-              setFurnitureBaseline("persisted");
-              setSaveError(null);
-            }
-          } catch {
-            ok = false;
-            setSaveError(PI4C_SCENE_SAVE_ERROR_MESSAGE);
-          }
-        }
-        return ok;
-      } finally {
-        saveGateRef.current = null;
-      }
-    })();
-    saveGateRef.current = gate;
-    return gate;
-  }, []);
+  const flushPersistedScene = useCallback(async (): Promise<boolean> => {
+    const loaded = loadedRef.current;
+    if (loaded?.dirty && !sceneGate.hasWork()) {
+      sceneGate.submit({
+        identity: loaded.identity,
+        serialized: { objects: loaded.objects },
+      });
+    }
+    return sceneGate.flush();
+  }, [sceneGate]);
 
   const flushLoadedIfDirty = useCallback(async () => {
     const loaded = loadedRef.current;
@@ -653,5 +655,6 @@ export function usePersisted3dScene(input: Readonly<{
     canUndo,
     undo,
     onObjectTransformCommitted,
+    flushPersistedScene,
   };
 }

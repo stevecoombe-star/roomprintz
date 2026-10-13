@@ -75,6 +75,9 @@ export function harmonizeTrustedRoomFromRecords(input: Readonly<{
     sourceUserId: input.userId,
     sourceRoomId: input.roomId,
     background: input.background,
+    emptySha256: shaOrNull(generation?.empty_sha256),
+    originalSha256: shaOrNull(generation?.original_sha256),
+    persistedObjects: structuredClone(objects.objects),
     scene: {
       afcGenerationId: sceneGenerationId,
       objects: placed.objects,
@@ -195,4 +198,8 @@ function record(value: unknown): Record<string, unknown> | null {
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function shaOrNull(value: unknown): string | null {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? value : null;
 }

@@ -249,6 +249,8 @@ export function AfcIntegratedEditorViewport({
         harmonizeMaterialCatalog={harmonizeMaterialCatalog}
         harmonizeSourceVersionId={versionId}
         harmonizeCertifiedCamera={runtime.certifiedFrozenCamera}
+        harmonizeFlushScene={persistedScene.flushPersistedScene}
+        harmonizeFlushRoomScale={stage?.flushRoomScale}
       />
       <StageFurnitureToolbar />
       {!persistedScene.sceneReady ? (
