@@ -114,6 +114,8 @@ export type HarmonizeJobRow = {
   completedAtMs: number | null;
   backdropKind: HarmonizeBackdropKind;
   sceneObjects: readonly SceneObjectDefinition[];
+  historyState: "pending" | "published" | "unavailable";
+  outputAssetId: string | null;
 };
 
 export type HarmonizeTrustedCamera = Readonly<{

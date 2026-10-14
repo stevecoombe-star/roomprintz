@@ -14,12 +14,16 @@ import {
   harmonizeOutputPath,
   harmonizePromptPath,
 } from "./policy";
+import {
+  publishHarmonizeGenerationHistory,
+  recoverHarmonizeGenerationHistory as recoverOneHarmonizeGenerationHistory,
+} from "./history-publication.server";
 import { assessHarmonizeJobOutput } from "./output";
 import { redactHarmonizeDiagnostic } from "./redaction";
 import { harmonizeStatusFromRecord } from "./status";
 import type { HarmonizeJobInsert, HarmonizeJobStatusView } from "./types";
 import { harmonizeSceneProductIds, harmonizeTrustedRoomFromRecords } from "./trust-records";
-import type { HarmonizeWorkerClaim } from "./worker-api";
+import type { HarmonizeHistoryWorkerView, HarmonizeWorkerClaim } from "./worker-api";
 
 type ServiceClient = SupabaseClient;
 
@@ -232,7 +236,10 @@ export async function completeHarmonizeGeneration(input: Readonly<{
   providerStatus: string | null;
   providerHttpStatus: number | null;
   latencyMs: number;
-}>): Promise<Readonly<{ ok: true; code: string }> | Readonly<{ ok: false; code: string }>> {
+}>): Promise<
+  | Readonly<{ ok: true; code: string; history: HarmonizeHistoryWorkerView }>
+  | Readonly<{ ok: false; code: string }>
+> {
   const supabase = getServiceRoleSupabaseClient();
   if (!supabase) return { ok: false, code: "unavailable" };
   const { data, error } = await supabase
@@ -257,7 +264,7 @@ export async function completeHarmonizeGeneration(input: Readonly<{
   if (uploaded.error && !storageAlreadyExists(uploaded.error.message)) {
     return { ok: false, code: "unavailable" };
   }
-  return callRpc(supabase, "complete_vibode_harmonize_generation", {
+  const completed = await callRpc(supabase, "complete_vibode_harmonize_generation", {
     p_job_id: input.jobId,
     p_claim_nonce: input.claimNonce,
     p_output_sha256: assessed.sha256,
@@ -268,10 +275,40 @@ export async function completeHarmonizeGeneration(input: Readonly<{
     p_latency_ms: input.latencyMs,
     p_output_width: assessed.width,
     p_output_height: assessed.height,
-  }).then((result) => {
-    if (!result.ok) return result;
-    return { ok: true as const, code: text(result.row.code) || "completed" };
   });
+  if (!completed.ok) return completed;
+  return {
+    ok: true,
+    code: text(completed.row.code) || "completed",
+    history: await historyAfterGeneration(supabase, input.jobId),
+  };
+}
+
+/**
+ * One explicit recovery of one succeeded job. This is not called by the
+ * worker loop, exact-ID once mode, or a request handler.
+ */
+export async function recoverHarmonizeGenerationHistory(jobId: string): Promise<HarmonizeHistoryWorkerView> {
+  const supabase = getServiceRoleSupabaseClient();
+  if (!supabase) return { outcome: "pending", code: "unavailable" };
+  try {
+    const recovered = await recoverOneHarmonizeGenerationHistory(supabase, jobId);
+    return { outcome: recovered.outcome, code: recovered.code };
+  } catch {
+    return { outcome: "pending", code: "publication_failed" };
+  }
+}
+
+async function historyAfterGeneration(
+  supabase: ServiceClient,
+  jobId: string,
+): Promise<HarmonizeHistoryWorkerView> {
+  try {
+    const published = await publishHarmonizeGenerationHistory(supabase, jobId);
+    return { outcome: published.outcome, code: published.code };
+  } catch {
+    return { outcome: "pending", code: "publication_failed" };
+  }
 }
 
 export async function failHarmonizeGeneration(input: Readonly<{

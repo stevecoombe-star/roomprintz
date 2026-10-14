@@ -151,8 +151,205 @@ test("successful single-job processing exits without another claim", async () =>
   assert.equal(calls.exitCode, 0);
   assert.equal(calls.sleeps, 0);
   assert.equal(status(db, NEWER), "succeeded");
+  assert.equal(row(db, NEWER).historyState, "published");
   assert.equal(status(db, OLDER), "queued");
-  assert.doesNotMatch(JSON.stringify(calls.logs), /UNIQUE_PROMPT_SENTINEL/);
+  assert.equal(row(db, OLDER).historyState, "pending");
+  assert.equal(row(db, OLDER).providerStartedAtMs, null);
+  const logged = JSON.stringify(calls.logs);
+  assert.match(logged, /"historyOutcome":"published"/);
+  assert.doesNotMatch(logged, /UNIQUE_PROMPT_SENTINEL/);
+  assert.doesNotMatch(logged, /[0-9a-f]{64}/);
+});
+
+test("exact-id once does not publish or claim another succeeded pending job", async () => {
+  const db = pair();
+  const older = row(db, OLDER);
+  older.status = "succeeded";
+  older.historyState = "pending";
+  older.outputBucket = "vibode-harmonize";
+  older.outputPath = `rooms/${ROOM_A}/jobs/${OLDER}/output-left.jpg`;
+  older.outputSha256 = "ab".repeat(32);
+  older.outputMime = "image/jpeg";
+  older.outputWidth = 2400;
+  older.outputHeight = 1792;
+  const calls = await runOnce(db, NEWER);
+  assert.equal(calls.providerCalls, 1);
+  assert.equal(calls.exitCode, 0);
+  assert.equal(older.status, "succeeded");
+  assert.equal(older.historyState, "pending");
+  assert.equal(older.providerStartedAtMs, null);
+  assert.equal(row(db, NEWER).historyState, "published");
+  assert.equal(row(db, NEWER).attemptCount, 1);
+});
+
+test("a history failure keeps generation success and does not pay the provider again", async () => {
+  const db = pair();
+  let providerCalls = 0;
+  let publications = 0;
+  const fake = createHarmonizeFakeProvider();
+  const api = createMemoryHarmonizeWorkerApi({
+    db,
+    composites: new Map(db.jobs.map((job) => [job.id, pngHeader(1200, 896)])),
+    outputs: new Map(),
+    clock: { nowMs: 5 },
+    jobId: NEWER,
+    publishHistory: async () => {
+      publications += 1;
+      return { outcome: "pending", code: "output_unreadable" };
+    },
+  });
+  const first = await executeHarmonizeClaim({
+    api,
+    provider: async (input) => {
+      providerCalls += 1;
+      return fake(input);
+    },
+    heartbeatIntervalMs: 60_000,
+  });
+  assert.equal(first.outcome, "succeeded");
+  assert.equal(first.history?.outcome, "pending");
+  assert.equal(first.history?.code, "output_unreadable");
+  assert.equal(status(db, NEWER), "succeeded");
+  assert.equal(row(db, NEWER).historyState, "pending");
+  assert.equal(providerCalls, 1);
+  assert.equal(publications, 1);
+  const second = await executeHarmonizeClaim({
+    api,
+    provider: async (input) => {
+      providerCalls += 1;
+      return fake(input);
+    },
+    heartbeatIntervalMs: 60_000,
+  });
+  assert.equal(second.outcome, "idle");
+  assert.equal(providerCalls, 1);
+  assert.equal(publications, 1);
+  assert.equal(status(db, OLDER), "queued");
+  assert.equal(row(db, OLDER).historyState, "pending");
+});
+
+test("a lost complete response after commit does not fail the generation or call the provider again", async () => {
+  const db = pair();
+  let providerCalls = 0;
+  let failCalls = 0;
+  const fake = createHarmonizeFakeProvider();
+  const inner = workerApi(db, NEWER);
+  const api = {
+    ...inner,
+    async complete(claim: Parameters<typeof inner.complete>[0], completion: Parameters<typeof inner.complete>[1]) {
+      const stored = await inner.complete(claim, completion);
+      assert.equal(stored.ok, true);
+      return { ok: false as const, code: "complete_failed" };
+    },
+    async fail(claim: Parameters<typeof inner.fail>[0], failure: Parameters<typeof inner.fail>[1]) {
+      failCalls += 1;
+      return inner.fail(claim, failure);
+    },
+  };
+  const logs: Array<{ event: string; fields: Record<string, string | number | null> }> = [];
+  const exitCode = await runHarmonizeWorker({
+    selection: { mode: "once", jobId: NEWER },
+    execute: () => executeHarmonizeClaim({
+      api,
+      provider: async (input) => {
+        providerCalls += 1;
+        return fake(input);
+      },
+      heartbeatIntervalMs: 60_000,
+    }),
+    pollIntervalMs: 2000,
+    shouldStop: () => false,
+    sleep: async () => {
+      throw new Error("single-job mode slept");
+    },
+    log: (event, fields) => {
+      logs.push({ event, fields });
+    },
+  });
+  assert.equal(exitCode, 1);
+  assert.equal(providerCalls, 1);
+  assert.equal(failCalls, 0);
+  assert.equal(status(db, NEWER), "succeeded");
+  assert.equal(row(db, NEWER).failureCode, null);
+  assert.equal(row(db, NEWER).historyState, "published");
+  assert.ok(row(db, NEWER).providerStartedAtMs);
+  assert.equal(status(db, OLDER), "queued");
+  assert.equal(row(db, OLDER).providerStartedAtMs, null);
+  assert.equal(logs[0]?.fields.outcome, "stale");
+  assert.equal(logs[0]?.fields.code, "complete_failed");
+  assert.equal(logs[0]?.fields.historyOutcome, null);
+  const again = await executeHarmonizeClaim({
+    api,
+    provider: async (input) => {
+      providerCalls += 1;
+      return fake(input);
+    },
+    heartbeatIntervalMs: 60_000,
+  });
+  assert.equal(again.outcome, "idle");
+  assert.equal(providerCalls, 1);
+  assert.equal(failCalls, 0);
+  assert.equal(status(db, NEWER), "succeeded");
+  assert.equal(status(db, OLDER), "queued");
+});
+
+test("a dropped complete response after commit does not start another provider call", async () => {
+  const db = pair();
+  let providerCalls = 0;
+  let failCalls = 0;
+  const fake = createHarmonizeFakeProvider();
+  const inner = workerApi(db, NEWER);
+  const api = {
+    ...inner,
+    async complete(claim: Parameters<typeof inner.complete>[0], completion: Parameters<typeof inner.complete>[1]) {
+      const stored = await inner.complete(claim, completion);
+      assert.equal(stored.ok, true);
+      throw new Error("complete response dropped");
+    },
+    async fail(claim: Parameters<typeof inner.fail>[0], failure: Parameters<typeof inner.fail>[1]) {
+      failCalls += 1;
+      return inner.fail(claim, failure);
+    },
+  };
+  const logs: Array<{ event: string; fields: Record<string, string | number | null> }> = [];
+  const exitCode = await runHarmonizeWorker({
+    selection: { mode: "once", jobId: NEWER },
+    execute: () => executeHarmonizeClaim({
+      api,
+      provider: async (input) => {
+        providerCalls += 1;
+        return fake(input);
+      },
+      heartbeatIntervalMs: 60_000,
+    }),
+    pollIntervalMs: 2000,
+    shouldStop: () => false,
+    sleep: async () => {
+      throw new Error("single-job mode slept");
+    },
+    log: (event, fields) => {
+      logs.push({ event, fields });
+    },
+  });
+  assert.equal(exitCode, 1);
+  assert.equal(providerCalls, 1);
+  assert.equal(failCalls, 0);
+  assert.equal(status(db, NEWER), "succeeded");
+  assert.equal(row(db, NEWER).failureCode, null);
+  assert.equal(logs[0]?.fields.outcome, "failed");
+  assert.equal(logs[0]?.fields.code, "poll_failed");
+  assert.equal(logs[0]?.fields.historyOutcome, null);
+  const again = await executeHarmonizeClaim({
+    api,
+    provider: async (input) => {
+      providerCalls += 1;
+      return fake(input);
+    },
+    heartbeatIntervalMs: 60_000,
+  });
+  assert.equal(again.outcome, "idle");
+  assert.equal(providerCalls, 1);
+  assert.equal(status(db, OLDER), "queued");
 });
 
 test("failed single-job processing does not start the other job", async () => {
@@ -167,11 +364,14 @@ test("failed single-job processing does not start the other job", async () => {
   assert.equal(row(db, NEWER).failureCode, "provider_uncertain");
   assert.equal(status(db, OLDER), "queued");
   const finished = calls.logs.find((entry) => (entry as { event?: string }).event === "job_finished") as {
-    fields: { outcome: string; code: string; jobId: string };
+    fields: { outcome: string; code: string; jobId: string; historyOutcome: string | null };
   };
   assert.equal(finished.fields.outcome, "failed");
   assert.equal(finished.fields.code, "provider_uncertain");
   assert.equal(finished.fields.jobId, NEWER);
+  assert.equal(finished.fields.historyOutcome, null);
+  assert.equal(row(db, NEWER).historyState, "pending");
+  assert.equal(row(db, NEWER).outputSha256, null);
 });
 
 test("a provider-contacted job is not sent to the provider again", async () => {

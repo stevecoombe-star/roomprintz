@@ -27,6 +27,11 @@ export type HarmonizeWorkerFailure = Readonly<{
   latencyMs?: number | null;
 }>;
 
+export type HarmonizeHistoryWorkerView = Readonly<{
+  outcome: "published" | "already_published" | "pending" | "terminal" | "ignored" | "skipped";
+  code: string | null;
+}>;
+
 export type HarmonizeWorkerApi = Readonly<{
   claim: () => Promise<HarmonizeWorkerClaim | null>;
   composite: (claim: HarmonizeWorkerClaim) => Promise<Uint8Array>;
@@ -36,7 +41,7 @@ export type HarmonizeWorkerApi = Readonly<{
   >;
   heartbeat: (claim: HarmonizeWorkerClaim) => Promise<boolean>;
   complete: (claim: HarmonizeWorkerClaim, completion: HarmonizeWorkerCompletion) => Promise<
-    | Readonly<{ ok: true; code: string }>
+    | Readonly<{ ok: true; code: string; history?: HarmonizeHistoryWorkerView }>
     | Readonly<{ ok: false; code: string }>
   >;
   fail: (claim: HarmonizeWorkerClaim, failure: HarmonizeWorkerFailure) => Promise<

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   claimNextHarmonizeJob,
@@ -8,9 +8,16 @@ import {
   markHarmonizeProviderContact,
   type HarmonizeJobDatabase,
 } from "./engine";
-import { harmonizeOutputPath } from "./policy";
+import {
+  createHarmonizeHistoryObjectStore,
+  publicationJobFromRow,
+  publishPreparedHarmonizeHistory,
+  type HarmonizeHistoryPublishResult,
+} from "./history-publication";
+import { VIBODE_HARMONIZE_BUCKET, VIBODE_HISTORY_BUCKET, harmonizeHistoryObjectPath, harmonizeOutputPath } from "./policy";
 import { assessHarmonizeJobOutput } from "./output";
 import type {
+  HarmonizeHistoryWorkerView,
   HarmonizeWorkerApi,
   HarmonizeWorkerClaim,
   HarmonizeWorkerCompletion,
@@ -22,7 +29,10 @@ export function createMemoryHarmonizeWorkerApi(input: Readonly<{
   outputs: Map<string, Uint8Array>;
   clock: { nowMs: number };
   jobId?: string | null;
+  publishHistory?: (claim: HarmonizeWorkerClaim) => Promise<HarmonizeHistoryWorkerView>;
 }>): HarmonizeWorkerApi {
+  const history = createHarmonizeHistoryObjectStore();
+  const thumbnails = new Set<string>();
   return {
     async claim() {
       const claimed = claimNextHarmonizeJob(input.db, input.clock.nowMs, input.jobId ?? null);
@@ -59,7 +69,21 @@ export function createMemoryHarmonizeWorkerApi(input: Readonly<{
       });
     },
     async complete(claim, completion) {
-      return completeFromMemory(input, claim, completion);
+      const completed = await completeFromMemory(input, claim, completion);
+      if (!completed.ok) return completed;
+      if (completed.code === "completed") history.seed(VIBODE_HARMONIZE_BUCKET, completed.outputPath, completion.output);
+      try {
+        const published = input.publishHistory
+          ? await input.publishHistory(claim)
+          : await publishMemoryHistory(input.db, history, thumbnails, claim.jobId);
+        return { ok: true as const, code: completed.code, history: published };
+      } catch {
+        return {
+          ok: true as const,
+          code: completed.code,
+          history: { outcome: "pending" as const, code: "publication_failed" },
+        };
+      }
     },
     async fail(claim, failure) {
       const failed = failHarmonizeJob(input.db, {
@@ -87,7 +111,10 @@ async function completeFromMemory(
   }>,
   claim: HarmonizeWorkerClaim,
   completion: HarmonizeWorkerCompletion,
-): Promise<Readonly<{ ok: true; code: string }> | Readonly<{ ok: false; code: string }>> {
+): Promise<
+  | Readonly<{ ok: true; code: string; outputPath: string }>
+  | Readonly<{ ok: false; code: string }>
+> {
   const assessed = await assessHarmonizeJobOutput(
     completion.output,
     claim.compositeWidth,
@@ -111,6 +138,74 @@ async function completeFromMemory(
     latencyMs: completion.latencyMs,
   });
   if (!completed.ok) return completed;
+  const outputPath = harmonizeOutputPath(claim.roomId, claim.jobId, claim.claimNonce);
   if (completed.code === "completed") input.outputs.set(claim.jobId, completion.output);
-  return completed;
+  return { ok: true, code: completed.code, outputPath };
+}
+
+async function publishMemoryHistory(
+  db: HarmonizeJobDatabase,
+  storage: ReturnType<typeof createHarmonizeHistoryObjectStore>,
+  thumbnails: Set<string>,
+  jobId: string,
+): Promise<HarmonizeHistoryWorkerView> {
+  const job = db.jobs.find((entry) => entry.id === jobId);
+  if (!job) return { outcome: "ignored", code: "not_found" };
+  const published = await publishPreparedHarmonizeHistory({
+    job: publicationJobFromRow(job),
+    storage,
+    publish: (args) => memoryHistoryRpc(db, args),
+    thumbnail: async ({ assetId }) => {
+      if (thumbnails.has(assetId)) return "present";
+      thumbnails.add(assetId);
+      return "created";
+    },
+  });
+  return { outcome: published.outcome, code: published.code };
+}
+
+function memoryHistoryRpc(
+  db: HarmonizeJobDatabase,
+  args: Readonly<{ jobId: string; outputSha256: string; historyBucket: string; historyPath: string }>,
+): HarmonizeHistoryPublishResult {
+  const job = db.jobs.find((entry) => entry.id === args.jobId);
+  if (!job) return { ok: false, code: "not_found" };
+  if (job.historyState === "published") {
+    return {
+      ok: true,
+      code: "already_published",
+      assetId: job.outputAssetId,
+      generationRunId: null,
+      activated: false,
+    };
+  }
+  if (job.historyState === "unavailable") return { ok: false, code: "not_publishable" };
+  if (job.status !== "succeeded") return { ok: false, code: "not_succeeded" };
+  if (
+    !job.outputSha256
+    || !job.outputPath
+    || !job.outputBucket
+    || job.outputMime !== "image/jpeg"
+    || job.outputWidth == null
+    || job.outputHeight == null
+    || !job.backdropKind
+    || !Array.isArray(job.sceneObjects)
+  ) {
+    job.historyState = "unavailable";
+    return { ok: false, code: "not_publishable" };
+  }
+  if (args.outputSha256 !== job.outputSha256) return { ok: false, code: "output_mismatch" };
+  if (args.historyBucket !== VIBODE_HISTORY_BUCKET || args.historyPath !== harmonizeHistoryObjectPath(job.roomId, job.id)) {
+    return { ok: false, code: "invalid_history_path" };
+  }
+  const assetId = randomUUID();
+  job.historyState = "published";
+  job.outputAssetId = assetId;
+  return {
+    ok: true,
+    code: "published",
+    assetId,
+    generationRunId: randomUUID(),
+    activated: false,
+  };
 }

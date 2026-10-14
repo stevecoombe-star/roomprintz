@@ -458,7 +458,10 @@ test("a queued job survives enqueue and one fake provider call finishes it", asy
   });
   assert.equal(calls, 1);
   assert.equal(result.outcome, "succeeded");
+  assert.equal(result.history?.outcome, "published");
+  assert.equal(result.history?.code, "published");
   assert.equal(db.jobs[0]?.status, "succeeded");
+  assert.equal(db.jobs[0]?.historyState, "published");
   assert.equal(db.jobs[0]?.outputWidth, 2400);
   assert.equal(db.jobs[0]?.outputHeight, 1792);
   assert.equal(db.jobs[0]?.outputMime, "image/jpeg");

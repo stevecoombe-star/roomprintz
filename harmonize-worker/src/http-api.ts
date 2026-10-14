@@ -5,6 +5,7 @@ import {
   HARMONIZE_WORKER_HEADER,
 } from "@/lib/vibode-stage/harmonize-jobs/policy";
 import type {
+  HarmonizeHistoryWorkerView,
   HarmonizeWorkerApi,
   HarmonizeWorkerClaim,
   HarmonizeWorkerFailure,
@@ -95,9 +96,12 @@ export function createHttpHarmonizeWorkerApi(
         },
         body: Buffer.from(completion.output),
       });
-      const body = await response.json() as { ok?: boolean; code?: string };
+      const body = await response.json() as { ok?: boolean; code?: string; history?: unknown };
       if (!response.ok || !body.ok) return { ok: false, code: body.code || "complete_failed" };
-      return { ok: true, code: body.code || "completed" };
+      const history = readHistory(body.history);
+      return history
+        ? { ok: true, code: body.code || "completed", history }
+        : { ok: true, code: body.code || "completed" };
     },
     async fail(claim, failure) {
       const response = await fetchImpl(`${env.appBaseUrl}/api/internal/vibode-harmonize-jobs?action=fail`, {
@@ -178,4 +182,21 @@ function readClaim(value: unknown): HarmonizeWorkerClaim | null {
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function readHistory(value: unknown): HarmonizeHistoryWorkerView | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const outcome = row.outcome;
+  if (
+    outcome !== "published"
+    && outcome !== "already_published"
+    && outcome !== "pending"
+    && outcome !== "terminal"
+    && outcome !== "ignored"
+    && outcome !== "skipped"
+  ) {
+    return null;
+  }
+  return { outcome, code: typeof row.code === "string" ? row.code : null };
 }

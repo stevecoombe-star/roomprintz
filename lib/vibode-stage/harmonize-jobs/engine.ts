@@ -150,6 +150,8 @@ export function enqueueHarmonizeJob(
     completedAtMs: null,
     backdropKind: insert.backdropKind,
     sceneObjects: structuredClone(insert.sceneObjects),
+    historyState: "pending",
+    outputAssetId: null,
   };
   db.jobs.push(job);
   return { ok: true, created: true, job };
