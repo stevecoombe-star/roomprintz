@@ -915,9 +915,9 @@ test("the fake provider is worker configuration and is refused in production", a
   for (const file of routes) {
     assert.doesNotMatch(source(file), /VIBODE_HARMONIZE_PROVIDER|VIBODE_HARMONIZE_ALLOW_FAKE/);
   }
-  assert.match(source("harmonize-worker/src/index.ts"), /readHarmonizeWorkerProviderMode/);
+  assert.match(source("harmonize-worker/src/startup.ts"), /readHarmonizeWorkerProviderMode/);
   assert.match(source("harmonize-worker/src/index.ts"), /createHarmonizeFakeProvider/);
-  assert.match(source("harmonize-worker/src/index.ts"), /requireProviderCredentials: providerMode.mode === "google"/);
+  assert.match(source("harmonize-worker/src/startup.ts"), /requireProviderCredentials: providerMode.mode === "google"/);
   assert.match(source("lib/vibode-stage/harmonize-jobs/provider.ts"), /VIBODE_HARMONIZE_ALLOW_FAKE/);
   assert.match(source("lib/vibode-stage/harmonize-jobs/provider.ts"), /callHarmonizeNbpProof/);
   assert.doesNotMatch(source("lib/vibode-stage/harmonize-jobs/provider.ts"), /generativelanguage.googleapis.com/);

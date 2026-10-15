@@ -45,6 +45,16 @@ export const HARMONIZE_PRECONTACT_BACKOFF_MS = 15_000;
 
 export const HARMONIZE_HEARTBEAT_INTERVAL_MS = 30_000;
 
+/** Wait after global_busy, global_daily_limit, worker_disabled, or a thrown poll. */
+export const HARMONIZE_GLOBAL_DEFER_BACKOFF_MS = 15_000;
+
+/**
+ * Recovery storage writes stop this long before the 120 second lease ends.
+ * There is no recovery heartbeat. A late writer still cannot replace
+ * different canonical thumbnail bytes.
+ */
+export const HARMONIZE_RECOVERY_LEASE_MARGIN_MS = 15_000;
+
 export const HARMONIZE_COMPOSITE_MAX_BYTES = 9_000_000;
 
 export const HARMONIZE_OUTPUT_MAX_BYTES = 12_000_000;

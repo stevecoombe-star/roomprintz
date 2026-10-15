@@ -1,7 +1,9 @@
+import { canonicalWriteAllowed } from "./canonical-thumbnail";
 import type {
   HarmonizeHistoryPublicationResult,
   HarmonizeHistoryThumbnailState,
 } from "./history-publication";
+import { HARMONIZE_RECOVERY_LEASE_MARGIN_MS } from "./policy";
 
 export type HarmonizeRecoveryKind = "history" | "thumbnail";
 
@@ -9,6 +11,7 @@ export type HarmonizeRecoveryTask = Readonly<{
   jobId: string;
   kind: HarmonizeRecoveryKind;
   recoveryNonce: string;
+  recoveryExpiresAt?: string | null;
 }>;
 
 export type HarmonizeRecoveryRpcResult = Readonly<{
@@ -63,10 +66,26 @@ export function settlementForHistoryPublication(
 }
 
 export function settlementForThumbnail(
-  thumbnail: "created" | "present" | "failed",
+  thumbnail: "created" | "present" | "failed" | "conflict",
 ): HarmonizeRecoverySettlement {
+  if (thumbnail === "conflict") return { action: "fail", code: "thumbnail_conflict" };
   if (thumbnail === "failed") return { action: "fail", code: "thumbnail_failed" };
   return { action: "complete", code: thumbnail };
+}
+
+/**
+ * Storage writes must finish before the recovery lease, minus the margin.
+ * An unreadable expiry fails closed. A missing expiry leaves the SQL nonce
+ * fence as the authority and does not invent a shorter deadline.
+ */
+export function harmonizeRecoveryWriteDeadlineMs(
+  recoveryExpiresAt: string | null | undefined,
+  nowMs: number,
+): number | null {
+  if (!recoveryExpiresAt) return null;
+  const expires = Date.parse(recoveryExpiresAt);
+  if (!Number.isFinite(expires)) return nowMs;
+  return expires - HARMONIZE_RECOVERY_LEASE_MARGIN_MS;
 }
 
 export type HarmonizeRecoveryAttemptResult = Readonly<{
@@ -74,7 +93,7 @@ export type HarmonizeRecoveryAttemptResult = Readonly<{
   action: "complete" | "fail";
   code: string;
   activated: boolean;
-  thumbnail: HarmonizeHistoryThumbnailState | "created" | "present" | "failed";
+  thumbnail: HarmonizeHistoryThumbnailState | "created" | "present" | "failed" | "conflict";
   rpc: HarmonizeRecoveryRpcResult;
 }>;
 
@@ -85,12 +104,27 @@ export type HarmonizeRecoveryAttemptResult = Readonly<{
  */
 export async function executeHarmonizeRecoveryAttempt(input: Readonly<{
   task: HarmonizeRecoveryTask;
+  nowMs?: number;
   publishHistory: () => Promise<HarmonizeHistoryPublicationResult>;
-  recoverThumbnail: () => Promise<"created" | "present" | "failed">;
+  recoverThumbnail: () => Promise<"created" | "present" | "failed" | "conflict">;
   providerObject?: () => Promise<Exclude<HarmonizeStoredObjectPresence, "unchecked">>;
   complete: (nonce: string) => Promise<HarmonizeRecoveryRpcResult>;
   fail: (nonce: string, code: string) => Promise<HarmonizeRecoveryRpcResult>;
 }>): Promise<HarmonizeRecoveryAttemptResult> {
+  const nowMs = input.nowMs ?? Date.now();
+  const deadlineMs = harmonizeRecoveryWriteDeadlineMs(input.task.recoveryExpiresAt, nowMs);
+  if (!canonicalWriteAllowed(deadlineMs, nowMs)) {
+    const code = input.task.kind === "thumbnail" ? "thumbnail_failed" : "publication_failed";
+    const rpc = await input.fail(input.task.recoveryNonce, code);
+    return {
+      kind: input.task.kind,
+      action: "fail",
+      code,
+      activated: false,
+      thumbnail: "failed",
+      rpc,
+    };
+  }
   if (input.task.kind === "thumbnail") {
     const thumbnail = await input.recoverThumbnail();
     const settlement = settlementForThumbnail(thumbnail);

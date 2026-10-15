@@ -35,6 +35,8 @@ export type HarmonizeHistoryWorkerView = Readonly<{
 
 export type HarmonizeWorkerApi = Readonly<{
   claim: () => Promise<HarmonizeWorkerClaim | null>;
+  /** Set when the latest claim returned no job. Absent means no extra code. */
+  claimDisposition?: () => string | null;
   composite: (claim: HarmonizeWorkerClaim) => Promise<Uint8Array>;
   contact: (claim: HarmonizeWorkerClaim) => Promise<
     | Readonly<{ ok: true; attemptId: string }>

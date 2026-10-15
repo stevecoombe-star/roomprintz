@@ -66,7 +66,7 @@ export type HarmonizeWorkerProviderMode = "google" | "fake";
  * Unset provider stays on the real Nano Banana Pro client.
  */
 export function readHarmonizeWorkerProviderMode(
-  env: NodeJS.ProcessEnv,
+  env: Readonly<Record<string, string | undefined>>,
 ): Readonly<{ ok: true; mode: HarmonizeWorkerProviderMode }> | Readonly<{ ok: false; code: "fake_forbidden" | "invalid_provider" }> {
   const requested = env.VIBODE_HARMONIZE_PROVIDER?.trim().toLowerCase() ?? "";
   if (requested === "" || requested === "google") return { ok: true, mode: "google" };

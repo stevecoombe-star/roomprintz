@@ -281,6 +281,7 @@ test("a lost complete response after commit does not fail the generation or call
   const logs: Array<{ event: string; fields: Record<string, string | number | boolean | null> }> = [];
   const exitCode = await runHarmonizeWorker({
     selection: { mode: "once", jobId: NEWER },
+    enabled: () => true,
     execute: () => executeHarmonizeClaim({
       api,
       provider: async (input) => {
@@ -346,6 +347,7 @@ test("a dropped complete response after commit does not start another provider c
   const logs: Array<{ event: string; fields: Record<string, string | number | boolean | null> }> = [];
   const exitCode = await runHarmonizeWorker({
     selection: { mode: "once", jobId: NEWER },
+    enabled: () => true,
     execute: () => executeHarmonizeClaim({
       api,
       provider: async (input) => {
@@ -440,7 +442,7 @@ test("a provider-contacted job is not sent to the provider again", async () => {
   });
   assert.equal(calls, 0);
   assert.equal(result.outcome, "failed");
-  assert.equal(result.code, "already_contacted");
+  assert.equal(result.code, "provider_uncertain");
   assert.equal(status(reopened, NEWER), "failed");
   assert.equal(status(reopened, OLDER), "queued");
 });
@@ -451,6 +453,7 @@ test("a stop signal during the one job does not execute it again", async () => {
   let executes = 0;
   const code = await runHarmonizeWorker({
     selection: { mode: "once", jobId: NEWER },
+    enabled: () => true,
     execute: async () => {
       executes += 1;
       stop = true;
@@ -479,6 +482,7 @@ test("a stop signal before the single job exits without a claim", async () => {
   const logs: Array<{ event: string; fields: Record<string, string | number | boolean | null> }> = [];
   const code = await runHarmonizeWorker({
     selection: { mode: "once", jobId: NEWER },
+    enabled: () => true,
     execute: async () => {
       executes += 1;
       throw new Error("should not run");
@@ -505,6 +509,7 @@ test("a stale once-mode result exits nonzero and does not continue", async () =>
   const logs: Array<{ event: string; fields: Record<string, string | number | boolean | null> }> = [];
   const code = await runHarmonizeWorker({
     selection: { mode: "once", jobId: NEWER },
+    enabled: () => true,
     execute: async () => {
       executes += 1;
       return { outcome: "stale" as const, code: "stale_claim", jobId: NEWER };
@@ -532,6 +537,7 @@ test("continuous mode still polls the next queued job", async () => {
   const seen: string[] = [];
   const code = await runHarmonizeWorker({
     selection: { mode: "continuous" },
+    enabled: () => true,
     execute: async () => {
       executes += 1;
       const result = await executeHarmonizeClaim({
@@ -656,11 +662,13 @@ test("single-job mode keeps fake-provider refusal and does not read a local env 
   const sql = readFileSync(path.join(process.cwd(), "supabase/migrations/20261013010000_vibode_harmonize_exact_claim.sql"), "utf8");
   const route = readFileSync(path.join(process.cwd(), "app/api/internal/vibode-harmonize-jobs/route.ts"), "utf8");
   const server = readFileSync(path.join(process.cwd(), "lib/vibode-stage/harmonize-jobs/jobs.server.ts"), "utf8");
+  const startup = readFileSync(path.join(process.cwd(), "harmonize-worker/src/startup.ts"), "utf8");
   const main = worker.slice(worker.indexOf("async function main"));
-  const modeAt = main.indexOf("readHarmonizeWorkerProviderMode");
+  const modeAt = startup.indexOf("const providerMode = readHarmonizeWorkerProviderMode");
   assert.ok(modeAt > 0);
-  assert.ok(modeAt < main.indexOf("createHarmonizeFakeProvider("));
-  assert.ok(modeAt < main.indexOf("createHarmonizeNbpProvider("));
+  assert.ok(modeAt < startup.indexOf("readHarmonizeNbpApiKey(env)"));
+  assert.ok(main.indexOf("evaluateHarmonizeWorkerStartup") < main.indexOf("createHarmonizeFakeProvider("));
+  assert.ok(main.indexOf("evaluateHarmonizeWorkerStartup") < main.indexOf("createHarmonizeNbpProvider("));
   assert.doesNotMatch(worker, /dotenv|\.env\.local/);
   assert.match(worker, /mode: "once"/);
   assert.match(sql, /where id = p_job_id/);
@@ -693,6 +701,7 @@ async function runOnce(
   const fake = createHarmonizeFakeProvider();
   const exitCode = await runHarmonizeWorker({
     selection: { mode: "once", jobId },
+    enabled: () => true,
     execute: async () => {
       executeCalls += 1;
       return executeHarmonizeClaim({

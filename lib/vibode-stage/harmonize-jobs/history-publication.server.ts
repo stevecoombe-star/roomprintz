@@ -2,8 +2,9 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { createVibodeAssetThumbnail, vibode2dThumbnailObjectPath } from "@/lib/vibodeAssetThumbnails";
+import { renderVibode2dThumbnail, vibode2dThumbnailBucket, vibode2dThumbnailObjectPath } from "@/lib/vibodeAssetThumbnails";
 
+import { canonicalWriteAllowed, placeIdenticalCanonicalObject } from "./canonical-thumbnail";
 import {
   publishPreparedHarmonizeHistory,
   recoverHarmonizeHistoryPublication,
@@ -41,6 +42,7 @@ const PUBLICATION_COLUMNS = [
 export async function publishHarmonizeGenerationHistory(
   supabase: SupabaseClient,
   jobId: string,
+  thumbnailDeadlineMs: number | null = null,
 ): Promise<HarmonizeHistoryPublicationResult> {
   const job = await loadHarmonizePublicationJob(supabase, jobId);
   if (!job) {
@@ -58,7 +60,7 @@ export async function publishHarmonizeGenerationHistory(
     job,
     storage: supabaseHistoryStorage(supabase),
     publish: (args) => publishHistoryRpc(supabase, args),
-    thumbnail: (thumb) => attachHarmonizeHistoryThumbnail(supabase, thumb),
+    thumbnail: (thumb) => attachHarmonizeHistoryThumbnail(supabase, thumb, thumbnailDeadlineMs),
   });
   console.info("[vibode-harmonize] history", {
     jobId,
@@ -72,8 +74,8 @@ export async function publishHarmonizeGenerationHistory(
 
 /**
  * Explicit one-job recovery with in-process retries. Not mounted on a
- * request handler or the worker poll loop. Durable scheduling lives in
- * runHarmonizeHistoryRecoveryOnce and is not connected to the worker yet.
+ * request handler or the worker poll loop. Durable scheduling is
+ * runHarmonizeHistoryRecoveryOnce through the internal worker route.
  */
 export async function recoverHarmonizeGenerationHistory(
   supabase: SupabaseClient,
@@ -94,7 +96,8 @@ export async function recoverHarmonizeGenerationHistory(
 export async function recoverPublishedHarmonizeThumbnail(
   supabase: SupabaseClient,
   jobId: string,
-): Promise<"created" | "present" | "failed"> {
+  thumbnailDeadlineMs: number | null = null,
+): Promise<"created" | "present" | "failed" | "conflict"> {
   const job = await loadHarmonizePublicationJob(supabase, jobId);
   if (!job || job.status !== "succeeded" || job.historyState !== "published" || !job.outputAssetId) {
     return "failed";
@@ -106,7 +109,7 @@ export async function recoverPublishedHarmonizeThumbnail(
     assetId: job.outputAssetId,
     historyBucket: VIBODE_HISTORY_BUCKET,
     historyPath: harmonizeHistoryObjectPath(job.roomId, job.id),
-  });
+  }, thumbnailDeadlineMs);
 }
 
 async function loadHarmonizePublicationJob(
@@ -204,7 +207,8 @@ async function attachHarmonizeHistoryThumbnail(
     historyBucket: string;
     historyPath: string;
   }>,
-): Promise<"created" | "present" | "failed"> {
+  deadlineMs: number | null,
+): Promise<"created" | "present" | "failed" | "conflict"> {
   const canonical = vibode2dThumbnailObjectPath(thumb.roomId, thumb.assetId);
   if (
     thumb.historyBucket !== VIBODE_HISTORY_BUCKET
@@ -215,19 +219,39 @@ async function attachHarmonizeHistoryThumbnail(
   const existing = await readThumbnailPath(supabase, thumb);
   if (existing === "present") return "present";
   if (existing !== "missing") return "failed";
-  const location = await createVibodeAssetThumbnail({
-    adminSupabase: supabase,
-    roomId: thumb.roomId,
-    assetId: thumb.assetId,
-    sourceStorageBucket: thumb.historyBucket,
-    sourceStoragePath: thumb.historyPath,
-  });
-  if (!location || location.thumbnail_storage_path !== canonical) return "failed";
+  if (!canonicalWriteAllowed(deadlineMs, Date.now())) return "failed";
+  const downloaded = await supabase.storage.from(thumb.historyBucket).download(thumb.historyPath);
+  if (downloaded.error || !downloaded.data) return "failed";
+  let rendered: Buffer;
+  try {
+    rendered = await renderVibode2dThumbnail(Buffer.from(await downloaded.data.arrayBuffer()));
+  } catch {
+    return "failed";
+  }
+  if (!canonicalWriteAllowed(deadlineMs, Date.now())) return "failed";
+  const thumbnailBucket = vibode2dThumbnailBucket();
+  const placed = await placeIdenticalCanonicalObject({
+    async download(bucket, path) {
+      const object = await supabase.storage.from(bucket).download(path);
+      if (object.error || !object.data) return null;
+      return new Uint8Array(await object.data.arrayBuffer());
+    },
+    async putIfAbsent(bucket, path, bytes) {
+      const uploaded = await supabase.storage.from(bucket).upload(path, Buffer.from(bytes), {
+        contentType: "image/webp",
+        upsert: false,
+      });
+      if (!uploaded.error) return { ok: true };
+      return { ok: false, code: "exists" };
+    },
+  }, thumbnailBucket, canonical, new Uint8Array(rendered));
+  if (placed === "conflict") return "conflict";
+  if (placed !== "created" && placed !== "present") return "failed";
   const updated = await supabase
     .from("vibode_room_assets")
     .update({
-      thumbnail_storage_bucket: location.thumbnail_storage_bucket,
-      thumbnail_storage_path: location.thumbnail_storage_path,
+      thumbnail_storage_bucket: thumbnailBucket,
+      thumbnail_storage_path: canonical,
     })
     .eq("id", thumb.assetId)
     .eq("room_id", thumb.roomId)
@@ -236,7 +260,9 @@ async function attachHarmonizeHistoryThumbnail(
     .is("thumbnail_storage_path", null)
     .select("id");
   if (updated.error) return "failed";
-  if (Array.isArray(updated.data) && updated.data.length === 1) return "created";
+  if (Array.isArray(updated.data) && updated.data.length === 1) {
+    return placed === "present" ? "present" : "created";
+  }
   const after = await readThumbnailPath(supabase, thumb);
   return after === "present" ? "present" : "failed";
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { runServiceHarmonizeHistoryRecovery } from "@/lib/vibode-stage/harmonize-jobs/history-recovery.server";
 import { harmonizeJson } from "@/lib/vibode-stage/harmonize-jobs/http";
 import { isHarmonizeJobId } from "@/lib/vibode-stage/harmonize-jobs/job-id";
 import {
@@ -9,9 +10,11 @@ import {
   failHarmonizeGeneration,
   heartbeatHarmonizeGeneration,
   readHarmonizeComposite,
+  readHarmonizeWorkerOperations,
 } from "@/lib/vibode-stage/harmonize-jobs/jobs.server";
 import { HARMONIZE_JOB_HEADER, HARMONIZE_NONCE_HEADER, HARMONIZE_OUTPUT_MAX_BYTES } from "@/lib/vibode-stage/harmonize-jobs/policy";
 import { harmonizeWorkerAuthorization } from "@/lib/vibode-stage/harmonize-jobs/worker-auth.server";
+import { harmonizeWorkerProcessingEnabled } from "@/lib/vibode-stage/harmonize-jobs/worker-enabled";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,6 +34,9 @@ export async function POST(request: Request) {
     }
     return claimResponse(requested.toLowerCase());
   }
+  if (action === "recover") {
+    return recoveryResponse();
+  }
   const payload = await readJson(request);
   const jobId = text(payload?.jobId);
   const claimNonce = text(payload?.claimNonce);
@@ -40,6 +46,8 @@ export async function POST(request: Request) {
     return harmonizeJson(ok ? { ok: true } : { ok: false, code: "stale_claim" }, ok ? 200 : 409);
   }
   if (action === "contact") {
+    const disabled = disabledProcessing("contact");
+    if (disabled) return disabled;
     const contact = await contactHarmonizeGeneration(jobId, claimNonce);
     return harmonizeJson(contact, contact.ok ? 200 : 409);
   }
@@ -63,6 +71,16 @@ export async function GET(request: Request) {
   const denied = deny(request);
   if (denied) return denied;
   const url = new URL(request.url);
+  if (url.searchParams.get("action") === "operations") {
+    const operations = await readHarmonizeWorkerOperations();
+    if (!operations.ok) return harmonizeJson({ ok: false, code: operations.code }, 503);
+    return harmonizeJson({
+      ok: true,
+      processingEnabled: harmonizeWorkerProcessingEnabled(process.env),
+      globalProviderContactsToday: operations.globalProviderContactsToday,
+      globalProviderContactLimit: operations.globalProviderContactLimit,
+    }, 200);
+  }
   if (url.searchParams.get("action") !== "composite") {
     return harmonizeJson({ ok: false, code: "invalid_submission" }, 400);
   }
@@ -105,12 +123,35 @@ export async function PUT(request: Request) {
 }
 
 async function claimResponse(jobId: string | null): Promise<NextResponse> {
+  const disabled = disabledProcessing("claim");
+  if (disabled) return disabled;
   const claimed = await claimHarmonizeGeneration(jobId);
   if (!claimed.ok) {
     const status = claimed.code === "invalid_submission" ? 400 : 503;
     return harmonizeJson({ ok: false, code: claimed.code }, status);
   }
-  return harmonizeJson({ ok: true, job: claimed.job }, 200);
+  return harmonizeJson({ ok: true, job: claimed.job, code: claimed.code }, 200);
+}
+
+async function recoveryResponse(): Promise<NextResponse> {
+  const disabled = disabledProcessing("recover");
+  if (disabled) return disabled;
+  const recovered = await runServiceHarmonizeHistoryRecovery();
+  return harmonizeJson(recovered, recovered.outcome === "unavailable" ? 503 : 200);
+}
+
+/**
+ * New generation claims, provider contact, and recovery claims stop when
+ * processing is off. Heartbeat, composite, complete, and fail stay available
+ * so a generation that already passed contact can settle. A planned shutdown
+ * does not abort that in-flight provider call.
+ */
+function disabledProcessing(action: "claim" | "contact" | "recover"): NextResponse | null {
+  if (harmonizeWorkerProcessingEnabled(process.env)) return null;
+  if (action === "claim" || action === "recover") {
+    return harmonizeJson({ ok: true, outcome: "idle", job: null, code: "worker_disabled" }, 200);
+  }
+  return harmonizeJson({ ok: false, code: "worker_disabled" }, 409);
 }
 
 function deny(request: Request): NextResponse | null {

@@ -18,7 +18,7 @@ export type HarmonizeWorkerProcessEnv = Readonly<{
 }>;
 
 export function readHarmonizeWorkerProcessEnv(
-  env: NodeJS.ProcessEnv = process.env,
+  env: Readonly<Record<string, string | undefined>> = process.env,
   options: Readonly<{ requireProviderCredentials?: boolean }> = {},
 ): Readonly<{ ok: true; env: HarmonizeWorkerProcessEnv }> | Readonly<{ ok: false; missing: string[] }> {
   const missing: string[] = [];
@@ -54,15 +54,19 @@ export function createHttpHarmonizeWorkerApi(
   const claimUrl = requestedJobId
     ? `${env.appBaseUrl}/api/internal/vibode-harmonize-jobs?action=claim-exact&jobId=${encodeURIComponent(requestedJobId)}`
     : `${env.appBaseUrl}/api/internal/vibode-harmonize-jobs?action=claim`;
+  let disposition: string | null = null;
   return {
+    claimDisposition: () => disposition,
     async claim() {
       const response = await fetchImpl(claimUrl, {
         method: "POST",
         headers,
       });
-      const body = await response.json() as { ok?: boolean; job?: unknown };
+      const body = await response.json() as { ok?: boolean; job?: unknown; code?: unknown };
       if (!response.ok || !body.ok) throw new Error("claim_failed");
+      disposition = typeof body.code === "string" && body.code ? body.code : null;
       if (!body.job) return null;
+      disposition = null;
       const claim = readClaim(body.job);
       if (!claim) throw new Error("claim_malformed");
       if (requestedJobId && claim.jobId !== requestedJobId) throw new Error("claim_mismatch");
@@ -122,6 +126,83 @@ export function createHttpHarmonizeWorkerApi(
       if (!response.ok || !body.ok) return { ok: false, code: body.code || "fail_failed" };
       return { ok: true, code: body.code || "failed" };
     },
+  };
+}
+
+export type HarmonizeWorkerRecoveryResult = Readonly<{
+  outcome: "idle" | "completed" | "failed" | "unavailable";
+  code: string | null;
+  kind: string | null;
+  activated: boolean;
+  blocked: boolean;
+}>;
+
+export type HarmonizeWorkerOperations = Readonly<{
+  globalProviderContactsToday: number;
+  globalProviderContactLimit: number;
+  appProcessingEnabled: boolean;
+}>;
+
+export function createHttpHarmonizeWorkerControl(
+  env: HarmonizeWorkerProcessEnv,
+  options: Readonly<{ fetchImpl?: typeof fetch }> = {},
+): Readonly<{
+  recover: () => Promise<HarmonizeWorkerRecoveryResult>;
+  operations: () => Promise<HarmonizeWorkerOperations | null>;
+}> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const headers = { [HARMONIZE_WORKER_HEADER]: env.workerSecret };
+  return {
+    async recover() {
+      const response = await fetchImpl(`${env.appBaseUrl}/api/internal/vibode-harmonize-jobs?action=recover`, {
+        method: "POST",
+        headers,
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        return { outcome: "unavailable", code: "unavailable", kind: null, activated: false, blocked: false };
+      }
+      return readRecovery(body);
+    },
+    async operations() {
+      const response = await fetchImpl(`${env.appBaseUrl}/api/internal/vibode-harmonize-jobs?action=operations`, {
+        method: "GET",
+        headers,
+      });
+      if (!response.ok) return null;
+      const body = await response.json().catch(() => null) as {
+        ok?: boolean;
+        globalProviderContactsToday?: unknown;
+        globalProviderContactLimit?: unknown;
+        processingEnabled?: unknown;
+      } | null;
+      if (
+        !body?.ok
+        || typeof body.globalProviderContactsToday !== "number"
+        || typeof body.globalProviderContactLimit !== "number"
+      ) return null;
+      return {
+        globalProviderContactsToday: body.globalProviderContactsToday,
+        globalProviderContactLimit: body.globalProviderContactLimit,
+        appProcessingEnabled: body.processingEnabled === true,
+      };
+    },
+  };
+}
+
+function readRecovery(body: unknown): HarmonizeWorkerRecoveryResult {
+  const row = body && typeof body === "object" && !Array.isArray(body)
+    ? body as Record<string, unknown>
+    : {};
+  const outcome = row.outcome === "completed" || row.outcome === "failed" || row.outcome === "unavailable" || row.outcome === "idle"
+    ? row.outcome
+    : "unavailable";
+  return {
+    outcome,
+    code: typeof row.code === "string" ? row.code : null,
+    kind: row.kind === "history" || row.kind === "thumbnail" ? row.kind : null,
+    activated: row.activated === true,
+    blocked: row.blocked === true,
   };
 }
 

@@ -66,7 +66,7 @@ export type HarmonizeHistoryThumbnail = (input: Readonly<{
   assetId: string;
   historyBucket: string;
   historyPath: string;
-}>) => Promise<"created" | "present" | "failed">;
+}>) => Promise<"created" | "present" | "failed" | "conflict">;
 
 export type HarmonizeHistoryThumbnailState = "created" | "present" | "failed" | "skipped";
 
@@ -323,7 +323,7 @@ async function createThumbnail(
 ): Promise<HarmonizeHistoryThumbnailState> {
   if (!thumbnail || !assetId) return "skipped";
   try {
-    return await thumbnail({
+    const placed = await thumbnail({
       jobId: job.id,
       roomId: job.roomId,
       userId: job.userId,
@@ -331,6 +331,7 @@ async function createThumbnail(
       historyBucket: VIBODE_HISTORY_BUCKET,
       historyPath,
     });
+    return placed === "conflict" ? "failed" : placed;
   } catch {
     return "failed";
   }

@@ -22,7 +22,7 @@ export async function executeHarmonizeClaim(input: Readonly<{
   heartbeatIntervalMs?: number;
 }>): Promise<HarmonizeExecuteResult> {
   const claim = await input.api.claim();
-  if (!claim) return { outcome: "idle", code: null, jobId: null };
+  if (!claim) return { outcome: "idle", code: input.api.claimDisposition?.() ?? null, jobId: null };
   const intervalMs = input.heartbeatIntervalMs ?? HARMONIZE_HEARTBEAT_INTERVAL_MS;
   const controller = new AbortController();
   let lost = false;
@@ -57,6 +57,14 @@ export async function executeHarmonizeClaim(input: Readonly<{
           code: "provider_uncertain",
           message: "Provider contact was already recorded.",
           retryable: false,
+        });
+        return { outcome: "failed", code: "provider_uncertain", jobId: claim.jobId };
+      }
+      if (contact.code === "worker_disabled") {
+        await input.api.fail(claim, {
+          code: "worker_interrupted",
+          message: "Harmonize processing stopped before provider contact.",
+          retryable: true,
         });
       }
       return { outcome: "failed", code: contact.code, jobId: claim.jobId };

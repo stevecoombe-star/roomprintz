@@ -192,7 +192,7 @@ export async function readHarmonizeGenerationOutput(input: Readonly<{
 }
 
 export async function claimHarmonizeGeneration(jobId: string | null = null): Promise<
-  | Readonly<{ ok: true; job: HarmonizeWorkerClaim | null }>
+  | Readonly<{ ok: true; job: HarmonizeWorkerClaim | null; code: string | null }>
   | Readonly<{ ok: false; code: string }>
 > {
   const supabase = getServiceRoleSupabaseClient();
@@ -204,10 +204,34 @@ export async function claimHarmonizeGeneration(jobId: string | null = null): Pro
     jobId === null ? {} : { p_job_id: jobId },
   );
   if (!claimed.ok) return claimed;
-  if (claimed.row.job == null) return { ok: true, job: null };
+  if (claimed.row.job == null) {
+    return { ok: true, job: null, code: text(claimed.row.code) || null };
+  }
   const job = workerClaim(claimed.row.job);
   if (!job) return { ok: false, code: "unavailable" };
-  return { ok: true, job };
+  return { ok: true, job, code: null };
+}
+
+export async function readHarmonizeWorkerOperations(): Promise<
+  | Readonly<{
+    ok: true;
+    globalProviderContactsToday: number;
+    globalProviderContactLimit: number;
+  }>
+  | Readonly<{ ok: false; code: "unavailable" }>
+> {
+  const supabase = getServiceRoleSupabaseClient();
+  if (!supabase) return { ok: false, code: "unavailable" };
+  const [count, limit] = await Promise.all([
+    supabase.rpc("vibode_harmonize_global_provider_started_count"),
+    supabase.rpc("vibode_harmonize_global_provider_limit"),
+  ]);
+  const used = typeof count.data === "number" ? count.data : Number.NaN;
+  const cap = typeof limit.data === "number" ? limit.data : Number.NaN;
+  if (count.error || limit.error || !Number.isInteger(used) || !Number.isInteger(cap)) {
+    return { ok: false, code: "unavailable" };
+  }
+  return { ok: true, globalProviderContactsToday: used, globalProviderContactLimit: cap };
 }
 
 export async function heartbeatHarmonizeGeneration(jobId: string, claimNonce: string): Promise<boolean> {

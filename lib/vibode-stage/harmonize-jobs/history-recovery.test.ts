@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+import { placeIdenticalCanonicalObject, type CanonicalObjectStore } from "@/lib/vibode-stage/harmonize-jobs/canonical-thumbnail";
 import { createHarmonizeFakeJpeg } from "@/lib/vibode-stage/harmonize-jobs/fake-jpeg";
 import {
   classifyHarmonizeObjectRead,
@@ -149,6 +150,113 @@ test("thumbnail recovery does not publish or activate", async () => {
   assert.equal(attempt.code, "created");
 });
 
+test("a thumbnail byte conflict fails closed and does not complete the lease", async () => {
+  let completed = 0;
+  const attempt = await executeHarmonizeRecoveryAttempt({
+    task: { jobId: JOB, kind: "thumbnail", recoveryNonce: NONCE },
+    publishHistory: async () => {
+      throw new Error("thumbnail conflict called publication");
+    },
+    recoverThumbnail: async () => "conflict",
+    complete: async () => {
+      completed += 1;
+      return { ok: true, code: "completed" };
+    },
+    fail: async (_nonce, code) => ({ ok: true, code, blocked: true }),
+  });
+  assert.equal(completed, 0);
+  assert.equal(attempt.action, "fail");
+  assert.equal(attempt.code, "thumbnail_conflict");
+  assert.equal(attempt.activated, false);
+  assert.equal(attempt.rpc.blocked, true);
+});
+
+test("recovery inside the lease margin does not publish or upload", async () => {
+  const nowMs = Date.parse("2026-10-15T12:00:00.000Z");
+  let publishes = 0;
+  let thumbnails = 0;
+  let failedCode = "";
+  const attempt = await executeHarmonizeRecoveryAttempt({
+    task: {
+      jobId: JOB,
+      kind: "history",
+      recoveryNonce: NONCE,
+      recoveryExpiresAt: new Date(nowMs + 10_000).toISOString(),
+    },
+    nowMs,
+    publishHistory: async () => {
+      publishes += 1;
+      return publication("published", "published", "complete", "created", false);
+    },
+    recoverThumbnail: async () => {
+      thumbnails += 1;
+      return "created";
+    },
+    complete: async () => {
+      throw new Error("a near-expiry recovery was completed");
+    },
+    fail: async (_nonce, code) => {
+      failedCode = code;
+      return { ok: true, code, blocked: false };
+    },
+  });
+  assert.equal(publishes, 0);
+  assert.equal(thumbnails, 0);
+  assert.equal(failedCode, "publication_failed");
+  assert.equal(attempt.action, "fail");
+  assert.equal(attempt.activated, false);
+});
+
+test("a stale recovery cannot replace the next worker's thumbnail or charge another attempt", async () => {
+  const objects = new Map<string, Uint8Array>();
+  const store: CanonicalObjectStore = {
+    async download(_bucket, objectPath) {
+      const found = objects.get(objectPath);
+      return found ? new Uint8Array(found) : null;
+    },
+    async putIfAbsent(_bucket, objectPath, bytes) {
+      if (objects.has(objectPath)) return { ok: false, code: "exists" };
+      objects.set(objectPath, new Uint8Array(bytes));
+      return { ok: true };
+    },
+  };
+  const path = "rooms/room/assets/asset.webp";
+  const newer = Uint8Array.from([4, 5, 6, 7]);
+  const older = Uint8Array.from([1, 1, 1, 1]);
+  assert.equal(await placeIdenticalCanonicalObject(store, "vibode-thumbnails", path, newer), "created");
+  const attempts = 1;
+  const blocked = false;
+  const nowMs = Date.parse("2026-10-15T12:00:00.000Z");
+  let publishes = 0;
+  const stale = await executeHarmonizeRecoveryAttempt({
+    task: {
+      jobId: JOB,
+      kind: "thumbnail",
+      recoveryNonce: "stale-nonce",
+      recoveryExpiresAt: new Date(nowMs - 1_000).toISOString(),
+    },
+    nowMs,
+    publishHistory: async () => {
+      publishes += 1;
+      throw new Error("stale recovery contacted publication");
+    },
+    recoverThumbnail: async () => {
+      throw new Error("stale recovery uploaded after the lease");
+    },
+    complete: async () => {
+      throw new Error("stale recovery completed");
+    },
+    fail: async () => ({ ok: false, code: "stale_recovery", blocked: false }),
+  });
+  assert.equal(publishes, 0);
+  assert.equal(stale.rpc.code, "stale_recovery");
+  assert.equal(await placeIdenticalCanonicalObject(store, "vibode-thumbnails", path, older), "conflict");
+  assert.equal(await placeIdenticalCanonicalObject(store, "vibode-thumbnails", path, newer), "present");
+  assert.deepEqual(objects.get(path), newer);
+  assert.equal(attempts, 1);
+  assert.equal(blocked, false);
+});
+
 test("terminal output mismatch blocks through the failure code without a provider reread", async () => {
   let reads = 0;
   const failed = await executeHarmonizeRecoveryAttempt({
@@ -187,7 +295,7 @@ test("confirmed absence is terminal and a temporary read stays retryable", () =>
   }
 });
 
-test("recovery orchestration is not mounted on the worker or a browser route", () => {
+test("durable recovery is mounted on the internal worker route and not on a browser route", () => {
   const recovery = readFileSync(path.join(process.cwd(), "lib/vibode-stage/harmonize-jobs/history-recovery.ts"), "utf8");
   const server = readFileSync(path.join(process.cwd(), "lib/vibode-stage/harmonize-jobs/history-recovery.server.ts"), "utf8");
   const worker = readFileSync(path.join(process.cwd(), "harmonize-worker/src/index.ts"), "utf8");
@@ -198,10 +306,16 @@ test("recovery orchestration is not mounted on the worker or a browser route", (
   assert.doesNotMatch(server, /createHarmonizeNbpProvider|claim_next_vibode_harmonize_generation|contact_vibode_harmonize_generation|generativelanguage/);
   assert.match(server, /publishHarmonizeGenerationHistory/);
   assert.match(server, /recoverPublishedHarmonizeThumbnail/);
-  assert.doesNotMatch(worker, /runHarmonizeHistoryRecoveryOnce|claim_next_vibode_harmonize_history_recovery/);
+  assert.match(server, /claim_next_vibode_harmonize_history_recovery/);
+  assert.match(server, /runServiceHarmonizeHistoryRecovery/);
+  assert.doesNotMatch(worker, /runHarmonizeHistoryRecoveryOnce|claim_next_vibode_harmonize_history_recovery|history-recovery\.server/);
   assert.doesNotMatch(loop, /runHarmonizeHistoryRecoveryOnce|claim_next_vibode_harmonize_history_recovery/);
-  assert.doesNotMatch(route, /runHarmonizeHistoryRecoveryOnce|claim_next_vibode_harmonize_history_recovery/);
-  assert.doesNotMatch(browser, /runHarmonizeHistoryRecoveryOnce|unblock_vibode_harmonize/);
+  assert.match(worker, /control\.recover\(\)/);
+  assert.match(loop, /input\.recover/);
+  assert.match(route, /action === "recover"/);
+  assert.match(route, /runServiceHarmonizeHistoryRecovery/);
+  assert.match(route, /harmonizeWorkerProcessingEnabled/);
+  assert.doesNotMatch(browser, /runHarmonizeHistoryRecoveryOnce|runServiceHarmonizeHistoryRecovery|unblock_vibode_harmonize|VIBODE_HARMONIZE_WORKER_ENABLED/);
 });
 
 function readyJob(jpeg: Uint8Array): HarmonizePublicationJob {

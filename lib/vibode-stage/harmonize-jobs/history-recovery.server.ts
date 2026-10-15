@@ -2,10 +2,13 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
+
 import { publishHarmonizeGenerationHistory, recoverPublishedHarmonizeThumbnail } from "./history-publication.server";
 import {
   executeHarmonizeRecoveryAttempt,
   classifyHarmonizeObjectRead,
+  harmonizeRecoveryWriteDeadlineMs,
   type HarmonizeRecoveryRpcResult,
   type HarmonizeRecoveryTask,
 } from "./history-recovery";
@@ -24,8 +27,15 @@ export type HarmonizeRecoveryOnceResult =
 
 /**
  * Claim and run one History publication or thumbnail recovery.
- * Not mounted on the worker loop. Does not claim a generation or contact a provider.
+ * The worker calls this through the internal route. It does not claim a
+ * generation or contact a provider.
  */
+export async function runServiceHarmonizeHistoryRecovery(): Promise<HarmonizeRecoveryOnceResult> {
+  const supabase = getServiceRoleSupabaseClient();
+  if (!supabase) return { outcome: "unavailable", code: "unavailable" };
+  return runHarmonizeHistoryRecoveryOnce(supabase);
+}
+
 export async function runHarmonizeHistoryRecoveryOnce(
   supabase: SupabaseClient,
 ): Promise<HarmonizeRecoveryOnceResult> {
@@ -36,8 +46,16 @@ export async function runHarmonizeHistoryRecoveryOnce(
   try {
     const attempt = await executeHarmonizeRecoveryAttempt({
       task,
-      publishHistory: () => publishHarmonizeGenerationHistory(supabase, task.jobId),
-      recoverThumbnail: () => recoverPublishedHarmonizeThumbnail(supabase, task.jobId),
+      publishHistory: () => publishHarmonizeGenerationHistory(
+        supabase,
+        task.jobId,
+        harmonizeRecoveryWriteDeadlineMs(task.recoveryExpiresAt, Date.now()),
+      ),
+      recoverThumbnail: () => recoverPublishedHarmonizeThumbnail(
+        supabase,
+        task.jobId,
+        harmonizeRecoveryWriteDeadlineMs(task.recoveryExpiresAt, Date.now()),
+      ),
       providerObject: () => readProviderObjectPresence(supabase, task.jobId),
       complete: (nonce) => completeRecovery(supabase, task.jobId, nonce),
       fail: (nonce, code) => failRecovery(supabase, task.jobId, nonce, code),
@@ -82,10 +100,11 @@ async function claimRecovery(
   const jobId = text(task.jobId);
   const kind = text(task.kind);
   const recoveryNonce = text(task.recoveryNonce);
+  const recoveryExpiresAt = text(task.recoveryExpiresAt) || null;
   if (!jobId || (kind !== "history" && kind !== "thumbnail") || !recoveryNonce) {
     return { ok: false, code: "unavailable" };
   }
-  return { ok: true, task: { jobId, kind, recoveryNonce } };
+  return { ok: true, task: { jobId, kind, recoveryNonce, recoveryExpiresAt } };
 }
 
 async function completeRecovery(

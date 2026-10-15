@@ -86,6 +86,11 @@ test("postgres 16 schedules durable history and thumbnail recovery", { timeout: 
     const stale = await failRecovery(crash, crashNonce, "output_unreadable");
     assert.equal(stale.code, "stale_recovery", JSON.stringify(stale));
     assert.equal((await job(crash)).history_attempt_count, 1);
+    const staleComplete = await completeRecovery(crash, crashNonce);
+    assert.equal(staleComplete.code, "stale_recovery", JSON.stringify(staleComplete));
+    assert.equal((await job(crash)).history_attempt_count, 1);
+    assert.equal((await job(crash)).history_state, "pending");
+    assert.equal((await job(crash)).recovery_nonce, null);
     assert.equal(await claimRecovery(), null);
     await elapse(crash, "history");
     const terminalAbandoned = await take(crash, "history");
