@@ -670,6 +670,7 @@ test("migration and routes stay isolated from thumbnails, scenes, and the paid p
   const sql = [
     source("supabase/migrations/20261012090000_vibode_harmonize_generations.sql"),
     source("supabase/migrations/20261013010000_vibode_harmonize_exact_claim.sql"),
+    source("supabase/migrations/20261015190000_vibode_harmonize_global_ceilings.sql"),
   ].join("\n");
   const server = source("lib/vibode-stage/harmonize-jobs/jobs.server.ts");
   const plan = source("lib/vibode-stage/harmonize-jobs/plan.ts");

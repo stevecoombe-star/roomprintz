@@ -4,8 +4,9 @@
  * Production locking lives in Postgres (`FOR UPDATE SKIP LOCKED`, the
  * partial unique index, and the fencing checks). This module is the local
  * certification double and must stay aligned with
- * supabase/migrations/20261012090000_vibode_harmonize_generations.sql and
- * supabase/migrations/20261013010000_vibode_harmonize_exact_claim.sql.
+ * supabase/migrations/20261012090000_vibode_harmonize_generations.sql,
+ * supabase/migrations/20261013010000_vibode_harmonize_exact_claim.sql, and
+ * supabase/migrations/20261015190000_vibode_harmonize_global_ceilings.sql.
  *
  * A supplied job id claims that row or nothing. It never falls through to
  * another queued job. A job that has recorded provider contact is never
@@ -18,6 +19,7 @@ import { HARMONIZE_NBP_MODEL_ID } from "@/lib/vibode-stage/harmonize-nbp-proof";
 
 import {
   HARMONIZE_DAILY_PROVIDER_LIMIT,
+  HARMONIZE_GLOBAL_DAILY_PROVIDER_LIMIT,
   HARMONIZE_JOB_CLAIM_LEASE_MS,
   HARMONIZE_JOB_MAX_PRECONTACT_ATTEMPTS,
   HARMONIZE_PRECONTACT_BACKOFF_MS,
@@ -164,11 +166,13 @@ export function claimNextHarmonizeJob(
 ): HarmonizeClaim | null {
   if (jobId !== null) {
     reapHarmonizeLeases(db, nowMs, jobId);
+    if (harmonizeRunningCount(db) >= 1) return null;
     const job = findJob(db, jobId);
     if (!job || job.status !== "queued" || job.notBeforeMs > nowMs) return null;
     return claimQueuedJob(db, job, nowMs);
   }
   reapHarmonizeLeases(db, nowMs, null);
+  if (harmonizeRunningCount(db) >= 1) return null;
   const queued = db.jobs
     .filter((job) => job.status === "queued" && job.notBeforeMs <= nowMs)
     .sort((left, right) => left.createdAtMs - right.createdAtMs);
@@ -196,7 +200,7 @@ export function markHarmonizeProviderContact(
   input: Readonly<{ jobId: string; claimNonce: string; nowMs: number }>,
 ):
   | Readonly<{ ok: true; attemptId: string }>
-  | Readonly<{ ok: false; code: "stale_claim" | "already_contacted" | "daily_limit" }> {
+  | Readonly<{ ok: false; code: "stale_claim" | "already_contacted" | "daily_limit" | "global_daily_limit" }> {
   const job = findJob(db, input.jobId);
   if (!job || !fenceHolds(job, input.claimNonce, input.nowMs)) {
     return { ok: false, code: "stale_claim" };
@@ -206,6 +210,14 @@ export function markHarmonizeProviderContact(
     failClosed(job, input.nowMs, "daily_limit", "Daily Harmonize provider limit was reached.");
     clearClaim(job);
     return { ok: false, code: "daily_limit" };
+  }
+  if (harmonizeGlobalProviderStartedCount(db, input.nowMs) >= HARMONIZE_GLOBAL_DAILY_PROVIDER_LIMIT) {
+    job.status = "queued";
+    job.attemptCount = Math.max(0, job.attemptCount - 1);
+    job.notBeforeMs = harmonizeUtcDayStartMs(input.nowMs) + DAY_MS;
+    job.updatedAtMs = input.nowMs;
+    clearClaim(job);
+    return { ok: false, code: "global_daily_limit" };
   }
   job.providerStartedAtMs = input.nowMs;
   job.providerAttemptId = randomUUID();
@@ -320,6 +332,12 @@ function claimQueuedJob(
     failClosed(job, nowMs, "daily_limit", "Daily Harmonize provider limit was reached.");
     return null;
   }
+  if (harmonizeGlobalProviderStartedCount(db, nowMs) >= HARMONIZE_GLOBAL_DAILY_PROVIDER_LIMIT) {
+    const nextDayMs = harmonizeUtcDayStartMs(nowMs) + DAY_MS;
+    if (job.notBeforeMs < nextDayMs) job.notBeforeMs = nextDayMs;
+    job.updatedAtMs = nowMs;
+    return null;
+  }
   job.status = "running";
   job.attemptCount += 1;
   job.claimedAtMs = nowMs;
@@ -401,6 +419,20 @@ function claimFrom(job: HarmonizeJobRow): HarmonizeClaim {
     compositeHeight: job.compositeHeight,
     requestedModelId: job.requestedModelId,
   };
+}
+
+function harmonizeGlobalProviderStartedCount(db: HarmonizeJobDatabase, nowMs: number): number {
+  const start = harmonizeUtcDayStartMs(nowMs);
+  const end = start + DAY_MS;
+  return db.jobs.filter((job) =>
+    job.providerStartedAtMs != null
+    && job.providerStartedAtMs >= start
+    && job.providerStartedAtMs < end
+  ).length;
+}
+
+function harmonizeRunningCount(db: HarmonizeJobDatabase): number {
+  return db.jobs.filter((job) => job.status === "running").length;
 }
 
 function findJob(db: HarmonizeJobDatabase, jobId: string): HarmonizeJobRow | null {

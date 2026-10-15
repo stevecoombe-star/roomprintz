@@ -20,6 +20,13 @@ export const HARMONIZE_JOB_MAX_PRECONTACT_ATTEMPTS = 3;
 
 export const HARMONIZE_DAILY_PROVIDER_LIMIT = 10;
 
+/**
+ * Launch ceiling for every user together, per UTC day.
+ * Production reads vibode_harmonize_global_provider_limit(); keep this
+ * constant equal to that function when either one changes.
+ */
+export const HARMONIZE_GLOBAL_DAILY_PROVIDER_LIMIT = 10;
+
 export const HARMONIZE_PRECONTACT_BACKOFF_MS = 15_000;
 
 export const HARMONIZE_HEARTBEAT_INTERVAL_MS = 30_000;

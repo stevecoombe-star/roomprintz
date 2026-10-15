@@ -149,6 +149,9 @@ test("postgres 16 executes the harmonize migration and job functions", { timeout
     assert.equal(uncertain.status, "failed");
     assert.equal(uncertain.failure_code, "provider_uncertain");
     assert.ok(uncertain.provider_started_at);
+    // The global ceiling is also 10. This earlier contact stays provider_uncertain,
+    // but it must not consume the UTC day used by the per-user quota section.
+    await parkProviderContact(String(wide.jobId));
     const paidRetry = await enqueue(USER_B, ROOM_B, ASSET_B, key(31));
     assert.equal(paidRetry.created, true);
     assert.equal((await job(String(wide.jobId))).status, "failed");
@@ -162,11 +165,17 @@ test("postgres 16 executes the harmonize migration and job functions", { timeout
     assert.equal(queuedB.created, true);
     assert.equal(queuedC.created, true);
     const pair = await Promise.all([claim(), claim()]);
-    const ids = pair.map((item) => item?.jobId).sort();
-    assert.deepEqual(ids, [queuedB.jobId, queuedC.jobId].sort());
-
-    await release(String(queuedB.jobId), nonceOf(pair, String(queuedB.jobId)));
-    await release(String(queuedC.jobId), nonceOf(pair, String(queuedC.jobId)));
+    const taken = pair.filter((item) => item != null);
+    assert.equal(taken.length, 1);
+    const waitingId = [queuedB.jobId, queuedC.jobId].find((id) => id !== taken[0]?.jobId);
+    assert.ok(waitingId);
+    const waiting = await job(String(waitingId));
+    assert.equal(waiting.status, "queued");
+    assert.equal(waiting.attempt_count, 0);
+    await release(String(taken[0]?.jobId), String(taken[0]?.claimNonce));
+    const remainder = await claimJob();
+    assert.equal(remainder.jobId, waitingId);
+    await release(String(remainder.jobId), String(remainder.claimNonce));
 
     for (let index = 0; index < 9; index += 1) {
       const enqueued = await enqueue(USER_A, ROOM_A, ASSET_A, key(100 + index));
@@ -205,6 +214,7 @@ test("postgres 16 executes the harmonize migration and job functions", { timeout
 });
 
 async function raceContactAgainstExpiry(): Promise<void> {
+  await parkAllProviderContacts();
   await psql(`
     update public.vibode_harmonize_generations
       set status = 'failed',
@@ -364,6 +374,7 @@ async function claimExactWhileRowIsLocked(targetId: string, otherId: string): Pr
 }
 
 async function permissionsAndStorage(): Promise<void> {
+  await restoreUserAContacts();
   const deniedTable = await psqlError("set role anon; select * from public.vibode_harmonize_generations");
   assert.match(deniedTable, /permission denied/);
   const deniedFunction = await psqlError(
@@ -495,6 +506,11 @@ async function applyMigration(): Promise<void> {
     "utf8",
   );
   await psql(exact);
+  const ceilings = readFileSync(
+    path.join(process.cwd(), "supabase/migrations/20261015190000_vibode_harmonize_global_ceilings.sql"),
+    "utf8",
+  );
+  await psql(ceilings);
 }
 
 async function seedOwner(userId: string, roomId: string, assetId: string): Promise<void> {
@@ -584,6 +600,39 @@ async function expire(jobId: string): Promise<void> {
   await psql(`update public.vibode_harmonize_generations set claim_expires_at = now() - interval '1 second' where id = '${jobId}'`);
 }
 
+async function parkProviderContact(jobId: string): Promise<void> {
+  await psql(`
+    alter table public.vibode_harmonize_generations disable trigger vibode_harmonize_generations_guard;
+    update public.vibode_harmonize_generations
+      set provider_started_at = now() - interval '2 days'
+    where id = '${jobId}';
+    alter table public.vibode_harmonize_generations enable trigger vibode_harmonize_generations_guard;
+  `);
+}
+
+async function parkAllProviderContacts(): Promise<void> {
+  await psql(`
+    alter table public.vibode_harmonize_generations disable trigger vibode_harmonize_generations_guard;
+    update public.vibode_harmonize_generations
+      set provider_started_at = now() - interval '2 days'
+    where provider_started_at is not null;
+    alter table public.vibode_harmonize_generations enable trigger vibode_harmonize_generations_guard;
+  `);
+}
+
+async function restoreUserAContacts(): Promise<void> {
+  await psql(`
+    alter table public.vibode_harmonize_generations disable trigger vibode_harmonize_generations_guard;
+    update public.vibode_harmonize_generations
+      set provider_started_at = now()
+    where user_id = '${USER_A}' and provider_started_at is not null;
+    update public.vibode_harmonize_generations
+      set provider_started_at = now() - interval '2 days'
+    where user_id <> '${USER_A}' and provider_started_at is not null;
+    alter table public.vibode_harmonize_generations enable trigger vibode_harmonize_generations_guard;
+  `);
+}
+
 async function release(jobId: string, nonce: string): Promise<void> {
   const result = await fail(jobId, nonce, "worker_interrupted", false);
   assert.equal(result.code, "failed");
@@ -602,12 +651,6 @@ function outputPath(roomId: string, jobId: string, nonce: string): string {
 
 function key(index: number): string {
   return `55555555-5555-4555-8555-${index.toString(16).padStart(12, "0")}`;
-}
-
-function nonceOf(claims: Array<Json | null>, jobId: string): string {
-  const match = claims.find((item) => item?.jobId === jobId);
-  if (!match) throw new Error(`missing claim for ${jobId}`);
-  return String(match.claimNonce);
 }
 
 async function call(sql: string): Promise<Json> {

@@ -91,9 +91,11 @@ test("an exact claim does not reap or fail a different job", () => {
   older.providerStartedAtMs = 1;
   older.attemptCount = 1;
   const claimed = claimNextHarmonizeJob(db, 500, NEWER);
-  assert.equal(claimed?.jobId, NEWER);
+  assert.equal(claimed, null);
   assert.equal(status(db, OLDER), "running");
   assert.equal(older.failureCode, null);
+  assert.equal(status(db, NEWER), "queued");
+  assert.equal(row(db, NEWER).attemptCount, 0);
 });
 
 test("a continuous claim still closes an expired contacted lease before taking the next job", () => {
@@ -107,6 +109,35 @@ test("a continuous claim still closes an expired contacted lease before taking t
   assert.equal(claimed?.jobId, NEWER);
   assert.equal(status(db, OLDER), "failed");
   assert.equal(older.failureCode, "provider_uncertain");
+});
+
+test("a global contact refusal does not call the provider or fail the claim", async () => {
+  const db = pair();
+  const inner = workerApi(db, null);
+  let providerCalls = 0;
+  let failCalls = 0;
+  const result = await executeHarmonizeClaim({
+    api: {
+      ...inner,
+      async contact() {
+        return { ok: false, code: "global_daily_limit" };
+      },
+      async fail(...args: Parameters<typeof inner.fail>) {
+        failCalls += 1;
+        return inner.fail(...args);
+      },
+    },
+    provider: async () => {
+      providerCalls += 1;
+      throw new Error("paid");
+    },
+    heartbeatIntervalMs: 60_000,
+  });
+  assert.equal(result.outcome, "failed");
+  assert.equal(result.code, "global_daily_limit");
+  assert.equal(providerCalls, 0);
+  assert.equal(failCalls, 0);
+  assert.equal(row(db, OLDER).providerStartedAtMs, null);
 });
 
 test("an exact daily-limit failure does not claim the other queued job", () => {
