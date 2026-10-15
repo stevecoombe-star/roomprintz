@@ -14,7 +14,7 @@ export async function runHarmonizeWorker(input: Readonly<{
   pollIntervalMs: number;
   shouldStop: () => boolean;
   sleep: (ms: number) => Promise<void>;
-  log: (event: string, fields: Record<string, string | number | null>) => void;
+  log: (event: string, fields: Record<string, string | number | boolean | null>) => void;
 }>): Promise<number> {
   if (input.selection.mode === "once") {
     const jobId = input.selection.jobId;
@@ -25,6 +25,7 @@ export async function runHarmonizeWorker(input: Readonly<{
         jobId,
         historyOutcome: null,
         historyCode: null,
+        historyActivated: null,
       });
       return 1;
     }
@@ -36,6 +37,7 @@ export async function runHarmonizeWorker(input: Readonly<{
         jobId: result.jobId ?? jobId,
         historyOutcome: result.history?.outcome ?? null,
         historyCode: result.history?.code ?? null,
+        historyActivated: historyActivated(result.history),
       });
       return result.outcome === "succeeded" ? 0 : 1;
     } catch {
@@ -45,6 +47,7 @@ export async function runHarmonizeWorker(input: Readonly<{
         jobId,
         historyOutcome: null,
         historyCode: null,
+        historyActivated: null,
       });
       return 1;
     }
@@ -60,6 +63,7 @@ export async function runHarmonizeWorker(input: Readonly<{
           jobId: result.jobId,
           historyOutcome: result.history?.outcome ?? null,
           historyCode: result.history?.code ?? null,
+          historyActivated: historyActivated(result.history),
         });
       }
     } catch {
@@ -68,4 +72,11 @@ export async function runHarmonizeWorker(input: Readonly<{
     if (!input.shouldStop()) await input.sleep(input.pollIntervalMs);
   }
   return 0;
+}
+
+function historyActivated(history: Readonly<{ activated?: unknown }> | null | undefined): boolean | null {
+  if (!history) return null;
+  if (history.activated === true) return true;
+  if (history.activated === false) return false;
+  return null;
 }

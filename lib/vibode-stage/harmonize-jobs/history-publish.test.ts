@@ -399,6 +399,8 @@ test("publication does not call a provider or claim another job", async () => {
   assert.doesNotMatch(route, /recoverHarmonizeGenerationHistory/);
   assert.match(loop, /Exit 0 means the provider JPEG/);
   assert.match(loop, /historyOutcome/);
+  assert.match(loop, /historyActivated/);
+  assert.match(server, /activated: published\.activated === true/);
 });
 
 test("the worker complete response keeps generation success distinct from History", async () => {
@@ -420,7 +422,26 @@ test("the worker complete response keeps generation success distinct from Histor
   assert.equal(completed.code, "completed");
   assert.equal(completed.history?.outcome, "pending");
   assert.equal(completed.history?.code, "output_unreadable");
+  assert.equal(completed.history?.activated, null);
   assert.doesNotMatch(JSON.stringify(completed), /prompt|signed|token|jpeg/i);
+  const activated = createHttpHarmonizeWorkerApi(env, {
+    fetchImpl: async () => Response.json({
+      ok: true,
+      code: "completed",
+      history: { outcome: "published", code: "published", activated: true },
+    }),
+  });
+  const switched = await activated.complete(claim(), await completion());
+  assert.equal(switched.ok && switched.history?.activated, true);
+  const malformed = createHttpHarmonizeWorkerApi(env, {
+    fetchImpl: async () => Response.json({
+      ok: true,
+      code: "completed",
+      history: { outcome: "published", code: "published", activated: "true" },
+    }),
+  });
+  const ignored = await malformed.complete(claim(), await completion());
+  assert.equal(ignored.ok && ignored.history?.activated, null);
 });
 
 function worldFor(jpeg: Uint8Array) {

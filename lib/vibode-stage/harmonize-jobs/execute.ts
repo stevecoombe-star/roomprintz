@@ -9,7 +9,7 @@ export type HarmonizeExecuteResult = Readonly<{
   outcome: "idle" | "succeeded" | "failed" | "stale";
   code: string | null;
   jobId: string | null;
-  history?: Readonly<{ outcome: string; code: string | null }> | null;
+  history?: Readonly<{ outcome: string; code: string | null; activated?: boolean | null }> | null;
 }>;
 
 /**
@@ -110,7 +110,7 @@ export async function executeHarmonizeClaim(input: Readonly<{
       outcome: "succeeded",
       code: completed.code,
       jobId: claim.jobId,
-      history: completed.history ?? { outcome: "skipped", code: null },
+      history: completed.history ?? { outcome: "skipped", code: null, activated: null },
     };
   } finally {
     clearInterval(timer);

@@ -5380,6 +5380,7 @@ function EditorPageInner() {
         versions: (latest ?? []).map((version) => ({
           id: version.id,
           imageUrl: version.image_url,
+          isActive: version.is_active === true,
         })),
         live: {
           roomId,
@@ -5396,7 +5397,12 @@ function EditorPageInner() {
       const asset = decision.action === "show-2d" && decision.assetId
         ? latest?.find((version) => version.id === decision.assetId) ?? null
         : null;
-      if (!asset?.image_url || decision.activate !== false) {
+      if (
+        decision.action !== "show-2d"
+        || !asset?.image_url
+        || asset.is_active !== true
+        || decision.activate !== false
+      ) {
         setActiveAssetId(previousActiveId ?? sourceVersionId);
         pushSnack(decision.message ?? HARMONIZE_HISTORY_SAVED_NOTICE);
         return;

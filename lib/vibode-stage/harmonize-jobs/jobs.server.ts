@@ -319,12 +319,12 @@ export async function completeHarmonizeGeneration(input: Readonly<{
  */
 export async function recoverHarmonizeGenerationHistory(jobId: string): Promise<HarmonizeHistoryWorkerView> {
   const supabase = getServiceRoleSupabaseClient();
-  if (!supabase) return { outcome: "pending", code: "unavailable" };
+  if (!supabase) return { outcome: "pending", code: "unavailable", activated: null };
   try {
     const recovered = await recoverOneHarmonizeGenerationHistory(supabase, jobId);
-    return { outcome: recovered.outcome, code: recovered.code };
+    return { outcome: recovered.outcome, code: recovered.code, activated: recovered.activated === true };
   } catch {
-    return { outcome: "pending", code: "publication_failed" };
+    return { outcome: "pending", code: "publication_failed", activated: null };
   }
 }
 
@@ -334,9 +334,13 @@ async function historyAfterGeneration(
 ): Promise<HarmonizeHistoryWorkerView> {
   try {
     const published = await publishHarmonizeGenerationHistory(supabase, jobId);
-    return { outcome: published.outcome, code: published.code };
+    return {
+      outcome: published.outcome,
+      code: published.code,
+      activated: published.activated === true,
+    };
   } catch {
-    return { outcome: "pending", code: "publication_failed" };
+    return { outcome: "pending", code: "publication_failed", activated: null };
   }
 }
 

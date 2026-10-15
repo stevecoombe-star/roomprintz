@@ -86,9 +86,16 @@ function live(patch: Partial<HarmonizeLiveCapture> = {}): HarmonizeLiveCapture {
 }
 
 const VERSIONS = [
-  { id: SOURCE, imageUrl: "https://images.example.test/source.jpg" },
-  { id: OUTPUT, imageUrl: "https://images.example.test/harmonized.jpg" },
+  { id: SOURCE, imageUrl: "https://images.example.test/source.jpg", isActive: false },
+  { id: OUTPUT, imageUrl: "https://images.example.test/harmonized.jpg", isActive: true as unknown },
 ];
+
+function historyVersions(outputActive: unknown) {
+  return [
+    VERSIONS[0],
+    { id: OUTPUT, imageUrl: VERSIONS[1].imageUrl, isActive: outputActive },
+  ];
+}
 
 function historyView(patch: Partial<HarmonizeHistoryView> = {}): HarmonizeHistoryView {
   return {
@@ -230,12 +237,107 @@ test("a published match reloads History and shows 2D only when the server activa
     < settle.indexOf("planHarmonizePublicationView"),
   );
   assert.doesNotMatch(settle, /setActiveVersionForRoom/);
+  assert.match(settle, /isActive: version\.is_active === true/);
+  assert.match(settle, /asset\.is_active !== true/);
   const selectFn = editor.slice(
     editor.indexOf("const handleSelectVersion = useCallback"),
     editor.indexOf("const handleSelectVersionFromTimeline"),
   );
   assert.ok(selectFn.indexOf("applyVersionToEditorState") < selectFn.indexOf("isHarmonizedHistoryAsset"));
   assert.ok(selectFn.indexOf("is_active !== true) return") < selectFn.indexOf("setActiveVersionForRoom"));
+});
+
+test("automatic 2D requires the job and the reloaded History asset to agree", () => {
+  const bothInactive = planHarmonizePublicationView({
+    job: job({ outputActive: false }),
+    versions: historyVersions(false),
+    live: live(),
+  });
+  const jobOnly = planHarmonizePublicationView({
+    job: job({ outputActive: true }),
+    versions: historyVersions(false),
+    live: live(),
+  });
+  const historyOnly = planHarmonizePublicationView({
+    job: job({ outputActive: false }),
+    versions: historyVersions(true),
+    live: live(),
+  });
+  const bothActive = planHarmonizePublicationView({
+    job: job({ outputActive: true }),
+    versions: historyVersions(true),
+    live: live(),
+  });
+  const missingHistoryFlag = planHarmonizePublicationView({
+    job: job({ outputActive: true }),
+    versions: [{ id: SOURCE, imageUrl: VERSIONS[0].imageUrl }, { id: OUTPUT, imageUrl: VERSIONS[1].imageUrl }],
+    live: live(),
+  });
+  const stringHistoryFlag = planHarmonizePublicationView({
+    job: job({ outputActive: true }),
+    versions: historyVersions("true"),
+    live: live(),
+  });
+  const numericHistoryFlag = planHarmonizePublicationView({
+    job: job({ outputActive: true }),
+    versions: historyVersions(1),
+    live: live(),
+  });
+  assert.equal(bothInactive.action, "notice");
+  assert.equal(jobOnly.action, "notice");
+  assert.equal(historyOnly.action, "notice");
+  assert.equal(bothActive.action, "show-2d");
+  assert.equal(bothActive.assetId, OUTPUT);
+  assert.equal(missingHistoryFlag.action, "notice");
+  assert.equal(stringHistoryFlag.action, "notice");
+  assert.equal(numericHistoryFlag.action, "notice");
+  for (const decision of [bothInactive, jobOnly, historyOnly, missingHistoryFlag, stringHistoryFlag, numericHistoryFlag]) {
+    assert.equal(decision.message, HARMONIZE_HISTORY_SAVED_NOTICE);
+    assert.equal(decision.activate, false);
+    assert.equal(decision.assetId, null);
+  }
+  const malformedJob = readHarmonizeExperienceJobRecord({
+    id: JOB,
+    status: "succeeded",
+    historyState: "published",
+    outputAssetId: OUTPUT,
+    outputActive: "true",
+    roomId: ROOM,
+  });
+  assert.equal(malformedJob?.outputActive, null);
+  assert.equal(planHarmonizePublicationView({
+    job: job({ outputActive: malformedJob?.outputActive ?? null }),
+    versions: historyVersions(true),
+    live: live(),
+  }).action, "notice");
+  const manual = planHarmonizeEditorPresentation({
+    selected: HARMONIZED_SELECTED,
+    versions: historyVersions(false),
+    presentation: historyView({ outputActive: false, backdropKind: "afc_original" }),
+    selectionStatus: "ready",
+    generationId: GENERATION,
+    originalImageUrl: "https://images.example.test/original.jpg",
+    emptyImageUrl: "https://images.example.test/empty.png",
+    standardBackgroundUrl: VERSIONS[1].imageUrl,
+  });
+  assert.equal(manual.showAiLabel, true);
+  assert.equal(manual.sceneVersionId, SOURCE);
+  assert.equal(manual.backgroundImageUrl, "https://images.example.test/original.jpg");
+  assert.equal(manual.renderFurnitureOnHarmonizedImage, false);
+  const editor = source("app/editor/page.tsx");
+  const applyFn = editor.slice(
+    editor.indexOf("const applyVersionToEditorState = useCallback"),
+    editor.indexOf("const handleSelectVersion = useCallback"),
+  );
+  const selectFn = editor.slice(
+    editor.indexOf("const handleSelectVersion = useCallback"),
+    editor.indexOf("const handleSelectVersionFromTimeline"),
+  );
+  assert.match(applyFn, /setWorkingImageUrl\(nextUrl\)/);
+  assert.ok(selectFn.indexOf("applyVersionToEditorState") < selectFn.indexOf("is_active !== true) return"));
+  assert.ok(selectFn.indexOf("is_active !== true) return") < selectFn.indexOf("setActiveVersionForRoom"));
+  assert.doesNotMatch(selectFn, /selectEditorViewportMode/);
+  assert.doesNotMatch(source("lib/vibode-stage/harmonize-experience.ts"), /setActiveVersionForRoom|fetch\(/);
 });
 
 test("a scene change keeps History and does not switch the viewport", () => {
@@ -723,6 +825,27 @@ test("status restores History identity without the prompt or scene blob", async 
   assert.doesNotMatch(json, /UNIQUE_PROMPT_SENTINEL|UNIQUE_SCENE_OBJECT|rooms\/secret\.jpg/);
   assert.equal(view?.historyState, "published");
   assert.equal(view?.outputActive, false);
+  assert.equal(harmonizeStatusFromRecord({
+    ...{
+      id: JOB,
+      status: "succeeded",
+      requested_model_id: "gemini-3-pro-image",
+      created_at: "2026-10-13T00:00:00.000Z",
+    },
+    output_active: "true",
+  })?.outputActive, null);
+  assert.equal(harmonizeStatusFromRecord({
+    id: JOB,
+    status: "succeeded",
+    requested_model_id: "gemini-3-pro-image",
+    created_at: "2026-10-13T00:00:00.000Z",
+    output_active: 1,
+  })?.outputActive, null);
+  assert.equal(readHarmonizeExperienceJobRecord({
+    id: JOB,
+    status: "succeeded",
+    outputActive: 1,
+  })?.outputActive, null);
   assert.equal(view?.roomScaleMultiplier, 1.25);
   assert.equal(view?.backdropKind, "afc_empty");
   assert.equal(view?.sceneObjectsSha256, await hashHarmonizeSceneObjects(objects));

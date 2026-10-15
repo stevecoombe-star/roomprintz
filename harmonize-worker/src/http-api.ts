@@ -198,5 +198,9 @@ function readHistory(value: unknown): HarmonizeHistoryWorkerView | null {
   ) {
     return null;
   }
-  return { outcome, code: typeof row.code === "string" ? row.code : null };
+  return {
+    outcome,
+    code: typeof row.code === "string" ? row.code : null,
+    activated: row.activated === true ? true : row.activated === false ? false : null,
+  };
 }

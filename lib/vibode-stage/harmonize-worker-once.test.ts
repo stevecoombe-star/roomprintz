@@ -157,6 +157,7 @@ test("successful single-job processing exits without another claim", async () =>
   assert.equal(row(db, OLDER).providerStartedAtMs, null);
   const logged = JSON.stringify(calls.logs);
   assert.match(logged, /"historyOutcome":"published"/);
+  assert.match(logged, /"historyActivated":false/);
   assert.doesNotMatch(logged, /UNIQUE_PROMPT_SENTINEL/);
   assert.doesNotMatch(logged, /[0-9a-f]{64}/);
 });
@@ -246,7 +247,7 @@ test("a lost complete response after commit does not fail the generation or call
       return inner.fail(claim, failure);
     },
   };
-  const logs: Array<{ event: string; fields: Record<string, string | number | null> }> = [];
+  const logs: Array<{ event: string; fields: Record<string, string | number | boolean | null> }> = [];
   const exitCode = await runHarmonizeWorker({
     selection: { mode: "once", jobId: NEWER },
     execute: () => executeHarmonizeClaim({
@@ -311,7 +312,7 @@ test("a dropped complete response after commit does not start another provider c
       return inner.fail(claim, failure);
     },
   };
-  const logs: Array<{ event: string; fields: Record<string, string | number | null> }> = [];
+  const logs: Array<{ event: string; fields: Record<string, string | number | boolean | null> }> = [];
   const exitCode = await runHarmonizeWorker({
     selection: { mode: "once", jobId: NEWER },
     execute: () => executeHarmonizeClaim({
@@ -444,7 +445,7 @@ test("a stop signal during the one job does not execute it again", async () => {
 
 test("a stop signal before the single job exits without a claim", async () => {
   let executes = 0;
-  const logs: Array<{ event: string; fields: Record<string, string | number | null> }> = [];
+  const logs: Array<{ event: string; fields: Record<string, string | number | boolean | null> }> = [];
   const code = await runHarmonizeWorker({
     selection: { mode: "once", jobId: NEWER },
     execute: async () => {
@@ -470,7 +471,7 @@ test("a stop signal before the single job exits without a claim", async () => {
 
 test("a stale once-mode result exits nonzero and does not continue", async () => {
   let executes = 0;
-  const logs: Array<{ event: string; fields: Record<string, string | number | null> }> = [];
+  const logs: Array<{ event: string; fields: Record<string, string | number | boolean | null> }> = [];
   const code = await runHarmonizeWorker({
     selection: { mode: "once", jobId: NEWER },
     execute: async () => {

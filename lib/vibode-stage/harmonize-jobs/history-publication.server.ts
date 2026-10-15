@@ -64,6 +64,7 @@ export async function publishHarmonizeGenerationHistory(
     jobId,
     outcome: published.outcome,
     code: published.code,
+    activated: published.activated === true,
     thumbnail: published.thumbnail,
   });
   return published;

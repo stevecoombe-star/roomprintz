@@ -109,6 +109,7 @@ export type HarmonizeEditorPresentation = Readonly<{
 type HistoryVersion = Readonly<{
   id: string;
   imageUrl: string | null;
+  isActive?: unknown;
 }>;
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -294,7 +295,7 @@ export function planHarmonizePublicationView(input: Readonly<{
   };
   const job = input.job;
   if (job.historyState !== "published" || !job.outputAssetId) return notice;
-  const listed = input.versions.some((version) => version.id === job.outputAssetId);
+  const listed = input.versions.find((version) => version.id === job.outputAssetId);
   if (!listed) return notice;
   const live = input.live;
   const matches = sameText(live.roomId, job.roomId)
@@ -305,7 +306,7 @@ export function planHarmonizePublicationView(input: Readonly<{
     && live.roomScaleMultiplier === job.roomScaleMultiplier
     && sameText(live.sceneObjectsSha256, job.sceneObjectsSha256)
     && sameText(live.backgroundSha256, job.backgroundSha256);
-  if (!matches || job.outputActive !== true) return notice;
+  if (!matches || job.outputActive !== true || listed.isActive !== true) return notice;
   return {
     action: "show-2d",
     assetId: job.outputAssetId,

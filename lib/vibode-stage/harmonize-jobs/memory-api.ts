@@ -81,7 +81,7 @@ export function createMemoryHarmonizeWorkerApi(input: Readonly<{
         return {
           ok: true as const,
           code: completed.code,
-          history: { outcome: "pending" as const, code: "publication_failed" },
+          history: { outcome: "pending" as const, code: "publication_failed", activated: null },
         };
       }
     },
@@ -150,7 +150,7 @@ async function publishMemoryHistory(
   jobId: string,
 ): Promise<HarmonizeHistoryWorkerView> {
   const job = db.jobs.find((entry) => entry.id === jobId);
-  if (!job) return { outcome: "ignored", code: "not_found" };
+  if (!job) return { outcome: "ignored", code: "not_found", activated: null };
   const published = await publishPreparedHarmonizeHistory({
     job: publicationJobFromRow(job),
     storage,
@@ -161,7 +161,7 @@ async function publishMemoryHistory(
       return "created";
     },
   });
-  return { outcome: published.outcome, code: published.code };
+  return { outcome: published.outcome, code: published.code, activated: published.activated === true };
 }
 
 function memoryHistoryRpc(

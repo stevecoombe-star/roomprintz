@@ -10,7 +10,7 @@ import { parseHarmonizeWorkerArgs } from "./args";
 import { createHttpHarmonizeWorkerApi, readHarmonizeWorkerProcessEnv } from "./http-api";
 import { runHarmonizeWorker } from "./run";
 
-function log(event: string, fields: Record<string, string | number | null>): void {
+function log(event: string, fields: Record<string, string | number | boolean | null>): void {
   process.stdout.write(`${JSON.stringify({ event, at: new Date().toISOString(), ...fields })}\n`);
 }
 

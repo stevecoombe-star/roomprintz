@@ -30,6 +30,7 @@ export type HarmonizeWorkerFailure = Readonly<{
 export type HarmonizeHistoryWorkerView = Readonly<{
   outcome: "published" | "already_published" | "pending" | "terminal" | "ignored" | "skipped";
   code: string | null;
+  activated?: boolean | null;
 }>;
 
 export type HarmonizeWorkerApi = Readonly<{
