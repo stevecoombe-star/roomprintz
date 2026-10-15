@@ -12,6 +12,20 @@ export const HARMONIZE_HISTORY_MAX_TRANSIENT_ATTEMPTS = 3;
 
 export const HARMONIZE_HISTORY_BACKOFF_MS = [5_000, 15_000, 45_000] as const;
 
+/**
+ * Durable History and thumbnail recovery. Production scheduling is
+ * vibode_harmonize_recovery_backoff(); keep this table equal to that function.
+ * After attempt 1, wait 5 seconds. After attempt 2, wait 15 seconds.
+ * After attempt 3, wait 45 seconds. After attempt 4, wait 3 minutes.
+ * Attempt 5 blocks the path. 15 minutes is the reserved fifth backoff and
+ * is not scheduled while the cap is 5.
+ */
+export const HARMONIZE_RECOVERY_MAX_ATTEMPTS = 5;
+
+export const HARMONIZE_RECOVERY_BACKOFF_MS = [5_000, 15_000, 45_000, 180_000, 900_000] as const;
+
+export const HARMONIZE_RECOVERY_LEASE_SEC = 120;
+
 export const HARMONIZE_JOB_CLAIM_LEASE_SEC = 240;
 
 export const HARMONIZE_JOB_CLAIM_LEASE_MS = HARMONIZE_JOB_CLAIM_LEASE_SEC * 1000;

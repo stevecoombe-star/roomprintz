@@ -71,8 +71,9 @@ export async function publishHarmonizeGenerationHistory(
 }
 
 /**
- * Explicit recovery for one job id. Not mounted on a request handler or the
- * worker poll loop, so hosted production does not sweep pending rows.
+ * Explicit one-job recovery with in-process retries. Not mounted on a
+ * request handler or the worker poll loop. Durable scheduling lives in
+ * runHarmonizeHistoryRecoveryOnce and is not connected to the worker yet.
  */
 export async function recoverHarmonizeGenerationHistory(
   supabase: SupabaseClient,
@@ -83,6 +84,28 @@ export async function recoverHarmonizeGenerationHistory(
     job,
     publish: () => publishHarmonizeGenerationHistory(supabase, jobId),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  });
+}
+
+/**
+ * Thumbnail-only recovery for one already published Harmonize asset.
+ * Does not call the publication RPC and does not change activation or room cover.
+ */
+export async function recoverPublishedHarmonizeThumbnail(
+  supabase: SupabaseClient,
+  jobId: string,
+): Promise<"created" | "present" | "failed"> {
+  const job = await loadHarmonizePublicationJob(supabase, jobId);
+  if (!job || job.status !== "succeeded" || job.historyState !== "published" || !job.outputAssetId) {
+    return "failed";
+  }
+  return attachHarmonizeHistoryThumbnail(supabase, {
+    jobId: job.id,
+    roomId: job.roomId,
+    userId: job.userId,
+    assetId: job.outputAssetId,
+    historyBucket: VIBODE_HISTORY_BUCKET,
+    historyPath: harmonizeHistoryObjectPath(job.roomId, job.id),
   });
 }
 
