@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+
+import { canonicalJson } from "@/lib/vibode-stage/harmonize-export";
+
+import type { HarmonizeBackdropKind } from "./backdrop-kind";
 import type { HarmonizeJobStatus, HarmonizeJobStatusView } from "./types";
 
 const STATUSES = new Set<HarmonizeJobStatus>(["queued", "running", "succeeded", "failed", "cancelled"]);
@@ -20,6 +25,16 @@ export function harmonizeJobStatusView(row: Readonly<{
   latencyMs: number | null;
   providerHttpStatus: number | null;
   providerStatus: string | null;
+  historyState: "pending" | "published" | "unavailable" | null;
+  outputAssetId: string | null;
+  outputActive: boolean | null;
+  roomId: string | null;
+  sourceVersionId: string | null;
+  afcGenerationId: string | null;
+  backdropKind: HarmonizeBackdropKind | null;
+  sceneObjectsSha256: string | null;
+  backgroundSha256: string | null;
+  roomScaleMultiplier: number | null;
 }>): HarmonizeJobStatusView {
   return {
     id: row.id,
@@ -38,6 +53,16 @@ export function harmonizeJobStatusView(row: Readonly<{
     latencyMs: row.latencyMs,
     providerHttpStatus: row.providerHttpStatus,
     providerStatus: row.providerStatus,
+    historyState: row.historyState,
+    outputAssetId: row.outputAssetId,
+    outputActive: row.outputActive,
+    roomId: row.roomId,
+    sourceVersionId: row.sourceVersionId,
+    afcGenerationId: row.afcGenerationId,
+    backdropKind: row.backdropKind,
+    sceneObjectsSha256: row.sceneObjectsSha256,
+    backgroundSha256: row.backgroundSha256,
+    roomScaleMultiplier: row.roomScaleMultiplier,
   };
 }
 
@@ -66,7 +91,40 @@ export function harmonizeStatusFromRecord(row: Record<string, unknown>): Harmoni
     latencyMs: typeof row.latency_ms === "number" ? row.latency_ms : null,
     providerHttpStatus: typeof row.provider_http_status === "number" ? row.provider_http_status : null,
     providerStatus: typeof row.provider_status === "string" ? row.provider_status : null,
+    historyState: historyState(row.history_state),
+    outputAssetId: text(row.output_asset_id),
+    outputActive: typeof row.output_active === "boolean" ? row.output_active : null,
+    roomId: text(row.room_id),
+    sourceVersionId: text(row.source_version_id),
+    afcGenerationId: text(row.afc_generation_id),
+    backdropKind: backdropKind(row.backdrop_kind),
+    sceneObjectsSha256: sceneObjectsSha256(row.scene_objects),
+    backgroundSha256: text(row.background_sha256),
+    roomScaleMultiplier: roomScaleMultiplier(row.snapshot),
   });
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function historyState(value: unknown): "pending" | "published" | "unavailable" | null {
+  return value === "pending" || value === "published" || value === "unavailable" ? value : null;
+}
+
+function backdropKind(value: unknown): HarmonizeBackdropKind | null {
+  return value === "afc_empty" || value === "afc_original" || value === "room_asset" ? value : null;
+}
+
+function roomScaleMultiplier(snapshot: unknown): number | null {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const scale = (snapshot as Record<string, unknown>).roomScaleMultiplier;
+  return typeof scale === "number" && Number.isFinite(scale) ? scale : null;
+}
+
+function sceneObjectsSha256(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
 export function harmonizePublicStatus(code: string): number {

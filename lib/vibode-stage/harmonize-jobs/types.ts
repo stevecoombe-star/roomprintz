@@ -174,4 +174,14 @@ export type HarmonizeJobStatusView = Readonly<{
   latencyMs: number | null;
   providerHttpStatus: number | null;
   providerStatus: string | null;
+  historyState: "pending" | "published" | "unavailable" | null;
+  outputAssetId: string | null;
+  outputActive: boolean | null;
+  roomId: string | null;
+  sourceVersionId: string | null;
+  afcGenerationId: string | null;
+  backdropKind: "afc_empty" | "afc_original" | "room_asset" | null;
+  sceneObjectsSha256: string | null;
+  backgroundSha256: string | null;
+  roomScaleMultiplier: number | null;
 }>;

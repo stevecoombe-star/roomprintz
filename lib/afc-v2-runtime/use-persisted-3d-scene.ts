@@ -107,6 +107,7 @@ export function usePersisted3dScene(input: Readonly<{
   versionId: string | null;
   spatialAuthorityId: string | null;
   enabled: boolean;
+  harmonizeAssetId?: string | null;
 }>): Persisted3dSceneState {
   const identity: PersistedSceneIdentity | null =
     input.enabled && input.roomId && input.versionId && input.spatialAuthorityId
@@ -135,6 +136,8 @@ export function usePersisted3dScene(input: Readonly<{
   const overlayRef = useRef<Map<string, FurnitureAssetDefinition>>(new Map());
 
   const latestLoadIdRef = useRef(0);
+  const loadedHarmonizeAssetIdRef = useRef<string | null>(null);
+  const harmonizeAssetId = input.harmonizeAssetId ?? null;
   const loadRevisionRef = useRef(0);
   const loadedRef = useRef<LoadedVersionScene | null>(null);
   const identityRef = useRef<PersistedSceneIdentity | null>(identity);
@@ -242,6 +245,7 @@ export function usePersisted3dScene(input: Readonly<{
     nextIssues: readonly RuntimeAssetIssue[] = [],
   ) => {
     loadRevisionRef.current += 1;
+    loadedHarmonizeAssetIdRef.current = harmonizeAssetId;
     loadedRef.current = {
       identity: requestIdentity,
       objects: nextObjects,
@@ -259,11 +263,12 @@ export function usePersisted3dScene(input: Readonly<{
     setAssetIssues(nextIssues);
     setLoading(false);
     clearUndoStack();
-  }, [clearUndoStack]);
+  }, [clearUndoStack, harmonizeAssetId]);
 
   useEffect(() => {
     if (!identity) {
       latestLoadIdRef.current += 1;
+      loadedHarmonizeAssetIdRef.current = null;
       overlayRef.current = new Map();
       setAssetDefinitions([]);
       setAssetIssues([]);
@@ -275,7 +280,8 @@ export function usePersisted3dScene(input: Readonly<{
     const requestIdentity = identity;
     if (
       loadedRef.current &&
-      sceneIdentitiesEqual(loadedRef.current.identity, requestIdentity)
+      sceneIdentitiesEqual(loadedRef.current.identity, requestIdentity) &&
+      loadedHarmonizeAssetIdRef.current === harmonizeAssetId
     ) {
       restoreCachedScene(loadedRef.current);
       return;
@@ -297,7 +303,8 @@ export function usePersisted3dScene(input: Readonly<{
       if (cancelled || requestId !== latestLoadIdRef.current) return;
       if (
         loadedRef.current &&
-        sceneIdentitiesEqual(loadedRef.current.identity, requestIdentity)
+        sceneIdentitiesEqual(loadedRef.current.identity, requestIdentity) &&
+        loadedHarmonizeAssetIdRef.current === harmonizeAssetId
       ) {
         restoreCachedScene(loadedRef.current);
         return;
@@ -306,7 +313,7 @@ export function usePersisted3dScene(input: Readonly<{
         const token = await getSupabaseBrowserAccessToken();
         if (!token) throw new Error("missing token");
         if (cancelled || requestId !== latestLoadIdRef.current) return;
-        const response = await fetch(versionSceneUrl(requestIdentity), {
+        const response = await fetch(versionSceneUrl(requestIdentity, harmonizeAssetId), {
           method: "GET",
           headers: {
             Authorization: `Bearer ${token}`,
@@ -411,6 +418,7 @@ export function usePersisted3dScene(input: Readonly<{
     input.roomId,
     input.versionId,
     input.spatialAuthorityId,
+    harmonizeAssetId,
     persistIdentity,
     flushLoadedIfDirty,
     restoreCachedScene,
@@ -606,6 +614,7 @@ export function usePersisted3dScene(input: Readonly<{
           versionId: current.versionId,
           afcGenerationId: current.afcGenerationId,
           assetIds: [assetId],
+          ...(harmonizeAssetId ? { harmonizeAssetId } : {}),
         }),
         cache: "no-store",
       });
@@ -625,7 +634,7 @@ export function usePersisted3dScene(input: Readonly<{
     } catch {
       return null;
     }
-  }, []);
+  }, [harmonizeAssetId]);
 
   const sceneReady =
     Boolean(loadedIdentity) &&

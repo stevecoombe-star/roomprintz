@@ -27,6 +27,35 @@ import type { HarmonizeHistoryWorkerView, HarmonizeWorkerClaim } from "./worker-
 
 type ServiceClient = SupabaseClient;
 
+const HARMONIZE_STATUS_COLUMNS = [
+  "id",
+  "status",
+  "failure_code",
+  "failure_message",
+  "output_width",
+  "output_height",
+  "output_mime",
+  "output_sha256",
+  "provider_started_at",
+  "created_at",
+  "completed_at",
+  "requested_model_id",
+  "returned_model_id",
+  "latency_ms",
+  "provider_http_status",
+  "provider_status",
+  "user_id",
+  "history_state",
+  "output_asset_id",
+  "room_id",
+  "source_version_id",
+  "afc_generation_id",
+  "backdrop_kind",
+  "background_sha256",
+  "scene_objects",
+  "snapshot",
+].join(", ");
+
 export async function createHarmonizeCompositeUpload(input: Readonly<{
   userId: string;
   email: string | null;
@@ -112,17 +141,17 @@ export async function readHarmonizeGenerationStatus(input: Readonly<{
   if (!supabase || !/^[0-9a-f-]{36}$/i.test(input.jobId)) return null;
   const { data, error } = await supabase
     .from("vibode_harmonize_generations")
-    .select("id, status, failure_code, failure_message, output_width, output_height, output_mime, output_sha256, provider_started_at, created_at, completed_at, requested_model_id, returned_model_id, latency_ms, provider_http_status, provider_status, user_id")
+    .select(HARMONIZE_STATUS_COLUMNS)
     .eq("id", input.jobId)
     .eq("user_id", input.userId)
     .maybeSingle();
   if (error || !data || typeof data !== "object") return null;
-  return harmonizeStatusFromRecord(data as Record<string, unknown>);
+  return harmonizeStatusFromRecord(await withOutputActivation(supabase, input.userId, data as Record<string, unknown>));
 }
 
 const HARMONIZE_ROOM_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/** Owner's newest job for one room. Paths, prompts, and bytes stay out of the select. */
+/** Owner's newest job for one room. Paths, prompts, and bytes stay out of the response. */
 export async function readHarmonizeRoomJob(input: Readonly<{
   userId: string;
   roomId: string;
@@ -131,14 +160,14 @@ export async function readHarmonizeRoomJob(input: Readonly<{
   if (!supabase || !HARMONIZE_ROOM_ID_RE.test(input.roomId)) return null;
   const { data, error } = await supabase
     .from("vibode_harmonize_generations")
-    .select("id, status, failure_code, failure_message, output_width, output_height, output_mime, output_sha256, provider_started_at, created_at, completed_at, requested_model_id, returned_model_id, latency_ms, provider_http_status, provider_status, user_id")
+    .select(HARMONIZE_STATUS_COLUMNS)
     .eq("user_id", input.userId)
     .eq("room_id", input.roomId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
   if (error || !data || typeof data !== "object") return null;
-  return harmonizeStatusFromRecord(data as Record<string, unknown>);
+  return harmonizeStatusFromRecord(await withOutputActivation(supabase, input.userId, data as Record<string, unknown>));
 }
 
 export async function readHarmonizeGenerationOutput(input: Readonly<{
@@ -544,6 +573,23 @@ function workerClaim(value: unknown): HarmonizeWorkerClaim | null {
 function storageAlreadyExists(message: string): boolean {
   const normalized = message.toLowerCase();
   return normalized.includes("already") || normalized.includes("exists");
+}
+
+async function withOutputActivation(
+  supabase: ServiceClient,
+  userId: string,
+  row: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const assetId = typeof row.output_asset_id === "string" ? row.output_asset_id : "";
+  if (!/^[0-9a-f-]{36}$/i.test(assetId)) return row;
+  const { data, error } = await supabase
+    .from("vibode_room_assets")
+    .select("is_active")
+    .eq("id", assetId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error || !data || typeof data !== "object") return { ...row, output_active: null };
+  return { ...row, output_active: (data as { is_active?: unknown }).is_active === true };
 }
 
 function text(value: unknown): string {

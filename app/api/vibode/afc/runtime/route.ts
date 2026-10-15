@@ -4,6 +4,8 @@ import {
   parseRoomId,
   productionAfcJson,
 } from "@/lib/afc-v2-production/production-http";
+import { AFC_V2_ORIGINAL_SIGNED_URL_EXPIRES_IN_SEC } from "@/lib/afc-v2-production/production-original";
+import { AFC_V2_PRODUCTION_STORAGE_BUCKET } from "@/lib/afc-v2-production/production-store";
 import {
   createProductionAfcStoreFromEnv,
   signOwnedOriginalDisplayUrl,
@@ -95,13 +97,36 @@ async function restoreRuntime(request: Request, body: unknown) {
     roomId,
     generationId: restored.generationId,
   });
+  const emptyImageUrl = await signOwnedEmptyDisplayUrl(service, auth.userId, handoff.emptyStoragePath);
   return productionAfcJson({
     ...restored,
     authority: validated.authority,
     originalImageUrl,
+    emptyImageUrl,
     trustedPath: handoff.trustedPath,
     certifiedFrozenCamera: handoff.certifiedFrozenCamera,
   }, 200);
+}
+
+function ownedEmptyStoragePath(userId: string, path: string | null): string | null {
+  if (!path || path.includes("..") || path.includes("\\") || path.includes("?") || path.startsWith("/")) {
+    return null;
+  }
+  return path.startsWith(`users/${userId}/`) ? path : null;
+}
+
+async function signOwnedEmptyDisplayUrl(
+  service: NonNullable<ReturnType<typeof getServiceRoleSupabaseClient>>,
+  userId: string,
+  path: string | null,
+): Promise<string | null> {
+  const owned = ownedEmptyStoragePath(userId, path);
+  if (!owned) return null;
+  const { data, error } = await service.storage
+    .from(AFC_V2_PRODUCTION_STORAGE_BUCKET)
+    .createSignedUrl(owned, AFC_V2_ORIGINAL_SIGNED_URL_EXPIRES_IN_SEC);
+  if (error || typeof data?.signedUrl !== "string") return null;
+  return data.signedUrl;
 }
 
 async function readRuntimeHandoff(
@@ -110,8 +135,9 @@ async function readRuntimeHandoff(
 ): Promise<Readonly<{
   trustedPath: TrustedPathBaseline | null;
   certifiedFrozenCamera: CertifiedFrozenCamera | null;
+  emptyStoragePath: string | null;
 }>> {
-  const empty = { trustedPath: null, certifiedFrozenCamera: null };
+  const empty = { trustedPath: null, certifiedFrozenCamera: null, emptyStoragePath: null };
   if (!input.generationId) return empty;
   try {
     const generation = await store.getGeneration(input.generationId);
@@ -135,6 +161,7 @@ async function readRuntimeHandoff(
     return {
       trustedPath,
       certifiedFrozenCamera: readCertifiedFrozenCamera(authority.frozenCamera),
+      emptyStoragePath: generation.emptyStoragePath,
     };
   } catch {
     return empty;

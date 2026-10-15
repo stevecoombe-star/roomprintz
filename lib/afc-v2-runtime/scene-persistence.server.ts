@@ -9,9 +9,12 @@ import {
 
 import { resolveCanonicalImmediateParentVersionId } from "@/lib/vibode/version-lineage";
 
+import { harmonizeSourceSceneResolution } from "@/lib/vibode-stage/harmonize-experience";
+
 import {
   PI4C_SCENE_TABLE,
   authorizeOwned3dSceneContext,
+  resolvePersistedSceneCompatibility,
   validatePersistedVersionScene,
   type Owned3dSceneAuthorization,
   type PersistedVersionScene,
@@ -27,6 +30,22 @@ type AnySupabase = SupabaseClient;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+async function harmonizeOutputGuard(
+  supabase: AnySupabase,
+  input: Readonly<{ userId: string; roomId: string; versionId: string }>,
+): Promise<"harmonized" | "ordinary" | "error"> {
+  const { data, error } = await supabase
+    .from("vibode_room_assets")
+    .select("id, harmonize_job_id")
+    .eq("id", input.versionId)
+    .eq("room_id", input.roomId)
+    .eq("user_id", input.userId)
+    .maybeSingle();
+  if (error) return "error";
+  const jobId = typeof data?.harmonize_job_id === "string" ? data.harmonize_job_id.trim() : "";
+  return jobId ? "harmonized" : "ordinary";
 }
 
 function rowToScene(row: Record<string, unknown>): PersistedVersionScene | null {
@@ -229,6 +248,153 @@ export async function loadOwnedVersionScene(input: Readonly<{
   return { ok: true, found: true, scene: loaded.scene };
 }
 
+function textId(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Load the source scene for a published Harmonized image.
+ * A missing row stays missing. This path does not inherit or insert.
+ */
+export async function readOwnedHarmonizeSourceScene(input: Readonly<{
+  userId: string;
+  roomId: string;
+  versionId: string;
+  afcGenerationId: string;
+  harmonizeAssetId: string;
+}>): Promise<
+  | { ok: true; resolved: ResolvedVersionScene }
+  | { ok: false; status: 400 | 401 | 404 | 500; error: string }
+> {
+  const authorized = await authorizeOwnedVersionScene(input);
+  if (!authorized.ok) return authorized;
+  const supabase = getServiceRoleSupabaseClient();
+  if (!supabase) {
+    return { ok: false, status: 500, error: "Server misconfigured." };
+  }
+  const assetResult = await supabase
+    .from("vibode_room_assets")
+    .select("id, room_id, user_id, harmonize_job_id")
+    .eq("id", input.harmonizeAssetId)
+    .eq("room_id", input.roomId)
+    .eq("user_id", input.userId)
+    .maybeSingle();
+  if (assetResult.error) {
+    return { ok: false, status: 500, error: "Failed to load 3D scene." };
+  }
+  const assetRow = assetResult.data as Record<string, unknown> | null;
+  const harmonizeJobId = textId(assetRow?.harmonize_job_id);
+  let job: {
+    id: string;
+    userId: string;
+    roomId: string;
+    sourceVersionId: string | null;
+    outputAssetId: string | null;
+    historyState: string | null;
+    status: string;
+  } | null = null;
+  if (harmonizeJobId) {
+    const jobResult = await supabase
+      .from("vibode_harmonize_generations")
+      .select("id, user_id, room_id, source_version_id, output_asset_id, history_state, status")
+      .eq("id", harmonizeJobId)
+      .eq("user_id", input.userId)
+      .eq("room_id", input.roomId)
+      .maybeSingle();
+    if (jobResult.error) {
+      return { ok: false, status: 500, error: "Failed to load 3D scene." };
+    }
+    const jobRow = jobResult.data as Record<string, unknown> | null;
+    const id = textId(jobRow?.id);
+    const userId = textId(jobRow?.user_id);
+    const roomId = textId(jobRow?.room_id);
+    const status = textId(jobRow?.status);
+    if (jobRow && id && userId && roomId && status) {
+      job = {
+        id,
+        userId,
+        roomId,
+        sourceVersionId: textId(jobRow.source_version_id),
+        outputAssetId: textId(jobRow.output_asset_id),
+        historyState: textId(jobRow.history_state),
+        status,
+      };
+    }
+  }
+  const loaded = await loadSceneRow(supabase, input.roomId, input.versionId);
+  if ("ok" in loaded) {
+    return { ok: false, status: 500, error: loaded.error };
+  }
+  const scene = loaded.found
+    ? ("malformed" in loaded ? "malformed" : "present")
+    : "missing";
+  const decision = harmonizeSourceSceneResolution({
+    callerUserId: input.userId,
+    roomId: input.roomId,
+    sourceVersionId: input.versionId,
+    harmonizeAssetId: input.harmonizeAssetId,
+    asset: assetRow && textId(assetRow.id) && textId(assetRow.room_id) && textId(assetRow.user_id)
+      ? {
+          id: textId(assetRow.id) as string,
+          roomId: textId(assetRow.room_id) as string,
+          userId: textId(assetRow.user_id) as string,
+          harmonizeJobId,
+        }
+      : null,
+    job,
+    scene,
+  });
+  if (decision === "deny") {
+    return { ok: false, status: 404, error: "Not found." };
+  }
+  if (decision === "missing") {
+    return {
+      ok: true,
+      resolved: {
+        status: "none",
+        origin: "default",
+        scene: null,
+        reason: "harmonize-source-missing",
+      },
+    };
+  }
+  if (decision === "malformed" || !loaded.found || "malformed" in loaded) {
+    return {
+      ok: true,
+      resolved: {
+        status: "malformed",
+        origin: "default",
+        scene: null,
+        reason: "Stored 3D scene cannot be restored.",
+      },
+    };
+  }
+  const compatibility = resolvePersistedSceneCompatibility({
+    storedAfcGenerationId: loaded.scene.afcGenerationId,
+    currentAfcGenerationId: input.afcGenerationId,
+  });
+  if (!compatibility.ok) {
+    return {
+      ok: true,
+      resolved: {
+        status: "incompatible",
+        origin: "default",
+        scene: null,
+        reason: "Stored 3D scene belongs to a different AFC generation.",
+        storedAfcGenerationId: loaded.scene.afcGenerationId,
+      },
+    };
+  }
+  return {
+    ok: true,
+    resolved: {
+      status: "ready",
+      origin: "persisted",
+      scene: loaded.scene,
+    },
+  };
+}
+
 export async function resolveOwnedVersionScene(input: Readonly<{
   userId: string;
   roomId: string;
@@ -243,6 +409,21 @@ export async function resolveOwnedVersionScene(input: Readonly<{
   const supabase = getServiceRoleSupabaseClient();
   if (!supabase) {
     return { ok: false, status: 500, error: "Server misconfigured." };
+  }
+  const harmonized = await harmonizeOutputGuard(supabase, input);
+  if (harmonized === "error") {
+    return { ok: false, status: 500, error: "Failed to load 3D scene." };
+  }
+  if (harmonized === "harmonized") {
+    return {
+      ok: true,
+      resolved: {
+        status: "none",
+        origin: "default",
+        scene: null,
+        reason: "harmonize-output",
+      },
+    };
   }
 
   try {
@@ -296,6 +477,17 @@ export async function saveOwnedVersionScene(input: Readonly<{
   const supabase: AnySupabase | null = getServiceRoleSupabaseClient();
   if (!supabase) {
     return { ok: false, status: 500, error: "Server misconfigured." };
+  }
+  const harmonized = await harmonizeOutputGuard(supabase, {
+    userId: input.userId,
+    roomId: input.scene.roomId,
+    versionId: input.scene.versionId,
+  });
+  if (harmonized === "error") {
+    return { ok: false, status: 500, error: "Failed to save 3D scene." };
+  }
+  if (harmonized === "harmonized") {
+    return { ok: false, status: 400, error: "Harmonized images do not have an editable 3D scene." };
   }
   const { data, error } = await supabase
     .from(PI4C_SCENE_TABLE)

@@ -164,6 +164,7 @@ type Props = Readonly<{
   roomId: string;
   authority: AfcV2ProductionRoomAuthority;
   backgroundImageUrl?: string | null;
+  lockBackgroundImage?: boolean;
   originalImageUrl?: string | null;
   transformMode?: RuntimeTransformMode;
   onTransformModeChange?: (mode: RuntimeTransformMode) => void;
@@ -198,6 +199,7 @@ type ReadyProps = Readonly<{
   authority: AfcV2ProductionRoomAuthority;
   visualImageUrl: string;
   originalImageUrl?: string | null;
+  lockBackgroundImage?: boolean;
   transformMode?: RuntimeTransformMode;
   onTransformModeChange?: (mode: RuntimeTransformMode) => void;
   showInternalControls?: boolean;
@@ -230,6 +232,7 @@ export function AfcProductionRoomViewer({
   roomId,
   authority,
   backgroundImageUrl,
+  lockBackgroundImage = false,
   originalImageUrl,
   transformMode,
   onTransformModeChange,
@@ -262,7 +265,7 @@ export function AfcProductionRoomViewer({
   );
   const visualImageUrl = resolveViewerBackgroundImageUrl({
     backgroundImageUrl,
-    originalImageUrl,
+    originalImageUrl: lockBackgroundImage ? null : originalImageUrl,
   });
   if (!validated.ok) {
     return (
@@ -289,6 +292,7 @@ export function AfcProductionRoomViewer({
       authority={validated.authority}
       visualImageUrl={visualImageUrl}
       originalImageUrl={originalImageUrl}
+      lockBackgroundImage={lockBackgroundImage}
       transformMode={transformMode}
       onTransformModeChange={onTransformModeChange}
       showInternalControls={showInternalControls}
@@ -322,6 +326,7 @@ function AfcProductionRoomViewerReady({
   authority,
   visualImageUrl,
   originalImageUrl,
+  lockBackgroundImage = false,
   transformMode: transformModeProp,
   onTransformModeChange,
   showInternalControls = true,
@@ -2046,6 +2051,7 @@ function AfcProductionRoomViewerReady({
             className="absolute inset-0 z-0 h-full w-full"
             draggable={false}
             onError={(event) => {
+              if (lockBackgroundImage) return;
               const image = event.currentTarget;
               const fallback = originalImageUrl?.trim() ?? "";
               if (

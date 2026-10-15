@@ -41,6 +41,7 @@ type RoomAssetRow = {
   height: number | null;
   model_version: string | null;
   is_active: boolean | null;
+  harmonize_job_id: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string | null;
 };
@@ -224,7 +225,7 @@ export async function POST(req: NextRequest) {
     const { data: assetRows, error: assetsErr } = await userSupabase
       .from("vibode_room_assets")
       .select(
-        "id,room_id,user_id,asset_type,stage_number,storage_bucket,storage_path,thumbnail_storage_bucket,thumbnail_storage_path,image_url,width,height,model_version,is_active,metadata,created_at"
+        "id,room_id,user_id,asset_type,stage_number,storage_bucket,storage_path,thumbnail_storage_bucket,thumbnail_storage_path,image_url,width,height,model_version,is_active,harmonize_job_id,metadata,created_at"
       )
       .eq("room_id", room.id)
       .eq("user_id", userId)
@@ -279,6 +280,10 @@ export async function POST(req: NextRequest) {
           height: asset.height,
           model_version: asset.model_version,
           is_active: asset.is_active === true,
+          harmonize_job_id:
+            typeof asset.harmonize_job_id === "string" && asset.harmonize_job_id.trim().length > 0
+              ? asset.harmonize_job_id.trim()
+              : null,
           metadata: asset.metadata ?? {},
           parentVersionId: lineageGraph.parentByVersionId.get(asset.id) ?? null,
           lineageSource: lineageGraph.lineageSourceByVersionId.get(asset.id) ?? "none",

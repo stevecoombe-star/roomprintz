@@ -29,12 +29,14 @@ import type { StageCatalogSnapshot, StageVariant } from "@/lib/vibode-stage/type
 type Props = Readonly<{
   roomId: string;
   versionId?: string | null;
+  harmonizeAssetId?: string | null;
   spatialAuthorityId?: string | null;
   prepareState: Prepare3dRoomState;
   onPrepare: () => void;
   onRetryRestore?: () => void;
   runtime: AfcProductionRuntimeLoadState;
   backgroundImageUrl?: string | null;
+  lockBackgroundImage?: boolean;
   transformMode: RuntimeTransformMode;
   onTransformModeChange: (mode: RuntimeTransformMode) => void;
 }>;
@@ -79,12 +81,14 @@ function ViewportMessage({
 export function AfcIntegratedEditorViewport({
   roomId,
   versionId = null,
+  harmonizeAssetId = null,
   spatialAuthorityId = null,
   prepareState,
   onPrepare,
   onRetryRestore,
   runtime,
   backgroundImageUrl,
+  lockBackgroundImage = false,
   transformMode,
   onTransformModeChange,
 }: Props) {
@@ -99,6 +103,7 @@ export function AfcIntegratedEditorViewport({
     roomId,
     versionId,
     spatialAuthorityId,
+    harmonizeAssetId,
     enabled: presentation.surface === "viewer" &&
       Boolean(runtime.authority && versionId && spatialAuthorityId),
   });
@@ -154,8 +159,9 @@ export function AfcIntegratedEditorViewport({
       objects: persistedScene.objects,
       canUndo: persistedScene.canUndo,
       undo: persistedScene.undo,
+      sceneReady: persistedScene.sceneReady,
     });
-  }, [bindScene, persistedScene.canUndo, persistedScene.objects, persistedScene.undo]);
+  }, [bindScene, persistedScene.canUndo, persistedScene.objects, persistedScene.sceneReady, persistedScene.undo]);
 
   if (presentation.surface === "status") {
     return (
@@ -226,6 +232,7 @@ export function AfcIntegratedEditorViewport({
         roomId={roomId}
         authority={runtime.authority}
         backgroundImageUrl={backgroundImageUrl}
+        lockBackgroundImage={lockBackgroundImage}
         originalImageUrl={runtime.originalImageUrl}
         transformMode={transformMode}
         onTransformModeChange={onTransformModeChange}

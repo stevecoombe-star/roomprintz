@@ -29,6 +29,7 @@ export type AfcProductionRuntimeLoadState = Readonly<{
   error: string | null;
   authority: AfcV2ProductionRoomAuthority | null;
   originalImageUrl: string | null;
+  emptyImageUrl: string | null;
   generationId: string | null;
   trustedPath: TrustedPathBaseline | null;
   /** Stored production frozen camera. Independent of a manual perspective override. */
@@ -40,6 +41,7 @@ export const IDLE_AFC_PRODUCTION_RUNTIME_STATE: AfcProductionRuntimeLoadState = 
   error: null,
   authority: null,
   originalImageUrl: null,
+  emptyImageUrl: null,
   generationId: null,
   trustedPath: null,
   certifiedFrozenCamera: null,
@@ -50,6 +52,7 @@ export type InterpretedProductionRuntimeResponse =
       status: "ready";
       authority: AfcV2ProductionRoomAuthority;
       originalImageUrl: string;
+      emptyImageUrl: string | null;
       generationId: string | null;
       trustedPath: TrustedPathBaseline | null;
       certifiedFrozenCamera: CertifiedFrozenCamera | null;
@@ -107,6 +110,7 @@ export function interpretProductionRuntimeResponse(input: Readonly<{
     status: "ready",
     authority: authority as AfcV2ProductionRoomAuthority,
     originalImageUrl,
+    emptyImageUrl: readOptionalString(payload?.emptyImageUrl),
     generationId,
     trustedPath: parseTrustedPathBaseline(payload?.trustedPath),
     certifiedFrozenCamera: readCertifiedFrozenCamera(payload?.certifiedFrozenCamera),

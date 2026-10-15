@@ -612,7 +612,8 @@ test("PI-4C keeps AFC authority, History version identity, and the no-inheritanc
     assert.doesNotMatch(text, /parentScene|scene inheritance/i);
     assert.doesNotMatch(text, /userWorldScale|DEFAULT_PX_PER_IN/);
   }
-  assert.match(editor, /versionId=\{selectedVersionId\}/);
+  assert.match(editor, /versionId=\{integratedSceneVersionId\}/);
+  assert.match(source("lib/vibode-stage/harmonize-experience.ts"), /sceneVersionId: selected\?\.id \?\? null/);
   assert.match(editor, /spatialAuthorityId=\{afcRuntime\.generationId\}/);
   assert.match(integrated, /usePersisted3dScene/);
   assert.match(integrated, /sceneObjects=\{persistedScene\.objects\}/);

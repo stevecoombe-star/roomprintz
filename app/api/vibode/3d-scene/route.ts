@@ -15,6 +15,7 @@ import {
   validatePersistedSceneObjects,
 } from "@/lib/afc-v2-runtime/persisted-scene";
 import {
+  readOwnedHarmonizeSourceScene,
   resolveOwnedVersionScene,
   saveOwnedVersionScene,
 } from "@/lib/afc-v2-runtime/scene-persistence.server";
@@ -53,12 +54,21 @@ export async function GET(request: Request) {
     }, 400);
   }
 
-  const loaded = await resolveOwnedVersionScene({
-    userId: auth.userId,
-    roomId: query.roomId,
-    versionId: query.versionId,
-    afcGenerationId: query.afcGenerationId,
-  });
+  const harmonizeAssetId = parseVersionId(new URL(request.url).searchParams.get("harmonizeAssetId"));
+  const loaded = harmonizeAssetId
+    ? await readOwnedHarmonizeSourceScene({
+        userId: auth.userId,
+        roomId: query.roomId,
+        versionId: query.versionId,
+        afcGenerationId: query.afcGenerationId,
+        harmonizeAssetId,
+      })
+    : await resolveOwnedVersionScene({
+        userId: auth.userId,
+        roomId: query.roomId,
+        versionId: query.versionId,
+        afcGenerationId: query.afcGenerationId,
+      });
   if (!loaded.ok) {
     return productionAfcJson({ error: loaded.error }, loaded.status);
   }

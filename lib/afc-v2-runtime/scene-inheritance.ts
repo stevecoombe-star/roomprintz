@@ -21,7 +21,9 @@ export type SceneInheritanceSkipReason =
   | "parent-no-scene"
   | "parent-malformed"
   | "parent-incompatible"
-  | "inherited-payload-invalid";
+  | "inherited-payload-invalid"
+  | "harmonize-output"
+  | "harmonize-source-missing";
 
 export type SceneInheritanceOrigin = "persisted" | "inherited" | "default";
 

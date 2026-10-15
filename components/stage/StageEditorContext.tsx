@@ -102,6 +102,7 @@ type StageEditorContextValue = Readonly<{
   catalogAuthority: StageCatalogAuthority;
   collections: readonly StageCollection[];
   objects: readonly SceneObjectDefinition[];
+  sceneReady: boolean;
   canUndo: boolean;
   undo: () => void;
   selection: SceneSelectionPresentation | null;
@@ -533,6 +534,7 @@ export function StageEditorProvider({
     catalogAuthority: catalog.authority,
     collections: catalog.collections,
     objects: boundScene.objects,
+    sceneReady: boundScene.sceneReady === true,
     canUndo: boundScene.canUndo,
     undo: boundScene.undo,
     selection,
