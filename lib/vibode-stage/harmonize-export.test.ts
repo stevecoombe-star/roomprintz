@@ -566,17 +566,16 @@ test("misaligned viewport background never captures or saves a scaled package", 
 
 test("admin export stays on the existing admin check and the live scene", () => {
   const header = source("components/stage/StageEditorHeader.tsx");
-  const button = source("components/stage/HarmonizeExportButton.tsx");
   const route = source("app/api/vibode/admin/harmonize-export/empty/route.ts");
   const viewer = source("components/afc-3d/AfcProductionRoomViewer.tsx");
   const shell = source("components/stage/StageEditorShell.tsx");
 
-  assert.match(header, /<HarmonizeExportButton \/>/);
-  assert.doesNotMatch(header, /Download/);
+  assert.doesNotMatch(header, /HarmonizeExportButton|Harmonize Export|Download/);
+  assert.match(header, /<HarmonizeButton \/>/);
   assert.match(header, /<RoomScaleControl \/>\s*<button[\s\S]*aria-label="Undo"/);
-  assert.match(button, /\/api\/auth\/admin-access/);
-  assert.match(button, /isAdmin === true/);
-  assert.doesNotMatch(button, /isAdminEmail|VIBODE_ADMIN_EMAIL/);
+  assert.match(viewer, /executeHarmonizeExport/);
+  assert.match(viewer, /registerHarmonizeExport/);
+  assert.doesNotMatch(route, /isAdminEmail|VIBODE_ADMIN_EMAIL/);
   assert.match(shell, /HarmonizeExportProvider/);
   assert.match(route, /getAuthenticatedAdminUser/);
   assert.match(route, /selectHarmonizeEmptyBytes/);

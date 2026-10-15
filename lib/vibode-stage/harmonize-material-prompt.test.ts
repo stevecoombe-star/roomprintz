@@ -412,9 +412,11 @@ test("the approved core stays ahead of the material addendum and is exported wit
 });
 
 test("admin export still requires the admin access check", () => {
-  const source = readFileSync("components/stage/HarmonizeExportButton.tsx", "utf8");
-  assert.match(source, /\/api\/auth\/admin-access/);
-  assert.match(source, /isAdmin === true/);
+  const route = readFileSync("app/api/vibode/admin/harmonize-export/empty/route.ts", "utf8");
+  const header = readFileSync("components/stage/StageEditorHeader.tsx", "utf8");
+  assert.match(route, /getAuthenticatedAdminUser/);
+  assert.match(route, /Admin access required/);
+  assert.doesNotMatch(header, /HarmonizeExportButton|Harmonize Export/);
 });
 
 function readZip(bytes: Uint8Array): Map<string, Uint8Array> {

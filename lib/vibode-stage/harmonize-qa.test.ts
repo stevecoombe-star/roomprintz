@@ -788,10 +788,12 @@ test("status polling and JPEG retrieval use the owner routes", async () => {
 });
 
 test("reopening a room reads the job from the server and does not keep it in the browser", async () => {
-  const button = source("components/stage/HarmonizeQaButton.tsx");
   const qa = source("lib/vibode-stage/harmonize-qa.ts");
-  assert.match(button, /readHarmonizeQaRoom\(\{ roomId \}\)/);
-  assert.doesNotMatch(`${button}\n${qa}`, /localStorage|sessionStorage/);
+  const header = source("components/stage/StageEditorHeader.tsx");
+  const experience = source("components/stage/HarmonizeExperience.tsx");
+  assert.match(experience, /\/api\/vibode\/harmonize\/jobs\?roomId=/);
+  assert.doesNotMatch(qa, /localStorage|sessionStorage/);
+  assert.doesNotMatch(header, /HarmonizeQaButton|Test Harmonize|Save JPEG/);
   const recovered = await readHarmonizeQaRoom({
     roomId: ROOM,
     fetchImpl: async () => Response.json({
@@ -802,9 +804,9 @@ test("reopening a room reads the job from the server and does not keep it in the
   assert.equal(recovered.available && recovered.job?.status, "queued");
 });
 
-test("admin QA stays beside export and the server still authorizes the lookup", () => {
+test("the permanent header action stays admin-only and the server still authorizes the lookup", () => {
   const header = source("components/stage/StageEditorHeader.tsx");
-  const button = source("components/stage/HarmonizeQaButton.tsx");
+  const button = source("components/stage/HarmonizeExperience.tsx");
   const route = source("app/api/vibode/harmonize/jobs/route.ts");
   const upload = source("app/api/vibode/harmonize/jobs/upload/route.ts");
   const server = source("lib/vibode-stage/harmonize-jobs/jobs.server.ts");
@@ -814,13 +816,15 @@ test("admin QA stays beside export and the server still authorizes the lookup", 
     server.indexOf("export async function readHarmonizeRoomJob"),
     server.indexOf("export async function readHarmonizeGenerationOutput"),
   );
-  assert.match(header, /<HarmonizeExportButton \/>\s*<HarmonizeQaButton \/>/);
-  assert.doesNotMatch(header, /Download/);
+  assert.match(header, /<HarmonizeButton \/>/);
+  assert.equal(header.match(/<HarmonizeButton \/>/g)?.length, 1);
+  assert.doesNotMatch(header, /HarmonizeExportButton|HarmonizeQaButton|Download|Test Harmonize|Save JPEG|Harmonize Export/);
   assert.match(button, /\/api\/auth\/admin-access/);
   assert.match(button, /isAdmin === true/);
-  assert.match(button, /if \(!isAdmin \|\| !control\) return null/);
-  assert.match(button, /Harmonize testing is unavailable/);
-  assert.match(button, /Test Harmonize/);
+  assert.match(button, /access === "hidden"/);
+  assert.match(button, /Harmonize is unavailable/);
+  assert.match(button, /aria-label="Harmonize"/);
+  assert.doesNotMatch(button, /Test Harmonize|Save JPEG|Harmonize Export/);
   assert.doesNotMatch(button, /VIBODE_HARMONIZE_PROVIDER|VIBODE_HARMONIZE_ALLOW_FAKE|saveOwnedVersionScene/);
   assert.match(get, /readHarmonizeActor\(\)/);
   assert.match(get, /readHarmonizeRoomJob/);

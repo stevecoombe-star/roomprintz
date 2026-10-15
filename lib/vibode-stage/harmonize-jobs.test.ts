@@ -906,8 +906,8 @@ test("the fake provider is worker configuration and is refused in production", a
     "app/api/vibode/harmonize/jobs/route.ts",
     "app/api/vibode/harmonize/jobs/upload/route.ts",
     "app/api/internal/vibode-harmonize-jobs/route.ts",
-    "components/stage/HarmonizeExportButton.tsx",
-    "components/stage/HarmonizeQaButton.tsx",
+    "components/stage/StageEditorHeader.tsx",
+    "components/stage/HarmonizeExperience.tsx",
     "lib/vibode-stage/harmonize-qa.ts",
   ];
   for (const file of routes) {

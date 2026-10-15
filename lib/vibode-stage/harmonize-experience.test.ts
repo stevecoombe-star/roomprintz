@@ -126,9 +126,18 @@ test("button access stays admin-only and disabled while generation is off", () =
   assert.equal(harmonizeAcknowledgementGrantsAccess(), false);
   assert.equal(harmonizeButtonLabel("running").includes("%"), false);
   const header = source("components/stage/StageEditorHeader.tsx");
+  const editor = source("app/editor/page.tsx");
+  const shell = source("components/stage/StageEditorShell.tsx");
+  assert.match(header, /aria-label="Catalog"/);
+  assert.match(header, /<RoomScaleControl \/>/);
+  assert.match(header, /aria-label="Undo"/);
+  assert.match(header, /aria-label="Summary"/);
   assert.match(header, /<HarmonizeButton \/>/);
-  assert.match(header, /<HarmonizeExportButton \/>/);
-  assert.match(header, /<HarmonizeQaButton \/>/);
+  assert.equal(header.match(/<HarmonizeButton \/>/g)?.length, 1);
+  assert.doesNotMatch(header, /HarmonizeExportButton|HarmonizeQaButton|Harmonize Export|Test Harmonize|Save JPEG|data-harmonize-export|data-harmonize-qa/);
+  assert.doesNotMatch(editor, /<HarmonizeButton|<HarmonizeExportButton|<HarmonizeQaButton/);
+  assert.equal(shell.match(/<StageEditorHeader \/>/g)?.length, 1);
+  assert.match(shell, /if \(!active \|\| !stage\) return children/);
 });
 
 test("first-use disclosure asks, decline stops, and a recorded acceptance can repeat", () => {
