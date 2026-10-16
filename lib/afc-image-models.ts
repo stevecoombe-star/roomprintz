@@ -168,6 +168,18 @@ const NANO_BANANA_PRO_1K_GRIDS = [
   { ratio: "21:9", aspect: 21 / 9, width: 1584, height: 672 },
 ] as const;
 
+export type NanoBananaProAspectRatio = (typeof NANO_BANANA_PRO_1K_GRIDS)[number]["ratio"];
+
+export type NanoBananaProAspectClassification =
+  | Readonly<{
+      ok: true;
+      ratio: NanoBananaProAspectRatio;
+      /** Documented 1K grid for this family. Not a resize target. */
+      gridWidth: number;
+      gridHeight: number;
+    }>
+  | Readonly<{ ok: false; reason: string }>;
+
 function closestNanoBananaPro1kGrid(width: number, height: number) {
   const native = width / height;
   let best: (typeof NANO_BANANA_PRO_1K_GRIDS)[number] = NANO_BANANA_PRO_1K_GRIDS[0];
@@ -200,20 +212,19 @@ function sunburstConstraintsMet(width: number, height: number, sourceAspect: num
   return relative <= AFC_SUNBURST_ASPECT_RELATIVE_TOLERANCE;
 }
 
+type AdmittedNanoBananaProGrid =
+  | Readonly<{
+      ok: true;
+      grid: (typeof NANO_BANANA_PRO_1K_GRIDS)[number];
+    }>
+  | Readonly<{ ok: false; reason: string }>;
+
 /**
- * Output size for a Sunburst edit.
- *
- * Certified exact-grid lineage compares EMPTY and TILED pixel dimensions.
- * Nano Banana Pro TILED emits the Gemini 1K grid for the closest preset ratio,
- * not the source pixel size. Request that same grid so a Sunburst EMPTY and a
- * Nano Banana Pro TILED can share it. Keep the source size only when it is
- * already that grid. Refuse aspects outside 1:3–3:1, and refuse a preset whose
- * aspect leaves the existing 1.5% admission tolerance. Never crop.
+ * Shared closest-preset admission.
+ * Refuse aspects outside 1:3–3:1, and refuse a preset whose 1K grid leaves
+ * the source aspect by more than the 1.5% tolerance. Never crop.
  */
-export function normalizeAfcSunburstOutputSize(
-  width: number,
-  height: number,
-): AfcSunburstOutputSize {
+function admitNanoBananaProGrid(width: number, height: number): AdmittedNanoBananaProGrid {
   if (!positiveInteger(width) || !positiveInteger(height)) {
     return Object.freeze({
       ok: false,
@@ -235,6 +246,45 @@ export function normalizeAfcSunburstOutputSize(
       reason: "Closest Nano Banana Pro grid leaves the source aspect. Refusing to crop.",
     });
   }
+  return Object.freeze({ ok: true, grid });
+}
+
+/**
+ * Ratio family for a measured image.
+ * Sunburst sizing and Harmonize both use this admission. The returned 1K
+ * grid identifies the family. It is not a reason to resize the source.
+ */
+export function classifyNanoBananaProAspectRatio(
+  width: number,
+  height: number,
+): NanoBananaProAspectClassification {
+  const admitted = admitNanoBananaProGrid(width, height);
+  if (!admitted.ok) return Object.freeze({ ok: false, reason: admitted.reason });
+  return Object.freeze({
+    ok: true,
+    ratio: admitted.grid.ratio,
+    gridWidth: admitted.grid.width,
+    gridHeight: admitted.grid.height,
+  });
+}
+
+/**
+ * Output size for a Sunburst edit.
+ *
+ * Certified exact-grid lineage compares EMPTY and TILED pixel dimensions.
+ * Nano Banana Pro TILED emits the Gemini 1K grid for the closest preset ratio,
+ * not the source pixel size. Request that same grid so a Sunburst EMPTY and a
+ * Nano Banana Pro TILED can share it. Keep the source size only when it is
+ * already that grid. Refuse aspects outside 1:3–3:1, and refuse a preset whose
+ * aspect leaves the existing 1.5% admission tolerance. Never crop.
+ */
+export function normalizeAfcSunburstOutputSize(
+  width: number,
+  height: number,
+): AfcSunburstOutputSize {
+  const admitted = admitNanoBananaProGrid(width, height);
+  if (!admitted.ok) return Object.freeze({ ok: false, reason: admitted.reason });
+  const { grid } = admitted;
   const alreadyOnGrid = width === grid.width && height === grid.height;
   return Object.freeze({
     ok: true,

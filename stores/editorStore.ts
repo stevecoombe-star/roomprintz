@@ -288,6 +288,7 @@ export type VibodeRoomAsset = {
   height: number | null;
   model_version: string | null;
   is_active: boolean;
+  harmonize_job_id?: string | null;
   metadata: Record<string, unknown>;
   parentVersionId?: string | null;
   lineageSource?: "generation_run" | "metadata" | "none";

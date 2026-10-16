@@ -148,6 +148,8 @@ export function partnerCatalogCommercialFingerprint(catalog: StageCatalogSnapsho
       source: product.source,
       status: product.status ?? "active",
       collectionIds: [...product.collectionIds].sort((left, right) => left.localeCompare(right)),
+      ...(typeof product.primaryMaterial === "string" ? { primaryMaterial: product.primaryMaterial } : {}),
+      ...(typeof product.secondaryMaterial === "string" ? { secondaryMaterial: product.secondaryMaterial } : {}),
     })),
     variants: sortIds(catalog.variants, (item) => item.variantId).map((variant) => {
       const dimensions = explicitModelDimensions(variant);
@@ -169,6 +171,8 @@ export function partnerCatalogCommercialFingerprint(catalog: StageCatalogSnapsho
             modelSizingMode: dimensions.sizingMode,
           }
           : {}),
+        ...(typeof variant.primaryMaterial === "string" ? { primaryMaterial: variant.primaryMaterial } : {}),
+        ...(typeof variant.secondaryMaterial === "string" ? { secondaryMaterial: variant.secondaryMaterial } : {}),
       };
     }),
     collections: sortIds(catalog.collections, (item) => item.collectionId).map((collection) => ({

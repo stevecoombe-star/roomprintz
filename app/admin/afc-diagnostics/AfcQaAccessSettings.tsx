@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useId, useState } from "react";
 
 type QaUser = {
   userId: string;
@@ -22,6 +22,83 @@ function isQaUser(value: unknown): value is QaUser {
     && (record.addedAt === null || typeof record.addedAt === "string");
 }
 
+export function AfcQaAuthorizedUsersList({
+  open,
+  users,
+  busy,
+  showLoading,
+  loadFailed,
+  onToggle,
+  onRemove,
+}: {
+  open: boolean;
+  users: readonly QaUser[];
+  busy: boolean;
+  showLoading: boolean;
+  loadFailed: boolean;
+  onToggle: () => void;
+  onRemove: (user: QaUser) => void;
+}) {
+  const panelId = useId();
+  return (
+    <div className="mt-5">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={onToggle}
+        className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left text-sm font-medium text-slate-200 outline-none transition hover:bg-slate-800/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
+      >
+        <span className="text-xs text-slate-500" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
+        Authorized QA Users ({users.length})
+      </button>
+      {open ? (
+        <div id={panelId} className="mt-2 overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-xs text-slate-400">
+              <tr>
+                <th className="py-2 pr-3 font-medium">User</th>
+                <th className="py-2 pr-3 font-medium">Email</th>
+                <th className="py-2 font-medium">Access</th>
+              </tr>
+            </thead>
+            <tbody>
+              {showLoading ? (
+                <tr className="border-t border-slate-800">
+                  <td className="py-3 text-slate-500" colSpan={3}>
+                    {loadFailed ? "AFC QA access could not be loaded." : "Loading AFC QA access..."}
+                  </td>
+                </tr>
+              ) : users.length === 0 ? (
+                <tr className="border-t border-slate-800">
+                  <td className="py-3 text-slate-500" colSpan={3}>No authorized QA users.</td>
+                </tr>
+              ) : users.map((user) => (
+                <tr key={user.userId} className="border-t border-slate-800">
+                  <td className="py-2 pr-3 font-mono text-xs text-slate-300">{user.userId}</td>
+                  <td className="py-2 pr-3 text-slate-200">{user.email ?? "Email unavailable"}</td>
+                  <td className="py-2">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onRemove(user)}
+                      className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-200 outline-none focus:border-emerald-400 disabled:opacity-60"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function readPayload(payload: QaAccessPayload): { qaModeEnabled: boolean; users: QaUser[] } | null {
   if (typeof payload.qaModeEnabled !== "boolean" || !Array.isArray(payload.users)) return null;
   if (!payload.users.every(isQaUser)) return null;
@@ -34,6 +111,7 @@ export default function AfcQaAccessSettings() {
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [usersOpen, setUsersOpen] = useState(false);
   const [status, setStatus] = useState<"loading" | "ready" | "saving">("loading");
 
   const applyPayload = useCallback((payload: QaAccessPayload) => {
@@ -148,46 +226,15 @@ export default function AfcQaAccessSettings() {
           {qaModeEnabled ? "Enabled" : "Disabled"}
         </button>
       </div>
-      <h3 className="mt-5 text-sm font-medium text-slate-200">Authorized QA Users</h3>
-      <div className="mt-2 overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs text-slate-400">
-            <tr>
-              <th className="py-2 pr-3 font-medium">User</th>
-              <th className="py-2 pr-3 font-medium">Email</th>
-              <th className="py-2 font-medium">Access</th>
-            </tr>
-          </thead>
-          <tbody>
-            {status === "loading" || !loaded ? (
-              <tr className="border-t border-slate-800">
-                <td className="py-3 text-slate-500" colSpan={3}>
-                  {error ? "AFC QA access could not be loaded." : "Loading AFC QA access..."}
-                </td>
-              </tr>
-            ) : users.length === 0 ? (
-              <tr className="border-t border-slate-800">
-                <td className="py-3 text-slate-500" colSpan={3}>No authorized QA users.</td>
-              </tr>
-            ) : users.map((user) => (
-              <tr key={user.userId} className="border-t border-slate-800">
-                <td className="py-2 pr-3 font-mono text-xs text-slate-300">{user.userId}</td>
-                <td className="py-2 pr-3 text-slate-200">{user.email ?? "Email unavailable"}</td>
-                <td className="py-2">
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void removeUser(user)}
-                    className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-200 outline-none focus:border-emerald-400 disabled:opacity-60"
-                  >
-                    Remove
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <AfcQaAuthorizedUsersList
+        open={usersOpen}
+        users={users}
+        busy={busy}
+        showLoading={status === "loading" || !loaded}
+        loadFailed={Boolean(error)}
+        onToggle={() => setUsersOpen((open) => !open)}
+        onRemove={(user) => void removeUser(user)}
+      />
       <form className="mt-4 flex flex-wrap items-end gap-2" onSubmit={(event) => void addUser(event)}>
         <label className="flex min-w-[16rem] flex-1 flex-col gap-1">
           <span className="text-xs text-slate-400">Add QA User</span>

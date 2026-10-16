@@ -5,7 +5,10 @@ import {
   parseVersionId,
   productionAfcJson,
 } from "@/lib/afc-v2-production/production-http";
-import { resolveOwnedVersionScene } from "@/lib/afc-v2-runtime/scene-persistence.server";
+import {
+  readOwnedHarmonizeSourceScene,
+  resolveOwnedVersionScene,
+} from "@/lib/afc-v2-runtime/scene-persistence.server";
 import {
   lookupPartnerRuntimeAssets,
   mintPartnerRuntimeSignedGet,
@@ -38,12 +41,26 @@ export async function POST(request: Request) {
     }, 400);
   }
 
-  const loaded = await resolveOwnedVersionScene({
-    userId: auth.userId,
-    roomId,
-    versionId,
-    afcGenerationId,
-  });
+  const harmonizeAssetId = parsed.harmonizeAssetId
+    ? parseVersionId(parsed.harmonizeAssetId)
+    : null;
+  if (parsed.harmonizeAssetId && !harmonizeAssetId) {
+    return productionAfcJson({ error: "harmonizeAssetId is invalid." }, 400);
+  }
+  const loaded = harmonizeAssetId
+    ? await readOwnedHarmonizeSourceScene({
+        userId: auth.userId,
+        roomId,
+        versionId,
+        afcGenerationId,
+        harmonizeAssetId,
+      })
+    : await resolveOwnedVersionScene({
+        userId: auth.userId,
+        roomId,
+        versionId,
+        afcGenerationId,
+      });
   if (!loaded.ok) {
     return productionAfcJson({ error: loaded.error }, loaded.status);
   }

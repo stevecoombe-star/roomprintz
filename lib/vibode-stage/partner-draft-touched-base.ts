@@ -8,6 +8,7 @@
  */
 
 import type { PartnerCatalogSyncDocument } from "./partner-catalog-sync";
+import { storedMaterial } from "./material-text";
 import { canonicalModelDimensions, explicitModelDimensions } from "./model-dimensions";
 import { isPlainObject } from "./product-variant-register";
 import type { StageCatalogSnapshot, StageCollection, StageProduct, StageVariant } from "./types";
@@ -17,6 +18,8 @@ export type PartnerDraftTouchedProductBase = Readonly<{
   image_url?: string | null;
   product_url?: string | null;
   price_amount?: number | null;
+  primary_material?: string | null;
+  secondary_material?: string | null;
 }>;
 
 export type PartnerDraftTouchedVariantBase = Readonly<{
@@ -25,6 +28,8 @@ export type PartnerDraftTouchedVariantBase = Readonly<{
   price_amount?: number | null;
   product_url?: string | null;
   model_dimensions?: string | null;
+  primary_material?: string | null;
+  secondary_material?: string | null;
 }>;
 
 export type PartnerDraftTouchedCollectionBase = Readonly<{
@@ -43,6 +48,8 @@ export const PARTNER_DRAFT_PRODUCT_TOUCH_FIELDS = Object.freeze([
   "image_url",
   "product_url",
   "price_amount",
+  "primary_material",
+  "secondary_material",
 ] as const);
 
 export const PARTNER_DRAFT_VARIANT_TOUCH_FIELDS = Object.freeze([
@@ -51,6 +58,8 @@ export const PARTNER_DRAFT_VARIANT_TOUCH_FIELDS = Object.freeze([
   "price_amount",
   "product_url",
   "model_dimensions",
+  "primary_material",
+  "secondary_material",
 ] as const);
 
 type ProductTouchField = (typeof PARTNER_DRAFT_PRODUCT_TOUCH_FIELDS)[number];
@@ -130,6 +139,8 @@ function parseProductEntry(value: unknown): PartnerDraftTouchedProductBase | nul
     image_url?: string | null;
     product_url?: string | null;
     price_amount?: number | null;
+    primary_material?: string | null;
+    secondary_material?: string | null;
   } = {};
   if ("name" in record) {
     const name = asNullableString(record.name);
@@ -147,6 +158,14 @@ function parseProductEntry(value: unknown): PartnerDraftTouchedProductBase | nul
     const price = asNullableNumber(record.price_amount);
     if (price !== undefined) next.price_amount = price;
   }
+  if ("primary_material" in record) {
+    const material = asNullableString(record.primary_material);
+    if (material !== undefined) next.primary_material = material;
+  }
+  if ("secondary_material" in record) {
+    const material = asNullableString(record.secondary_material);
+    if (material !== undefined) next.secondary_material = material;
+  }
   return next;
 }
 
@@ -159,6 +178,8 @@ function parseVariantEntry(value: unknown): PartnerDraftTouchedVariantBase | nul
     price_amount?: number | null;
     product_url?: string | null;
     model_dimensions?: string | null;
+    primary_material?: string | null;
+    secondary_material?: string | null;
   } = {};
   if ("finish_label" in record) {
     const finish = asNullableString(record.finish_label);
@@ -179,6 +200,14 @@ function parseVariantEntry(value: unknown): PartnerDraftTouchedVariantBase | nul
   if ("model_dimensions" in record) {
     const dimensions = asNullableString(record.model_dimensions);
     if (dimensions !== undefined) next.model_dimensions = dimensions;
+  }
+  if ("primary_material" in record) {
+    const material = asNullableString(record.primary_material);
+    if (material !== undefined) next.primary_material = material;
+  }
+  if ("secondary_material" in record) {
+    const material = asNullableString(record.secondary_material);
+    if (material !== undefined) next.secondary_material = material;
   }
   return next;
 }
@@ -236,6 +265,8 @@ function liveProductField(product: StageProduct, field: ProductTouchField): stri
   if (field === "name") return product.name;
   if (field === "image_url") return product.imageUrl;
   if (field === "product_url") return product.productUrl;
+  if (field === "primary_material") return storedMaterial(product.primaryMaterial);
+  if (field === "secondary_material") return storedMaterial(product.secondaryMaterial);
   return product.priceAmount;
 }
 
@@ -244,6 +275,8 @@ function liveVariantField(variant: StageVariant, field: VariantTouchField): stri
   if (field === "sku") return variant.sku;
   if (field === "price_amount") return variant.priceAmount;
   if (field === "model_dimensions") return canonicalModelDimensions(explicitModelDimensions(variant));
+  if (field === "primary_material") return storedMaterial(variant.primaryMaterial);
+  if (field === "secondary_material") return storedMaterial(variant.secondaryMaterial);
   return variant.productUrl;
 }
 
@@ -257,6 +290,8 @@ function pendingProductFields(
     if (patch.imageUrl !== undefined) fields.push("image_url");
     if (patch.productUrl !== undefined) fields.push("product_url");
     if (patch.priceAmount !== undefined) fields.push("price_amount");
+    if (patch.primaryMaterial !== undefined) fields.push("primary_material");
+    if (patch.secondaryMaterial !== undefined) fields.push("secondary_material");
     if (fields.length > 0) pending.set(patch.productId, fields);
   }
   return pending;
@@ -280,6 +315,8 @@ function pendingVariantFields(
     ) {
       fields.push("model_dimensions");
     }
+    if (patch.primaryMaterial !== undefined) fields.push("primary_material");
+    if (patch.secondaryMaterial !== undefined) fields.push("secondary_material");
     if (fields.length > 0) pending.set(patch.variantId, fields);
   }
   return pending;
@@ -319,6 +356,8 @@ export function nextPartnerDraftTouchedBase(input: Readonly<{
       image_url?: string | null;
       product_url?: string | null;
       price_amount?: number | null;
+      primary_material?: string | null;
+      secondary_material?: string | null;
     } = {};
     for (const field of fields) {
       if (field in previous) {
@@ -343,6 +382,8 @@ export function nextPartnerDraftTouchedBase(input: Readonly<{
       price_amount?: number | null;
       product_url?: string | null;
       model_dimensions?: string | null;
+      primary_material?: string | null;
+      secondary_material?: string | null;
     } = {};
     for (const field of fields) {
       if (field in previous) {

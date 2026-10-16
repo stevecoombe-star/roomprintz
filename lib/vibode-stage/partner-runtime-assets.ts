@@ -120,6 +120,7 @@ const RESOLVE_BODY_KEYS = Object.freeze([
   "versionId",
   "afcGenerationId",
   "assetIds",
+  "harmonizeAssetId",
 ] as const);
 
 function jsonError(
@@ -348,6 +349,7 @@ export function parseRuntimeAssetResolveBody(body: unknown):
       versionId: string;
       afcGenerationId: string;
       assetIds: string[];
+      harmonizeAssetId: string | null;
     }
   | { ok: false; error: string } {
   if (!isPlainObject(body)) {
@@ -389,7 +391,19 @@ export function parseRuntimeAssetResolveBody(body: unknown):
     seen.add(assetId);
     assetIds.push(assetId);
   }
-  return { ok: true, roomId, versionId, afcGenerationId, assetIds };
+  const harmonizeAssetId = optionalHarmonizeAssetId(body.harmonizeAssetId);
+  if (harmonizeAssetId === "invalid") {
+    return { ok: false, error: "harmonizeAssetId is invalid." };
+  }
+  return { ok: true, roomId, versionId, afcGenerationId, assetIds, harmonizeAssetId };
+}
+
+function optionalHarmonizeAssetId(value: unknown): string | null | "invalid" {
+  if (value == null) return null;
+  if (typeof value !== "string") return "invalid";
+  const id = value.trim();
+  if (!id) return "invalid";
+  return id;
 }
 
 export function parsePartnerAssetActivateBody(body: unknown):

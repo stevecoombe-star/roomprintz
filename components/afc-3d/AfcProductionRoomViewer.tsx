@@ -73,9 +73,41 @@ import {
   type LiveRuntimeSceneObject,
 } from "@/lib/afc-v2-runtime/scene-runtime";
 import { realizeProductionWorld } from "@/lib/afc-v2-runtime/production-world";
+import type { CertifiedFrozenCamera } from "@/lib/afc-v2-runtime/production-runtime-client";
 import { ROOM_SCALE_DEFAULT } from "@/lib/vibode-stage/room-scale";
 import type { TrustedPathBaseline } from "@/lib/vibode-stage/trusted-path";
 import { createTrustedPathOverlay } from "@/lib/vibode-stage/trusted-path-overlay";
+import {
+  useRegisterHarmonizeExport,
+  useRegisterHarmonizeQa,
+} from "@/components/stage/HarmonizeExportContext";
+import {
+  harmonizeCaptureBoundaryMessage,
+  runHarmonizeCaptureBoundary,
+} from "@/lib/vibode-stage/harmonize-capture-boundary";
+import {
+  displayedHarmonizeBackgroundUrl,
+  executeHarmonizeExport,
+  executeHarmonizeQaSubmission,
+} from "@/lib/vibode-stage/harmonize-export-client";
+import {
+  HarmonizeExportError,
+  certifiedHarmonizeCamera,
+  decideHarmonizeExportFrame,
+  harmonizeCameraRecord,
+  harmonizeExportObject,
+  requireHarmonizePixelFrame,
+  sortHarmonizeObjects,
+  type HarmonizeFurnitureCapturer,
+} from "@/lib/vibode-stage/harmonize-export";
+import {
+  cloneHarmonizeMaterialCatalog,
+  type HarmonizeMaterialCatalog,
+} from "@/lib/vibode-stage/harmonize-materials";
+import {
+  renderHarmonizeFurniturePixels,
+  stageCameraMatchesRealized,
+} from "@/lib/vibode-stage/harmonize-export-scene";
 import {
   createStageLightingRig,
   syncStageContactShadow,
@@ -132,6 +164,7 @@ type Props = Readonly<{
   roomId: string;
   authority: AfcV2ProductionRoomAuthority;
   backgroundImageUrl?: string | null;
+  lockBackgroundImage?: boolean;
   originalImageUrl?: string | null;
   transformMode?: RuntimeTransformMode;
   onTransformModeChange?: (mode: RuntimeTransformMode) => void;
@@ -154,6 +187,11 @@ type Props = Readonly<{
   roomScaleMultiplier?: number;
   trustedPath?: TrustedPathBaseline | null;
   trustedPathVisible?: boolean;
+  harmonizeMaterialCatalog?: HarmonizeMaterialCatalog | null;
+  harmonizeSourceVersionId?: string | null;
+  harmonizeCertifiedCamera?: CertifiedFrozenCamera | null;
+  harmonizeFlushScene?: () => Promise<boolean>;
+  harmonizeFlushRoomScale?: () => Promise<boolean>;
 }>;
 
 type ReadyProps = Readonly<{
@@ -161,6 +199,7 @@ type ReadyProps = Readonly<{
   authority: AfcV2ProductionRoomAuthority;
   visualImageUrl: string;
   originalImageUrl?: string | null;
+  lockBackgroundImage?: boolean;
   transformMode?: RuntimeTransformMode;
   onTransformModeChange?: (mode: RuntimeTransformMode) => void;
   showInternalControls?: boolean;
@@ -182,12 +221,18 @@ type ReadyProps = Readonly<{
   roomScaleMultiplier?: number;
   trustedPath?: TrustedPathBaseline | null;
   trustedPathVisible?: boolean;
+  harmonizeMaterialCatalog?: HarmonizeMaterialCatalog | null;
+  harmonizeSourceVersionId?: string | null;
+  harmonizeCertifiedCamera?: CertifiedFrozenCamera | null;
+  harmonizeFlushScene?: () => Promise<boolean>;
+  harmonizeFlushRoomScale?: () => Promise<boolean>;
 }>;
 
 export function AfcProductionRoomViewer({
   roomId,
   authority,
   backgroundImageUrl,
+  lockBackgroundImage = false,
   originalImageUrl,
   transformMode,
   onTransformModeChange,
@@ -208,6 +253,11 @@ export function AfcProductionRoomViewer({
   roomScaleMultiplier = ROOM_SCALE_DEFAULT,
   trustedPath = null,
   trustedPathVisible = false,
+  harmonizeMaterialCatalog = null,
+  harmonizeSourceVersionId = null,
+  harmonizeCertifiedCamera = null,
+  harmonizeFlushScene,
+  harmonizeFlushRoomScale,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -215,7 +265,7 @@ export function AfcProductionRoomViewer({
   );
   const visualImageUrl = resolveViewerBackgroundImageUrl({
     backgroundImageUrl,
-    originalImageUrl,
+    originalImageUrl: lockBackgroundImage ? null : originalImageUrl,
   });
   if (!validated.ok) {
     return (
@@ -242,6 +292,7 @@ export function AfcProductionRoomViewer({
       authority={validated.authority}
       visualImageUrl={visualImageUrl}
       originalImageUrl={originalImageUrl}
+      lockBackgroundImage={lockBackgroundImage}
       transformMode={transformMode}
       onTransformModeChange={onTransformModeChange}
       showInternalControls={showInternalControls}
@@ -261,6 +312,11 @@ export function AfcProductionRoomViewer({
       roomScaleMultiplier={roomScaleMultiplier}
       trustedPath={trustedPath}
       trustedPathVisible={trustedPathVisible}
+      harmonizeMaterialCatalog={harmonizeMaterialCatalog}
+      harmonizeSourceVersionId={harmonizeSourceVersionId}
+      harmonizeCertifiedCamera={harmonizeCertifiedCamera}
+      harmonizeFlushScene={harmonizeFlushScene}
+      harmonizeFlushRoomScale={harmonizeFlushRoomScale}
     />
   );
 }
@@ -270,6 +326,7 @@ function AfcProductionRoomViewerReady({
   authority,
   visualImageUrl,
   originalImageUrl,
+  lockBackgroundImage = false,
   transformMode: transformModeProp,
   onTransformModeChange,
   showInternalControls = true,
@@ -289,6 +346,11 @@ function AfcProductionRoomViewerReady({
   roomScaleMultiplier = ROOM_SCALE_DEFAULT,
   trustedPath = null,
   trustedPathVisible = false,
+  harmonizeMaterialCatalog = null,
+  harmonizeSourceVersionId = null,
+  harmonizeCertifiedCamera = null,
+  harmonizeFlushScene,
+  harmonizeFlushRoomScale,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -321,6 +383,29 @@ function AfcProductionRoomViewerReady({
   const pathLabelRef = useRef<HTMLDivElement | null>(null);
   const syncTrustedPathRef = useRef<(() => void) | null>(null);
   const applyRoomScaleRef = useRef<((multiplier: number) => void) | null>(null);
+  const harmonizeCaptureRef = useRef<HarmonizeFurnitureCapturer | null>(null);
+  const harmonizeInFlightRef = useRef(false);
+  const harmonizeRoomIdRef = useRef(roomId);
+  const harmonizeAuthorityRef = useRef(authority);
+  const harmonizeBackgroundUrlRef = useRef(visualImageUrl);
+  const harmonizeOriginalUrlRef = useRef(originalImageUrl ?? null);
+  const harmonizeMaterialCatalogRef = useRef(harmonizeMaterialCatalog);
+  const harmonizeSourceVersionIdRef = useRef(harmonizeSourceVersionId);
+  const harmonizeCertifiedCameraRef = useRef(harmonizeCertifiedCamera);
+  const harmonizeGestureRef = useRef(false);
+  const harmonizeSceneIdentityRef = useRef("");
+  const harmonizeFlushSceneRef = useRef(harmonizeFlushScene);
+  const harmonizeFlushRoomScaleRef = useRef(harmonizeFlushRoomScale);
+  harmonizeRoomIdRef.current = roomId;
+  harmonizeAuthorityRef.current = authority;
+  harmonizeBackgroundUrlRef.current = visualImageUrl;
+  harmonizeOriginalUrlRef.current = originalImageUrl ?? null;
+  harmonizeMaterialCatalogRef.current = harmonizeMaterialCatalog;
+  harmonizeSourceVersionIdRef.current = harmonizeSourceVersionId;
+  harmonizeCertifiedCameraRef.current = harmonizeCertifiedCamera;
+  harmonizeFlushSceneRef.current = harmonizeFlushScene;
+  harmonizeFlushRoomScaleRef.current = harmonizeFlushRoomScale;
+  harmonizeSceneIdentityRef.current = `${harmonizeSourceVersionId ?? ""}:${authority.generationId}:${sceneInstanceIdProp ?? ""}`;
   useLayoutEffect(() => {
     roomScaleRef.current = roomScaleMultiplier;
   }, [roomScaleMultiplier]);
@@ -699,10 +784,14 @@ function AfcProductionRoomViewerReady({
       emitPresentation();
     };
 
+    const publishHarmonizeGesture = () => {
+      harmonizeGestureRef.current = gizmoDragging || bodyDrag?.active === true;
+    };
     const endBodyDrag = () => {
       const session = bodyDrag;
       if (!session) return;
       bodyDrag = null;
+      publishHarmonizeGesture();
       controls.enabled = showTransformGizmosRef.current === true;
       releaseBodyDragCapture(session.pointerId);
       if (!session.active) return;
@@ -976,6 +1065,7 @@ function AfcProductionRoomViewerReady({
       if (!session.active) {
         if (!shouldActivateObjectBodyDrag(movement)) return;
         session.active = true;
+        publishHarmonizeGesture();
       }
       shiftHeld = event.shiftKey;
       session.lastClientX = event.clientX;
@@ -1028,6 +1118,7 @@ function AfcProductionRoomViewerReady({
     const draggingChangedListener = (event: { value?: unknown }) => {
       const starting = event.value === true;
       gizmoDragging = starting;
+      publishHarmonizeGesture();
       if (starting) {
         if (bodyDrag) endBodyDrag();
         const objectId = selectedObjectIdRef.current;
@@ -1573,9 +1664,11 @@ function AfcProductionRoomViewerReady({
     window.addEventListener("blur", onBlur);
     document.addEventListener("visibilitychange", onVisibility);
 
+    let exportLocked = false;
     const animate = () => {
       if (disposed) return;
       animationFrame = window.requestAnimationFrame(animate);
+      if (exportLocked) return;
       applyRealizedFrozenCamera(camera, activeWorld.camera);
       syncTrustedPath();
       if (controls.getMode() === "scale") controls.setMode("translate");
@@ -1665,10 +1758,136 @@ function AfcProductionRoomViewerReady({
       syncTrustedPath();
     };
     applyRoomScaleRef.current = applyRoomScale;
+    harmonizeCaptureRef.current = ({ width, height, orientation }) => {
+      if (disposed || !furnitureReady || !sceneReadyRef.current) {
+        throw new HarmonizeExportError("STAGE scene is not ready to export.");
+      }
+      const liveFrame = requireHarmonizePixelFrame(
+        activeWorld.camera == null ? undefined : activeWorld.camera.frame,
+        "Certified camera frame is missing from the STAGE scene. Export stopped instead of scaling.",
+      );
+      const exportAuthority = harmonizeAuthorityRef.current;
+      const authorityFrame = requireHarmonizePixelFrame(
+        exportAuthority.frame,
+        "Certified camera frame is missing from the room authority. Export stopped instead of scaling.",
+      );
+      const decision = decideHarmonizeExportFrame({
+        imageWidth: width,
+        imageHeight: height,
+        imageOrientation: orientation,
+        subject: "viewport-background",
+        frameWidth: liveFrame.width,
+        frameHeight: liveFrame.height,
+        authorityFrameWidth: authorityFrame.width,
+        authorityFrameHeight: authorityFrame.height,
+      });
+      if (!decision.ok) throw new HarmonizeExportError(decision.reason);
+      if (!stageCameraMatchesRealized(camera, activeWorld.camera)) {
+        throw new HarmonizeExportError(
+          "STAGE camera does not match the certified projection. Export stopped.",
+        );
+      }
+      const fov = camera.fov;
+      const aspect = camera.aspect;
+      const near = camera.near;
+      const far = camera.far;
+      const positionX = camera.position.x;
+      const positionY = camera.position.y;
+      const positionZ = camera.position.z;
+      const upX = camera.up.x;
+      const upY = camera.up.y;
+      const upZ = camera.up.z;
+      const quaternionX = camera.quaternion.x;
+      const quaternionY = camera.quaternion.y;
+      const quaternionZ = camera.quaternion.z;
+      const quaternionW = camera.quaternion.w;
+      exportLocked = true;
+      try {
+        const rendered = renderHarmonizeFurniturePixels({
+          scene,
+          camera,
+          width,
+          height,
+          hidden: [controlsHelper, trustedPathOverlay.object],
+          outputColorSpace: renderer.outputColorSpace,
+          toneMapping: renderer.toneMapping,
+          toneMappingExposure: renderer.toneMappingExposure,
+        });
+        if (
+          camera.fov !== fov
+          || camera.aspect !== aspect
+          || camera.near !== near
+          || camera.far !== far
+          || camera.position.x !== positionX
+          || camera.position.y !== positionY
+          || camera.position.z !== positionZ
+          || camera.up.x !== upX
+          || camera.up.y !== upY
+          || camera.up.z !== upZ
+          || camera.quaternion.x !== quaternionX
+          || camera.quaternion.y !== quaternionY
+          || camera.quaternion.z !== quaternionZ
+          || camera.quaternion.w !== quaternionW
+        ) {
+          throw new HarmonizeExportError(
+            "Certified camera projection changed during export. Export stopped.",
+          );
+        }
+        if (rendered.rgba.length !== width * height * 4) {
+          throw new HarmonizeExportError(
+            "Furniture render size does not match the viewport background. Export stopped instead of scaling.",
+          );
+        }
+        const objects = sortHarmonizeObjects([...sceneObjects.values()].map((object) => (
+          harmonizeExportObject({
+            objectId: object.objectId,
+            assetId: object.assetIdentity.id,
+            productId: object.productId,
+            variantId: object.variantId,
+            positionM: {
+              x: object.placement.position.x,
+              y: object.placement.position.y,
+              z: object.placement.position.z,
+            },
+            rotationDeg: {
+              x: THREE.MathUtils.radToDeg(object.placement.rotation.x),
+              y: THREE.MathUtils.radToDeg(object.placement.rotation.y),
+              z: THREE.MathUtils.radToDeg(object.placement.rotation.z),
+            },
+            userSizeMultiplier: object.userSizeMultiplier,
+            localAabb: object.localAabb,
+          })
+        )));
+        const storedCertifiedCamera = harmonizeCertifiedCameraRef.current;
+        return {
+          rgba: rendered.rgba,
+          width,
+          height,
+          contactShadowsHidden: rendered.contactShadowsHidden,
+          objects,
+          unmountedObjectIds: [...unmountedPersisted.keys()].sort((left, right) => (
+            left < right ? -1 : left > right ? 1 : 0
+          )),
+          camera: harmonizeCameraRecord(activeWorld.camera),
+          certifiedCamera: storedCertifiedCamera
+            ? certifiedHarmonizeCamera(storedCertifiedCamera)
+            : undefined,
+          roomScaleMultiplier: activeWorld.roomScaleMultiplier,
+          certifiedMetricScale: activeWorld.certifiedMetricScale,
+          effectiveMetricScale: activeWorld.metricScale,
+          generationId: activeWorld.generationId,
+          materialCatalog: cloneHarmonizeMaterialCatalog(harmonizeMaterialCatalogRef.current),
+          sceneObjects: currentSerializedObjects(),
+        };
+      } finally {
+        exportLocked = false;
+      }
+    };
     animate();
 
     return () => {
       disposed = true;
+      harmonizeCaptureRef.current = null;
       applyRoomScaleRef.current = null;
       syncTrustedPathRef.current = null;
       scene.remove(trustedPathOverlay.object);
@@ -1714,6 +1933,82 @@ function AfcProductionRoomViewerReady({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- PI-3B/PI-4A frozen world deps
   }, [authority.generationId, furniture.objectId, furniture.transform, world]);
 
+  const registerHarmonizeExport = useRegisterHarmonizeExport();
+  const registerHarmonizeQa = useRegisterHarmonizeQa();
+  useEffect(() => {
+    if (!registerHarmonizeExport) return;
+    const begin = () => {
+      if (harmonizeInFlightRef.current) {
+        return Promise.reject(new HarmonizeExportError("Harmonize export is already running."));
+      }
+      const capture = harmonizeCaptureRef.current;
+      if (!capture) {
+        return Promise.reject(new HarmonizeExportError("STAGE scene is not ready to export."));
+      }
+      harmonizeInFlightRef.current = true;
+      return capture;
+    };
+    const backgroundImage = () => frameRef.current?.querySelector("img") ?? null;
+    registerHarmonizeExport(() => {
+      const capture = begin();
+      if (capture instanceof Promise) return capture;
+      return executeHarmonizeExport({
+        roomId: harmonizeRoomIdRef.current,
+        authority: harmonizeAuthorityRef.current,
+        backgroundUrl: displayedHarmonizeBackgroundUrl({
+          image: backgroundImage(),
+          fallbackUrl: harmonizeBackgroundUrlRef.current,
+        }),
+        originalImageUrl: harmonizeOriginalUrlRef.current,
+        captureFurniture: capture,
+      }).finally(() => {
+        harmonizeInFlightRef.current = false;
+      });
+    });
+    registerHarmonizeQa?.({
+      roomId,
+      run: async (idempotencyKey) => {
+        const sourceVersionId = harmonizeSourceVersionIdRef.current;
+        if (!sourceVersionId) {
+          throw new HarmonizeExportError("Save this room version before testing Harmonize.");
+        }
+        const capture = begin();
+        if (capture instanceof Promise) return capture;
+        try {
+          const prepared = await runHarmonizeCaptureBoundary({
+            furnitureGestureActive: () => harmonizeGestureRef.current,
+            sourceVersionId: () => harmonizeSourceVersionIdRef.current,
+            sceneIdentity: () => harmonizeSceneIdentityRef.current,
+            flushScene: () => harmonizeFlushSceneRef.current?.() ?? Promise.resolve(false),
+            flushRoomScale: () => harmonizeFlushRoomScaleRef.current?.() ?? Promise.resolve(false),
+            capture: () => executeHarmonizeQaSubmission({
+              roomId: harmonizeRoomIdRef.current,
+              sourceVersionId,
+              idempotencyKey,
+              authority: harmonizeAuthorityRef.current,
+              backgroundUrl: displayedHarmonizeBackgroundUrl({
+                image: backgroundImage(),
+                fallbackUrl: harmonizeBackgroundUrlRef.current,
+              }),
+              originalImageUrl: harmonizeOriginalUrlRef.current,
+              captureFurniture: capture,
+            }),
+          });
+          if (!prepared.ok) {
+            throw new HarmonizeExportError(harmonizeCaptureBoundaryMessage(prepared.code));
+          }
+          return prepared.value;
+        } finally {
+          harmonizeInFlightRef.current = false;
+        }
+      },
+    });
+    return () => {
+      registerHarmonizeExport(null);
+      registerHarmonizeQa?.(null);
+    };
+  }, [registerHarmonizeExport, registerHarmonizeQa, roomId]);
+
   useEffect(() => {
     applyRoomScaleRef.current?.(roomScaleMultiplier);
   }, [roomScaleMultiplier]);
@@ -1756,6 +2051,7 @@ function AfcProductionRoomViewerReady({
             className="absolute inset-0 z-0 h-full w-full"
             draggable={false}
             onError={(event) => {
+              if (lockBackgroundImage) return;
               const image = event.currentTarget;
               const fallback = originalImageUrl?.trim() ?? "";
               if (

@@ -1,3 +1,4 @@
+import { prepareCurrentGenerationDiagnosticMembership } from "@/lib/afc-v2-diagnostics/qa-current-generation.server";
 import { handleAfcQaPerspectiveRereadPost } from "@/lib/afc-v2-diagnostics/qa-reread-perspective.server";
 import { attachAfcDiagnosticSessionBestEffort } from "@/lib/afc-v2-diagnostics/session-attach.server";
 import { runProductionAfcAnalysis } from "@/lib/afc-v2-production/production-adapter.server";
@@ -73,6 +74,7 @@ export async function POST(request: Request) {
       request,
       authorize: authorizeProductionAfcUser,
       startProductionAnalysis: startQaPerspectiveRereadProductionAnalysis,
+      prepareCurrentGenerationMembership: prepareCurrentGenerationDiagnosticMembership,
     });
   } catch {
     return productionAfcJson({ error: "Server misconfigured." }, 500);

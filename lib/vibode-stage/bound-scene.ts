@@ -4,6 +4,7 @@ export type BoundScene = Readonly<{
   objects: readonly SceneObjectDefinition[];
   canUndo: boolean;
   undo: () => void;
+  sceneReady?: boolean;
 }>;
 
 export const EMPTY_BOUND_SCENE_OBJECTS: readonly SceneObjectDefinition[] =
@@ -26,7 +27,8 @@ export function nextBoundScene(current: BoundScene, next: BoundScene): BoundScen
   if (
     objectsUnchanged(current.objects, next.objects) &&
     current.canUndo === next.canUndo &&
-    current.undo === next.undo
+    current.undo === next.undo &&
+    current.sceneReady === next.sceneReady
   ) {
     return current;
   }

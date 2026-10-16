@@ -14,6 +14,8 @@ import {
   type PartnerCommercialAssetOption,
 } from "@/lib/vibode-stage/partner-commercial-assets";
 import type { StageCategory, StageCollection, StageProduct, StageVariant } from "@/lib/vibode-stage/types";
+import { parseMaterialText, variantMaterialMode, type VariantMaterialMode } from "@/lib/vibode-stage/material-text";
+import { PartnerProductMaterialFields, PartnerVariantMaterialControl } from "../../products/PartnerMaterialFields";
 import { PartnerCatalogOrderEditor } from "../../PartnerCatalogOrderEditor";
 
 type DraftDocument = {
@@ -28,6 +30,8 @@ type DraftDocument = {
       categoryId: string;
       subcategoryId: string | null;
       defaultVariantId: string;
+      primaryMaterial?: string | null;
+      secondaryMaterial?: string | null;
     }>;
     update: ReadonlyArray<{
       productId: string;
@@ -35,6 +39,8 @@ type DraftDocument = {
       imageUrl?: string;
       productUrl?: string | null;
       priceAmount?: number;
+      primaryMaterial?: string | null;
+      secondaryMaterial?: string | null;
     }>;
   };
   variants: {
@@ -47,6 +53,8 @@ type DraftDocument = {
       priceCurrency: string;
       productUrl: string | null;
       currentAssetId: string;
+      primaryMaterial?: string | null;
+      secondaryMaterial?: string | null;
     }>;
     update: ReadonlyArray<{
       variantId: string;
@@ -54,6 +62,8 @@ type DraftDocument = {
       sku?: string | null;
       priceAmount?: number;
       productUrl?: string | null;
+      primaryMaterial?: string | null;
+      secondaryMaterial?: string | null;
     }>;
   };
   collections: {
@@ -81,6 +91,8 @@ type DraftMutation =
   | { type: "product.set_image_url"; productId: string; imageUrl: string }
   | { type: "product.set_product_url"; productId: string; productUrl: string | null }
   | { type: "product.set_price"; productId: string; priceAmount: number }
+  | { type: "product.set_primary_material"; productId: string; primaryMaterial: string | null }
+  | { type: "product.set_secondary_material"; productId: string; secondaryMaterial: string | null }
   | {
       type: "product.create";
       name: string;
@@ -109,12 +121,16 @@ type DraftMutation =
       categoryId?: string;
       subcategoryId?: string | null;
       collectionIds?: readonly string[];
+      primaryMaterial?: string | null;
+      secondaryMaterial?: string | null;
     }
   | { type: "product.create_remove"; productId: string }
   | { type: "variant.set_finish_label"; variantId: string; finishLabel: string | null }
   | { type: "variant.set_sku"; variantId: string; sku: string | null }
   | { type: "variant.set_price"; variantId: string; priceAmount: number }
   | { type: "variant.set_product_url"; variantId: string; productUrl: string | null }
+  | { type: "variant.set_primary_material"; variantId: string; primaryMaterial: string | null }
+  | { type: "variant.set_secondary_material"; variantId: string; secondaryMaterial: string | null }
   | {
       type: "variant.create";
       productId: string;
@@ -133,6 +149,8 @@ type DraftMutation =
       priceAmount?: number;
       productUrl?: string | null;
       currentAssetId?: string;
+      primaryMaterial?: string | null;
+      secondaryMaterial?: string | null;
     }
   | { type: "variant.create_remove"; variantId: string }
   | { type: "collection.set_name"; collectionId: string; name: string }
@@ -567,6 +585,12 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   const [skus, setSkus] = useState<Record<string, string>>({});
   const [variantPrices, setVariantPrices] = useState<Record<string, string>>({});
   const [variantUrls, setVariantUrls] = useState<Record<string, string>>({});
+  const [productPrimary, setProductPrimary] = useState<Record<string, string>>({});
+  const [productSecondary, setProductSecondary] = useState<Record<string, string>>({});
+  const [variantPrimaryMode, setVariantPrimaryMode] = useState<Record<string, VariantMaterialMode>>({});
+  const [variantPrimaryText, setVariantPrimaryText] = useState<Record<string, string>>({});
+  const [variantSecondaryMode, setVariantSecondaryMode] = useState<Record<string, VariantMaterialMode>>({});
+  const [variantSecondaryText, setVariantSecondaryText] = useState<Record<string, string>>({});
   const [collectionNames, setCollectionNames] = useState<Record<string, string>>({});
   const [membership, setMembership] = useState<Record<string, string[]>>({});
   const [addingProductId, setAddingProductId] = useState<string | null>(null);
@@ -623,22 +647,51 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
       nextUrls[create.productId] = create.productUrl;
       nextPrices[create.productId] = String(create.priceAmount ?? "");
     }
+    const nextProductPrimary: Record<string, string> = {};
+    const nextProductSecondary: Record<string, string> = {};
+    for (const product of props.products) {
+      const patch = productPatch(next.document, product.productId);
+      const primary = effective(product.primaryMaterial ?? null, patch?.primaryMaterial);
+      const secondary = effective(product.secondaryMaterial ?? null, patch?.secondaryMaterial);
+      nextProductPrimary[product.productId] = typeof primary === "string" ? primary : "";
+      nextProductSecondary[product.productId] = typeof secondary === "string" ? secondary : "";
+    }
+    for (const create of next.document.products.create ?? []) {
+      nextProductPrimary[create.productId] = create.primaryMaterial ?? "";
+      nextProductSecondary[create.productId] = create.secondaryMaterial ?? "";
+    }
     const nextFinishes: Record<string, string> = {};
     const nextSkus: Record<string, string> = {};
     const nextVariantPrices: Record<string, string> = {};
     const nextVariantUrls: Record<string, string> = {};
+    const nextVariantPrimaryMode: Record<string, VariantMaterialMode> = {};
+    const nextVariantPrimaryText: Record<string, string> = {};
+    const nextVariantSecondaryMode: Record<string, VariantMaterialMode> = {};
+    const nextVariantSecondaryText: Record<string, string> = {};
     for (const variant of props.variants) {
       const patch = variantPatch(next.document, variant.variantId);
       nextFinishes[variant.variantId] = effective(variant.finishLabel, patch?.finishLabel) ?? "";
       nextSkus[variant.variantId] = effective(variant.sku, patch?.sku) ?? "";
       nextVariantPrices[variant.variantId] = String(effective(variant.priceAmount, patch?.priceAmount) ?? "");
       nextVariantUrls[variant.variantId] = effective(variant.productUrl, patch?.productUrl) ?? "";
+      const primary = variantMaterialMode(effective(variant.primaryMaterial, patch?.primaryMaterial));
+      const secondary = variantMaterialMode(effective(variant.secondaryMaterial, patch?.secondaryMaterial));
+      nextVariantPrimaryMode[variant.variantId] = primary.mode;
+      nextVariantPrimaryText[variant.variantId] = primary.text;
+      nextVariantSecondaryMode[variant.variantId] = secondary.mode;
+      nextVariantSecondaryText[variant.variantId] = secondary.text;
     }
     for (const create of next.document.variants.create ?? []) {
       nextFinishes[create.variantId] = create.finishLabel ?? "";
       nextSkus[create.variantId] = create.sku ?? "";
       nextVariantPrices[create.variantId] = String(create.priceAmount ?? "");
       nextVariantUrls[create.variantId] = create.productUrl ?? "";
+      const primary = variantMaterialMode(create.primaryMaterial);
+      const secondary = variantMaterialMode(create.secondaryMaterial);
+      nextVariantPrimaryMode[create.variantId] = primary.mode;
+      nextVariantPrimaryText[create.variantId] = primary.text;
+      nextVariantSecondaryMode[create.variantId] = secondary.mode;
+      nextVariantSecondaryText[create.variantId] = secondary.text;
     }
     const nextCollectionNames: Record<string, string> = {};
     const nextMembership: Record<string, string[]> = {};
@@ -663,6 +716,12 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
     setSkus(nextSkus);
     setVariantPrices(nextVariantPrices);
     setVariantUrls(nextVariantUrls);
+    setProductPrimary(nextProductPrimary);
+    setProductSecondary(nextProductSecondary);
+    setVariantPrimaryMode(nextVariantPrimaryMode);
+    setVariantPrimaryText(nextVariantPrimaryText);
+    setVariantSecondaryMode(nextVariantSecondaryMode);
+    setVariantSecondaryText(nextVariantSecondaryText);
     setCollectionNames(nextCollectionNames);
     setMembership(nextMembership);
   }
@@ -1301,6 +1360,35 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                   }}
                 />
               </label>
+              <div className="sm:col-span-2">
+                <PartnerProductMaterialFields
+                  primary={productPrimary[create.productId] ?? ""}
+                  secondary={productSecondary[create.productId] ?? ""}
+                  disabled={pending || conflict}
+                  primaryPending={create.primaryMaterial !== undefined}
+                  secondaryPending={create.secondaryMaterial !== undefined}
+                  onPrimaryChange={(value) => setProductPrimary((current) => ({ ...current, [create.productId]: value }))}
+                  onPrimaryCommit={() => {
+                    const parsed = parseMaterialText(productPrimary[create.productId] ?? "", "product");
+                    if (!parsed.ok) {
+                      setError(parsed.message);
+                      return;
+                    }
+                    if (parsed.value === (create.primaryMaterial ?? null)) return;
+                    void save([{ type: "product.create_edit", productId: create.productId, primaryMaterial: parsed.value }]);
+                  }}
+                  onSecondaryChange={(value) => setProductSecondary((current) => ({ ...current, [create.productId]: value }))}
+                  onSecondaryCommit={() => {
+                    const parsed = parseMaterialText(productSecondary[create.productId] ?? "", "product");
+                    if (!parsed.ok) {
+                      setError(parsed.message);
+                      return;
+                    }
+                    if (parsed.value === (create.secondaryMaterial ?? null)) return;
+                    void save([{ type: "product.create_edit", productId: create.productId, secondaryMaterial: parsed.value }]);
+                  }}
+                />
+              </div>
               <label className="text-xs text-slate-400">
                 Category
                 <select
@@ -1399,6 +1487,58 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                       }}
                     />
                   </label>
+                  <PartnerVariantMaterialControl
+                    label="Primary Material / Finish"
+                    mode={variantPrimaryMode[defaultVariant.variantId] ?? "inherit"}
+                    text={variantPrimaryText[defaultVariant.variantId] ?? ""}
+                    inherited={productPrimary[create.productId] ?? ""}
+                    disabled={pending || conflict}
+                    pending={defaultVariant.primaryMaterial !== undefined}
+                    onModeChange={(mode) => {
+                      setVariantPrimaryMode((current) => ({ ...current, [defaultVariant.variantId]: mode }));
+                      if (mode === "custom") return;
+                      void save([{
+                        type: "variant.create_edit",
+                        variantId: defaultVariant.variantId,
+                        primaryMaterial: mode === "none" ? "" : null,
+                      }]);
+                    }}
+                    onTextChange={(value) => setVariantPrimaryText((current) => ({ ...current, [defaultVariant.variantId]: value }))}
+                    onCommit={() => {
+                      const parsed = parseMaterialText(variantPrimaryText[defaultVariant.variantId] ?? "", "variant");
+                      if (!parsed.ok || !parsed.value) {
+                        setError(parsed.ok ? "Enter a material description, or choose another option." : parsed.message);
+                        return;
+                      }
+                      void save([{ type: "variant.create_edit", variantId: defaultVariant.variantId, primaryMaterial: parsed.value }]);
+                    }}
+                  />
+                  <PartnerVariantMaterialControl
+                    label="Secondary Material / Finish"
+                    mode={variantSecondaryMode[defaultVariant.variantId] ?? "inherit"}
+                    text={variantSecondaryText[defaultVariant.variantId] ?? ""}
+                    inherited={productSecondary[create.productId] ?? ""}
+                    disabled={pending || conflict}
+                    pending={defaultVariant.secondaryMaterial !== undefined}
+                    onModeChange={(mode) => {
+                      setVariantSecondaryMode((current) => ({ ...current, [defaultVariant.variantId]: mode }));
+                      if (mode === "custom") return;
+                      void save([{
+                        type: "variant.create_edit",
+                        variantId: defaultVariant.variantId,
+                        secondaryMaterial: mode === "none" ? "" : null,
+                      }]);
+                    }}
+                    onTextChange={(value) => setVariantSecondaryText((current) => ({ ...current, [defaultVariant.variantId]: value }))}
+                    onCommit={() => {
+                      const parsed = parseMaterialText(variantSecondaryText[defaultVariant.variantId] ?? "", "variant");
+                      if (!parsed.ok || !parsed.value) {
+                        setError(parsed.ok ? "Enter a material description, or choose another option." : parsed.message);
+                        return;
+                      }
+                      void save([{ type: "variant.create_edit", variantId: defaultVariant.variantId, secondaryMaterial: parsed.value }]);
+                    }}
+                  />
                   <label className="text-xs text-slate-400 sm:col-span-2">
                     3D model
                     <CommercialAssetSelect
@@ -1567,6 +1707,37 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                   }}
                 />
               </label>
+              <div className="sm:col-span-2">
+                <PartnerProductMaterialFields
+                  primary={productPrimary[product.productId] ?? ""}
+                  secondary={productSecondary[product.productId] ?? ""}
+                  disabled={pending || conflict}
+                  primaryPending={patch?.primaryMaterial !== undefined}
+                  secondaryPending={patch?.secondaryMaterial !== undefined}
+                  onPrimaryChange={(value) => setProductPrimary((current) => ({ ...current, [product.productId]: value }))}
+                  onPrimaryCommit={() => {
+                    const parsed = parseMaterialText(productPrimary[product.productId] ?? "", "product");
+                    if (!parsed.ok) {
+                      setError(parsed.message);
+                      return;
+                    }
+                    const saved = effective(product.primaryMaterial ?? null, patch?.primaryMaterial);
+                    if (parsed.value === (typeof saved === "string" ? saved : null)) return;
+                    void save([{ type: "product.set_primary_material", productId: product.productId, primaryMaterial: parsed.value }]);
+                  }}
+                  onSecondaryChange={(value) => setProductSecondary((current) => ({ ...current, [product.productId]: value }))}
+                  onSecondaryCommit={() => {
+                    const parsed = parseMaterialText(productSecondary[product.productId] ?? "", "product");
+                    if (!parsed.ok) {
+                      setError(parsed.message);
+                      return;
+                    }
+                    const saved = effective(product.secondaryMaterial ?? null, patch?.secondaryMaterial);
+                    if (parsed.value === (typeof saved === "string" ? saved : null)) return;
+                    void save([{ type: "product.set_secondary_material", productId: product.productId, secondaryMaterial: parsed.value }]);
+                  }}
+                />
+              </div>
             </div>
 
             <ul className="space-y-3 border-t border-slate-800 pt-3">
@@ -1644,6 +1815,60 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                           }}
                         />
                       </label>
+                      <PartnerVariantMaterialControl
+                        label="Primary Material / Finish"
+                        mode={variantPrimaryMode[variant.variantId] ?? "inherit"}
+                        text={variantPrimaryText[variant.variantId] ?? ""}
+                        inherited={productPrimary[product.productId] ?? ""}
+                        disabled={pending || conflict}
+                        pending={vPatch?.primaryMaterial !== undefined}
+                        onModeChange={(mode) => {
+                          setVariantPrimaryMode((current) => ({ ...current, [variant.variantId]: mode }));
+                          if (mode === "custom") return;
+                          const text = mode === "none" ? "" : "";
+                          void save([{
+                            type: "variant.set_primary_material",
+                            variantId: variant.variantId,
+                            primaryMaterial: mode === "none" ? "" : null,
+                          }]);
+                          setVariantPrimaryText((current) => ({ ...current, [variant.variantId]: text }));
+                        }}
+                        onTextChange={(value) => setVariantPrimaryText((current) => ({ ...current, [variant.variantId]: value }))}
+                        onCommit={() => {
+                          const parsed = parseMaterialText(variantPrimaryText[variant.variantId] ?? "", "variant");
+                          if (!parsed.ok || !parsed.value) {
+                            setError(parsed.ok ? "Enter a material description, or choose another option." : parsed.message);
+                            return;
+                          }
+                          void save([{ type: "variant.set_primary_material", variantId: variant.variantId, primaryMaterial: parsed.value }]);
+                        }}
+                      />
+                      <PartnerVariantMaterialControl
+                        label="Secondary Material / Finish"
+                        mode={variantSecondaryMode[variant.variantId] ?? "inherit"}
+                        text={variantSecondaryText[variant.variantId] ?? ""}
+                        inherited={productSecondary[product.productId] ?? ""}
+                        disabled={pending || conflict}
+                        pending={vPatch?.secondaryMaterial !== undefined}
+                        onModeChange={(mode) => {
+                          setVariantSecondaryMode((current) => ({ ...current, [variant.variantId]: mode }));
+                          if (mode === "custom") return;
+                          void save([{
+                            type: "variant.set_secondary_material",
+                            variantId: variant.variantId,
+                            secondaryMaterial: mode === "none" ? "" : null,
+                          }]);
+                        }}
+                        onTextChange={(value) => setVariantSecondaryText((current) => ({ ...current, [variant.variantId]: value }))}
+                        onCommit={() => {
+                          const parsed = parseMaterialText(variantSecondaryText[variant.variantId] ?? "", "variant");
+                          if (!parsed.ok || !parsed.value) {
+                            setError(parsed.ok ? "Enter a material description, or choose another option." : parsed.message);
+                            return;
+                          }
+                          void save([{ type: "variant.set_secondary_material", variantId: variant.variantId, secondaryMaterial: parsed.value }]);
+                        }}
+                      />
                     </div>
                   </li>
                 );
@@ -1721,6 +1946,58 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                         }}
                       />
                     </label>
+                    <PartnerVariantMaterialControl
+                      label="Primary Material / Finish"
+                      mode={variantPrimaryMode[create.variantId] ?? "inherit"}
+                      text={variantPrimaryText[create.variantId] ?? ""}
+                      inherited={productPrimary[product.productId] ?? ""}
+                      disabled={pending || conflict}
+                      pending={create.primaryMaterial !== undefined}
+                      onModeChange={(mode) => {
+                        setVariantPrimaryMode((current) => ({ ...current, [create.variantId]: mode }));
+                        if (mode === "custom") return;
+                        void save([{
+                          type: "variant.create_edit",
+                          variantId: create.variantId,
+                          primaryMaterial: mode === "none" ? "" : null,
+                        }]);
+                      }}
+                      onTextChange={(value) => setVariantPrimaryText((current) => ({ ...current, [create.variantId]: value }))}
+                      onCommit={() => {
+                        const parsed = parseMaterialText(variantPrimaryText[create.variantId] ?? "", "variant");
+                        if (!parsed.ok || !parsed.value) {
+                          setError(parsed.ok ? "Enter a material description, or choose another option." : parsed.message);
+                          return;
+                        }
+                        void save([{ type: "variant.create_edit", variantId: create.variantId, primaryMaterial: parsed.value }]);
+                      }}
+                    />
+                    <PartnerVariantMaterialControl
+                      label="Secondary Material / Finish"
+                      mode={variantSecondaryMode[create.variantId] ?? "inherit"}
+                      text={variantSecondaryText[create.variantId] ?? ""}
+                      inherited={productSecondary[product.productId] ?? ""}
+                      disabled={pending || conflict}
+                      pending={create.secondaryMaterial !== undefined}
+                      onModeChange={(mode) => {
+                        setVariantSecondaryMode((current) => ({ ...current, [create.variantId]: mode }));
+                        if (mode === "custom") return;
+                        void save([{
+                          type: "variant.create_edit",
+                          variantId: create.variantId,
+                          secondaryMaterial: mode === "none" ? "" : null,
+                        }]);
+                      }}
+                      onTextChange={(value) => setVariantSecondaryText((current) => ({ ...current, [create.variantId]: value }))}
+                      onCommit={() => {
+                        const parsed = parseMaterialText(variantSecondaryText[create.variantId] ?? "", "variant");
+                        if (!parsed.ok || !parsed.value) {
+                          setError(parsed.ok ? "Enter a material description, or choose another option." : parsed.message);
+                          return;
+                        }
+                        void save([{ type: "variant.create_edit", variantId: create.variantId, secondaryMaterial: parsed.value }]);
+                      }}
+                    />
                     <label className="text-xs text-slate-400 sm:col-span-2">
                       3D model
                       <CommercialAssetSelect

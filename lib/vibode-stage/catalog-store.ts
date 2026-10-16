@@ -81,6 +81,35 @@ function asNullableString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function storedMaterialFields(
+  primary: unknown,
+  secondary: unknown,
+  role: "product" | "variant",
+): Readonly<{ primaryMaterial?: string; secondaryMaterial?: string }> {
+  const fields: { primaryMaterial?: string; secondaryMaterial?: string } = {};
+  const read = (value: unknown): string | undefined => {
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return role === "variant" ? "" : undefined;
+    return trimmed;
+  };
+  const primaryMaterial = read(primary);
+  const secondaryMaterial = read(secondary);
+  if (primaryMaterial !== undefined) fields.primaryMaterial = primaryMaterial;
+  if (secondaryMaterial !== undefined) fields.secondaryMaterial = secondaryMaterial;
+  return fields;
+}
+
+function materialRowColumns(
+  primary: string | null | undefined,
+  secondary: string | null | undefined,
+): Readonly<{ primary_material?: string; secondary_material?: string }> {
+  const columns: { primary_material?: string; secondary_material?: string } = {};
+  if (typeof primary === "string") columns.primary_material = primary;
+  if (typeof secondary === "string") columns.secondary_material = secondary;
+  return columns;
+}
+
 function asNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -203,6 +232,7 @@ function mapVariant(row: Record<string, unknown>): StageVariant | null {
     status,
     ...(sortOrder !== undefined ? { sortOrder } : {}),
     ...stageVariantModelFields(modelDimensions),
+    ...storedMaterialFields(row.primary_material, row.secondary_material, "variant"),
   };
 }
 
@@ -272,6 +302,7 @@ function mapProduct(
     partnerId,
     status,
     sortOrder: asInteger(row.sort_order),
+    ...storedMaterialFields(row.primary_material, row.secondary_material, "product"),
   };
 }
 
@@ -517,6 +548,7 @@ export function stageCatalogRowsFromSnapshot(
       default_variant_id: product.defaultVariantId,
       status: product.status ?? "active",
       sort_order: product.sortOrder ?? index,
+      ...materialRowColumns(product.primaryMaterial, product.secondaryMaterial),
     })),
     variants: catalog.variants.map((variant) => ({
       variant_id: variant.variantId,
@@ -539,6 +571,7 @@ export function stageCatalogRowsFromSnapshot(
           model_sizing_mode: dimensions.sizingMode,
         };
       })(),
+      ...materialRowColumns(variant.primaryMaterial, variant.secondaryMaterial),
     })),
     collections: catalog.collections.map((collection, sortOrder) => ({
       collection_id: collection.collectionId,

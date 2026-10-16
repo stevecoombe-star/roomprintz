@@ -24,6 +24,7 @@ import {
   type AfcDiagnosticTableClient,
 } from "./diagnostic-db-client";
 import type { AfcQaAccessConfig } from "./qa-access";
+import type { AfcQaCurrentGenerationMembership } from "./qa-rerun.server";
 import { resolveAfcQaCapability } from "./qa-capability.server";
 import {
   AFC_GENERATION_TABLE,
@@ -164,6 +165,7 @@ export type AfcDiagnosticTesterCaseOptions = {
   store?: AfcDiagnosticTesterCaseStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
+  prepareCurrentGenerationMembership?: AfcQaCurrentGenerationMembership;
 };
 
 export class AfcDiagnosticTesterCaseInputError extends Error {
@@ -725,6 +727,15 @@ export async function submitAfcDiagnosticTesterCase(
     );
   }
 
+  if (options.prepareCurrentGenerationMembership) {
+    await options.prepareCurrentGenerationMembership({
+      userId,
+      roomId,
+      generationId,
+      qaAccess: options.qaAccess,
+    });
+  }
+
   const membership = await store.findMembershipByGenerationId(generationId);
   if (!membership) {
     throw new AfcDiagnosticTesterCaseMembershipError();
@@ -818,6 +829,7 @@ export async function handleAfcQaTesterCasePost(args: {
   store?: AfcDiagnosticTesterCaseStore;
   retryStore?: AfcDiagnosticRetryEpisodeStore;
   retrySignal?: typeof getAfcDiagnosticRetryEpisodeSignal;
+  prepareCurrentGenerationMembership?: AfcQaCurrentGenerationMembership;
 }) {
   const auth = await args.authorize(args.request);
   if (!auth.ok) return auth.response;
@@ -843,6 +855,7 @@ export async function handleAfcQaTesterCasePost(args: {
         store: args.store,
         retryStore: args.retryStore,
         retrySignal: args.retrySignal,
+        prepareCurrentGenerationMembership: args.prepareCurrentGenerationMembership,
       },
     );
     return productionAfcJson(freezeSubmitted(), 200);

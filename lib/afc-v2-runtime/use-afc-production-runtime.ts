@@ -34,8 +34,10 @@ export function useAfcProductionRuntime(
       error: null,
       authority: null,
       originalImageUrl: null,
+      emptyImageUrl: null,
       generationId: null,
       trustedPath: null,
+      certifiedFrozenCamera: null,
     });
 
     async function load() {
@@ -64,8 +66,10 @@ export function useAfcProductionRuntime(
             error: null,
             authority: interpreted.authority,
             originalImageUrl: interpreted.originalImageUrl,
+            emptyImageUrl: interpreted.emptyImageUrl,
             generationId: interpreted.generationId,
             trustedPath: interpreted.trustedPath,
+            certifiedFrozenCamera: interpreted.certifiedFrozenCamera,
           });
           return;
         }
@@ -74,8 +78,10 @@ export function useAfcProductionRuntime(
           error: interpreted.message,
           authority: null,
           originalImageUrl: null,
+          emptyImageUrl: null,
           generationId: interpreted.generationId,
           trustedPath: null,
+          certifiedFrozenCamera: null,
         });
       } catch (loadError) {
         if (cancelled) return;
@@ -86,8 +92,10 @@ export function useAfcProductionRuntime(
             : "Failed to restore AFC runtime.",
           authority: null,
           originalImageUrl: null,
+          emptyImageUrl: null,
           generationId: null,
           trustedPath: null,
+          certifiedFrozenCamera: null,
         });
       }
     }

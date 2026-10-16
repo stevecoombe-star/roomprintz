@@ -4,11 +4,17 @@ import {
   parseRoomId,
   productionAfcJson,
 } from "@/lib/afc-v2-production/production-http";
+import { AFC_V2_ORIGINAL_SIGNED_URL_EXPIRES_IN_SEC } from "@/lib/afc-v2-production/production-original";
+import { AFC_V2_PRODUCTION_STORAGE_BUCKET } from "@/lib/afc-v2-production/production-store";
 import {
   createProductionAfcStoreFromEnv,
   signOwnedOriginalDisplayUrl,
 } from "@/lib/afc-v2-production/production-persistence.server";
 import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import {
+  readCertifiedFrozenCamera,
+  type CertifiedFrozenCamera,
+} from "@/lib/afc-v2-runtime/production-runtime-client";
 import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
 import { assertProductionPayloadPrivacy } from "@/lib/afc-v2-production/privacy";
 import { trustedPathBaselineFromGeneration } from "@/lib/vibode-stage/trusted-path-authority";
@@ -86,24 +92,53 @@ async function restoreRuntime(request: Request, body: unknown) {
     }, 200);
   }
 
-  const trustedPath = await readTrustedPath(store, {
+  const handoff = await readRuntimeHandoff(store, {
     userId: auth.userId,
     roomId,
     generationId: restored.generationId,
   });
+  const emptyImageUrl = await signOwnedEmptyDisplayUrl(service, auth.userId, handoff.emptyStoragePath);
   return productionAfcJson({
     ...restored,
     authority: validated.authority,
     originalImageUrl,
-    trustedPath,
+    emptyImageUrl,
+    trustedPath: handoff.trustedPath,
+    certifiedFrozenCamera: handoff.certifiedFrozenCamera,
   }, 200);
 }
 
-async function readTrustedPath(
+function ownedEmptyStoragePath(userId: string, path: string | null): string | null {
+  if (!path || path.includes("..") || path.includes("\\") || path.includes("?") || path.startsWith("/")) {
+    return null;
+  }
+  return path.startsWith(`users/${userId}/`) ? path : null;
+}
+
+async function signOwnedEmptyDisplayUrl(
+  service: NonNullable<ReturnType<typeof getServiceRoleSupabaseClient>>,
+  userId: string,
+  path: string | null,
+): Promise<string | null> {
+  const owned = ownedEmptyStoragePath(userId, path);
+  if (!owned) return null;
+  const { data, error } = await service.storage
+    .from(AFC_V2_PRODUCTION_STORAGE_BUCKET)
+    .createSignedUrl(owned, AFC_V2_ORIGINAL_SIGNED_URL_EXPIRES_IN_SEC);
+  if (error || typeof data?.signedUrl !== "string") return null;
+  return data.signedUrl;
+}
+
+async function readRuntimeHandoff(
   store: NonNullable<ReturnType<typeof createProductionAfcStoreFromEnv>>,
   input: Readonly<{ userId: string; roomId: string; generationId: string | null }>,
-): Promise<TrustedPathBaseline | null> {
-  if (!input.generationId) return null;
+): Promise<Readonly<{
+  trustedPath: TrustedPathBaseline | null;
+  certifiedFrozenCamera: CertifiedFrozenCamera | null;
+  emptyStoragePath: string | null;
+}>> {
+  const empty = { trustedPath: null, certifiedFrozenCamera: null, emptyStoragePath: null };
+  if (!input.generationId) return empty;
   try {
     const generation = await store.getGeneration(input.generationId);
     const authority = generation?.productionAuthority;
@@ -113,7 +148,7 @@ async function readTrustedPath(
       generation.userId !== input.userId ||
       generation.roomId !== input.roomId
     ) {
-      return null;
+      return empty;
     }
     const trustedPath = trustedPathBaselineFromGeneration({
       metricDecision: generation.metricDecision,
@@ -122,11 +157,14 @@ async function readTrustedPath(
       emptyWidth: authority.empty.decodedWidth,
       emptyHeight: authority.empty.decodedHeight,
     });
-    if (!trustedPath) return null;
-    assertProductionPayloadPrivacy(trustedPath);
-    return trustedPath;
+    if (trustedPath) assertProductionPayloadPrivacy(trustedPath);
+    return {
+      trustedPath,
+      certifiedFrozenCamera: readCertifiedFrozenCamera(authority.frozenCamera),
+      emptyStoragePath: generation.emptyStoragePath,
+    };
   } catch {
-    return null;
+    return empty;
   }
 }
 

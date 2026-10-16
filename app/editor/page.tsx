@@ -23,6 +23,11 @@ import { AfcSceneObjectCrudSessionProvider } from "@/components/afc-3d/AfcSceneO
 import { EditorViewportModeControl } from "@/components/afc-3d/EditorViewportModeControl";
 import { AfcQaTesterReport } from "@/components/afc-qa/AfcQaTesterReport";
 import { StageEditorProvider } from "@/components/stage/StageEditorContext";
+import {
+  HarmonizeExperienceProvider,
+  HarmonizePublicationWatcher,
+  useHarmonizedSelection,
+} from "@/components/stage/HarmonizeExperience";
 import { StageEditorShell } from "@/components/stage/StageEditorShell";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
@@ -94,6 +99,17 @@ import {
   writeEditorViewportModePreference,
 } from "@/lib/afc-v2-runtime/editor-viewport-mode-preference";
 import { resolveIntegratedEditorBackgroundImageUrl } from "@/lib/afc-v2-runtime/viewer-presentation";
+import {
+  HARMONIZE_AI_DISCLOSURE_TEXT,
+  HARMONIZE_AI_LABEL,
+  HARMONIZE_HISTORY_SAVED_NOTICE,
+  harmonizeLiveBackgroundSha256,
+  hashHarmonizeSceneObjects,
+  isHarmonizedHistoryAsset,
+  planHarmonizeEditorPresentation,
+  planHarmonizePublicationView,
+  type HarmonizeExperienceJob,
+} from "@/lib/vibode-stage/harmonize-experience";
 import { useAfcProductionRuntime } from "@/lib/afc-v2-runtime/use-afc-production-runtime";
 import { usePrepare3dRoom } from "@/lib/afc-v2-runtime/use-prepare-3d-room";
 import type { RuntimeTransformMode } from "@/lib/afc-v2-runtime/types";
@@ -1492,6 +1508,7 @@ type VibodeRoomAssetHydrationRow = {
   height: number | null;
   model_version: string | null;
   is_active: boolean;
+  harmonize_job_id?: string | null;
   metadata: Record<string, unknown> | null;
   parentVersionId?: string | null;
   lineageSource?: "generation_run" | "metadata" | "none" | null;
@@ -2048,6 +2065,10 @@ function normalizeRoomAssetForStore(row: VibodeRoomAssetHydrationRow): VibodeRoo
     height: row.height,
     model_version: row.model_version,
     is_active: row.is_active === true,
+    harmonize_job_id:
+      typeof row.harmonize_job_id === "string" && row.harmonize_job_id.trim().length > 0
+        ? row.harmonize_job_id.trim()
+        : null,
     metadata: row.metadata ?? {},
     parentVersionId:
       typeof row.parentVersionId === "string" && row.parentVersionId.trim().length > 0
@@ -5220,6 +5241,8 @@ function EditorPageInner() {
   ]);
   const selectedVersionId =
     activeAssetId ?? versions.find((asset) => asset.is_active)?.id ?? null;
+  const activeAssetIdRef = useRef(activeAssetId);
+  activeAssetIdRef.current = activeAssetId;
   const lastSnapshotPersistSkipReasonRef = useRef<string | null>(null);
   const persistWorkspaceSnapshot = useCallback(
     (overrides?: Partial<VibodeEditorWorkspaceSnapshot>) => {
@@ -5304,10 +5327,108 @@ function EditorPageInner() {
     () => versions.find((asset) => asset.id === selectedVersionId) ?? null,
     [selectedVersionId, versions]
   );
-  const integratedViewerBackgroundImageUrl = resolveIntegratedEditorBackgroundImageUrl({
+  const harmonizedSelection = useHarmonizedSelection(selectedVersion);
+  const standardIntegratedBackgroundUrl = resolveIntegratedEditorBackgroundImageUrl({
     selectedVersionImageUrl: selectedVersion?.image_url,
     editorVisualUrl: workingImageUrl,
   });
+  const harmonizePresentation = useMemo(() => planHarmonizeEditorPresentation({
+    selected: selectedVersion
+      ? {
+        id: selectedVersion.id,
+        imageUrl: selectedVersion.image_url,
+        harmonizeJobId: selectedVersion.harmonize_job_id ?? null,
+      }
+      : null,
+    versions: versions.map((version) => ({ id: version.id, imageUrl: version.image_url })),
+    presentation: harmonizedSelection.view,
+    selectionStatus: harmonizedSelection.status,
+    generationId: afcRuntime.generationId,
+    originalImageUrl: afcRuntime.originalImageUrl,
+    emptyImageUrl: afcRuntime.emptyImageUrl,
+    standardBackgroundUrl: standardIntegratedBackgroundUrl,
+  }), [
+    afcRuntime.emptyImageUrl,
+    afcRuntime.generationId,
+    afcRuntime.originalImageUrl,
+    harmonizedSelection.status,
+    harmonizedSelection.view,
+    selectedVersion,
+    standardIntegratedBackgroundUrl,
+    versions,
+  ]);
+  const integratedViewerBackgroundImageUrl = harmonizePresentation.backgroundImageUrl;
+  const integratedSceneVersionId = harmonizePresentation.sceneVersionId;
+  const settleHarmonizePublication = useCallback((
+    job: HarmonizeExperienceJob,
+    liveScene: Readonly<{ roomScaleMultiplier: number; objects: readonly unknown[] | null }>,
+  ) => {
+    const roomId = editorRoomId;
+    if (!roomId) return;
+    const previousActiveId = activeAssetIdRef.current;
+    const sourceVersionId = harmonizePresentation.harmonized
+      ? harmonizePresentation.sceneVersionId
+      : selectedVersionId;
+    void (async () => {
+      const latest = await refreshRoomVersions(roomId);
+      setActiveAssetId(previousActiveId ?? sourceVersionId);
+      const sceneObjectsSha256 = liveScene.objects
+        ? await hashHarmonizeSceneObjects(liveScene.objects)
+        : null;
+      const decision = planHarmonizePublicationView({
+        job,
+        versions: (latest ?? []).map((version) => ({
+          id: version.id,
+          imageUrl: version.image_url,
+          isActive: version.is_active === true,
+        })),
+        live: {
+          roomId,
+          sourceVersionId,
+          afcGenerationId: afcRuntime.generationId,
+          roomScaleMultiplier: liveScene.roomScaleMultiplier,
+          sceneObjectsSha256,
+          backgroundSha256: harmonizeLiveBackgroundSha256(job, {
+            sourceVersionId,
+            afcGenerationId: afcRuntime.generationId,
+          }),
+        },
+      });
+      const asset = decision.action === "show-2d" && decision.assetId
+        ? latest?.find((version) => version.id === decision.assetId) ?? null
+        : null;
+      if (
+        decision.action !== "show-2d"
+        || !asset?.image_url
+        || asset.is_active !== true
+        || decision.activate !== false
+      ) {
+        setActiveAssetId(previousActiveId ?? sourceVersionId);
+        pushSnack(decision.message ?? HARMONIZE_HISTORY_SAVED_NOTICE);
+        return;
+      }
+      setScenePlacements([]);
+      hydrateSceneNodesFromPlacements([]);
+      setActiveAssetId(asset.id);
+      setWorkingImageUrl(asset.image_url);
+      setIsWorkingImageGenerated(true);
+      selectEditorViewportMode("2d");
+    })();
+  }, [
+    afcRuntime.generationId,
+    editorRoomId,
+    harmonizePresentation.harmonized,
+    harmonizePresentation.sceneVersionId,
+    hydrateSceneNodesFromPlacements,
+    pushSnack,
+    refreshRoomVersions,
+    selectEditorViewportMode,
+    selectedVersionId,
+    setActiveAssetId,
+    setIsWorkingImageGenerated,
+    setScenePlacements,
+    setWorkingImageUrl,
+  ]);
   const selectedVersionRenderedPlacementStateHash = useMemo(
     () => readRenderedPlacementStateHashFromMetadata(selectedVersion?.metadata),
     [selectedVersion?.metadata]
@@ -5600,6 +5721,7 @@ function EditorPageInner() {
     (asset: VibodeRoomAsset) => {
       const applied = applyVersionToEditorState(asset, versions);
       if (!applied) return;
+      if (isHarmonizedHistoryAsset(asset) && asset.is_active !== true) return;
 
       if (!vibodeRoomId) return;
 
@@ -11957,6 +12079,11 @@ function EditorPageInner() {
       onTransformModeChange={setRuntimeTransformMode}
       trustedPath={afcRuntime.trustedPath}
     >
+    <HarmonizeExperienceProvider roomId={editorRoomId}>
+    <HarmonizePublicationWatcher
+      viewportMode={viewportMode}
+      onPublished={settleHarmonizePublication}
+    />
     <div className="fixed inset-0 z-0 flex min-h-0 flex-col overflow-hidden bg-neutral-950 text-neutral-100">
       {/* Top bar */}
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
@@ -12103,6 +12230,15 @@ function EditorPageInner() {
               onDragLeave={viewportMode === "2d" ? handleCanvasDragLeave : undefined}
               onDrop={viewportMode === "2d" ? handleCanvasDrop : undefined}
             >
+              {viewportMode === "2d" && harmonizePresentation.showAiLabel ? (
+                <div
+                  className="pointer-events-none absolute left-2 top-2 z-20 rounded-full border border-amber-400/40 bg-neutral-950/80 px-2 py-1 text-[11px] text-amber-100"
+                  title={HARMONIZE_AI_DISCLOSURE_TEXT}
+                  role="note"
+                >
+                  {HARMONIZE_AI_LABEL}
+                </div>
+              ) : null}
               <input
                 ref={roomPhotoUploadInputRef}
                 type="file"
@@ -12195,18 +12331,31 @@ function EditorPageInner() {
               )}
 
               {viewportMode === "3d" && editorRoomId ? (
+                harmonizePresentation.mountViewer ? (
                 <AfcIntegratedEditorViewport
                   roomId={editorRoomId}
-                  versionId={selectedVersionId}
+                  versionId={integratedSceneVersionId}
+                  harmonizeAssetId={
+                    harmonizePresentation.harmonized ? selectedVersion?.id ?? null : null
+                  }
                   spatialAuthorityId={afcRuntime.generationId}
                   prepareState={prepare3d.state}
                   onPrepare={requestPrepare3d}
                   onRetryRestore={retryIntegratedAfcRestore}
                   runtime={afcRuntime}
                   backgroundImageUrl={integratedViewerBackgroundImageUrl}
+                  lockBackgroundImage={harmonizePresentation.lockBackground}
                   transformMode={runtimeTransformMode}
                   onTransformModeChange={setRuntimeTransformMode}
                 />
+                ) : (
+                <div
+                  className="absolute inset-0 flex items-center justify-center bg-neutral-950 px-6 text-center text-sm text-neutral-300"
+                  role="status"
+                >
+                  {harmonizePresentation.unavailableMessage}
+                </div>
+                )
               ) : (
               <div className="absolute inset-0" data-editor-viewport-renderer="canvas">
               <EditorCanvas
@@ -13868,6 +14017,7 @@ function EditorPageInner() {
         onRemove={(id) => setSnacks((prev) => prev.filter((s) => s.id !== id))}
       />
     </div>
+    </HarmonizeExperienceProvider>
     </StageEditorProvider>
     </AfcSceneObjectCrudSessionProvider>
   );

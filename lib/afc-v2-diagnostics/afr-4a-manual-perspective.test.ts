@@ -90,6 +90,10 @@ const SCENE = readFileSync(
   path.join(ROOT, "app/api/vibode/3d-scene/route.ts"),
   "utf8",
 );
+const EDITOR_SCENE = readFileSync(
+  path.join(ROOT, "lib/afc-v2-runtime/editor-scene-objects.ts"),
+  "utf8",
+);
 
 function fullAuthority() {
   const base = createPi3aAuthority({
@@ -468,8 +472,10 @@ test("thumbnail and STAGE resolve the same effective authority", () => {
   assert.match(RUNTIME, /resolveEffectiveProductionAuthority\(/);
   assert.match(THUMBNAIL, /resolveEffectiveProductionAuthority\(/);
   assert.match(THUMBNAIL, /mapSceneObjectsBetweenCameras\(/);
-  assert.match(SCENE, /mapSceneObjectsBetweenCameras\(/);
-  assert.match(SCENE, /resolveEffectiveProductionAuthority\(/);
+  assert.match(SCENE, /editorSceneObjectsFromAuthority\(/);
+  assert.doesNotMatch(SCENE, /mapSceneObjectsBetweenCameras\(/);
+  assert.match(EDITOR_SCENE, /mapSceneObjectsBetweenCameras\(/);
+  assert.match(EDITOR_SCENE, /resolveEffectiveProductionAuthority\(/);
   const automatic = fullAuthority();
   const resolved = resolveEffectiveProductionAuthority(automatic, null);
   assert.equal(resolved.authority.frozenCamera, automatic.frozenCamera);

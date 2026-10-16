@@ -1,3 +1,4 @@
+import { prepareCurrentGenerationDiagnosticMembership } from "@/lib/afc-v2-diagnostics/qa-current-generation.server";
 import { handleAfcQaTesterCasePost } from "@/lib/afc-v2-diagnostics/submit-tester-case.server";
 import { authorizeProductionAfcUser } from "@/lib/afc-v2-production/production-http";
 
@@ -7,5 +8,6 @@ export async function POST(request: Request) {
   return handleAfcQaTesterCasePost({
     request,
     authorize: authorizeProductionAfcUser,
+    prepareCurrentGenerationMembership: prepareCurrentGenerationDiagnosticMembership,
   });
 }

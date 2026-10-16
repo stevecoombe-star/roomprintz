@@ -64,6 +64,7 @@ import {
 } from "./favorites";
 import {
   STAGE_CATALOG_MODES,
+  STAGE_DEFAULT_CATALOG_CATEGORY_ID,
   STAGE_DEFAULT_CATALOG_MODE,
   type StageCatalogMode,
 } from "./types";
@@ -98,6 +99,51 @@ function navigation(mode: StageCatalogMode = STAGE_DEFAULT_CATALOG_MODE) {
     collectionId: "col-small-spaces",
   };
 }
+
+test("Catalog browse opens with no category selected", () => {
+  assert.equal(STAGE_DEFAULT_CATALOG_CATEGORY_ID, null);
+
+  const context = source("components/stage/StageEditorContext.tsx");
+  assert.match(
+    context,
+    /const \[catalogCategoryId, setCatalogCategoryIdState\] = useState<string \| null>\(\s*STAGE_DEFAULT_CATALOG_CATEGORY_ID,\s*\)/,
+  );
+  assert.doesNotMatch(
+    context,
+    /setCatalogCategoryIdState\] = useState<string \| null>\("living-room"\)/,
+  );
+
+  const bedroom: StageProduct = {
+    ...PARTNER_CHAIR,
+    productId: "prod-partner-browse-bed",
+    name: "Partner Bed",
+    categoryId: "bedroom",
+    subcategoryId: null,
+    defaultVariantId: "prod-partner-browse-bed-default",
+    collectionIds: [],
+  };
+  const products = [PARTNER_SOFA, PARTNER_CHAIR, bedroom];
+  const unfiltered = query({
+    products,
+    categoryId: STAGE_DEFAULT_CATALOG_CATEGORY_ID,
+    subcategoryId: null,
+  });
+  assert.deepEqual(unfiltered.map((product) => product.productId), [
+    PARTNER_SOFA_ID,
+    PARTNER_CHAIR_ID,
+    bedroom.productId,
+  ]);
+
+  const living = query({
+    products,
+    categoryId: "living-room",
+    subcategoryId: null,
+  });
+  assert.deepEqual(living.map((product) => product.productId), [
+    PARTNER_SOFA_ID,
+    PARTNER_CHAIR_ID,
+  ]);
+});
 
 test("PI-5C UX2 Catalog exposes four top-level modes and defaults to Browse", () => {
   assert.deepEqual(STAGE_CATALOG_MODES.map((mode) => mode.id), [

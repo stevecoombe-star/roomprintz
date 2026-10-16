@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { HARMONIZE_AI_DISCLOSURE_TEXT, HARMONIZE_AI_LABEL, isHarmonizedHistoryAsset } from "@/lib/vibode-stage/harmonize-experience";
 import { getImageHistoryWorkflowGroups, type ImageHistoryTimelineKind } from "@/lib/vibode/image-history-timeline";
 import { getVibodeVersionKind, getWorkflowStepDisplayLabel } from "@/lib/vibode/version-kind";
 import type { VibodeRoomAsset } from "@/stores/editorStore";
@@ -86,6 +87,14 @@ function TimelineVersionCard(props: {
           <div className="flex h-full w-full items-center justify-center text-[10px] text-neutral-500">IMG</div>
         )}
       </div>
+      {isHarmonizedHistoryAsset(props.version) ? (
+        <div
+          className="inline-flex rounded-full border border-amber-400/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-100"
+          title={HARMONIZE_AI_DISCLOSURE_TEXT}
+        >
+          {HARMONIZE_AI_LABEL}
+        </div>
+      ) : null}
       {props.isActive ? (
         <div className="inline-flex rounded-full border border-sky-400/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-100">
           On canvas

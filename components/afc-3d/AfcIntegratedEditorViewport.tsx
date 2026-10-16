@@ -23,17 +23,20 @@ import {
   type ModelAxisScale,
 } from "@/lib/afc-v2-runtime/model-axis-scale";
 import { stageModelAxisScale } from "@/lib/vibode-stage/furniture-model-scale";
+import { harmonizeMaterialCatalogFromStage } from "@/lib/vibode-stage/harmonize-materials";
 import type { StageCatalogSnapshot, StageVariant } from "@/lib/vibode-stage/types";
 
 type Props = Readonly<{
   roomId: string;
   versionId?: string | null;
+  harmonizeAssetId?: string | null;
   spatialAuthorityId?: string | null;
   prepareState: Prepare3dRoomState;
   onPrepare: () => void;
   onRetryRestore?: () => void;
   runtime: AfcProductionRuntimeLoadState;
   backgroundImageUrl?: string | null;
+  lockBackgroundImage?: boolean;
   transformMode: RuntimeTransformMode;
   onTransformModeChange: (mode: RuntimeTransformMode) => void;
 }>;
@@ -78,12 +81,14 @@ function ViewportMessage({
 export function AfcIntegratedEditorViewport({
   roomId,
   versionId = null,
+  harmonizeAssetId = null,
   spatialAuthorityId = null,
   prepareState,
   onPrepare,
   onRetryRestore,
   runtime,
   backgroundImageUrl,
+  lockBackgroundImage = false,
   transformMode,
   onTransformModeChange,
 }: Props) {
@@ -98,12 +103,21 @@ export function AfcIntegratedEditorViewport({
     roomId,
     versionId,
     spatialAuthorityId,
+    harmonizeAssetId,
     enabled: presentation.surface === "viewer" &&
       Boolean(runtime.authority && versionId && spatialAuthorityId),
   });
   const sceneCrud = useAfcSceneObjectCrudSession();
   const showTransformGizmos = useStageTransformGizmos();
   const stage = useOptionalStageEditor();
+  const harmonizeMaterialCatalog = stage
+    ? harmonizeMaterialCatalogFromStage({
+      products: stage.catalog.products,
+      variants: stage.catalog.variants,
+      extraProducts: stage.extraProducts,
+      extraVariants: stage.extraVariants,
+    })
+    : null;
   const bindScene = stage?.bindScene;
   const stageCatalog = stage?.catalog;
   const stageExtraVariants = stage?.extraVariants;
@@ -145,8 +159,9 @@ export function AfcIntegratedEditorViewport({
       objects: persistedScene.objects,
       canUndo: persistedScene.canUndo,
       undo: persistedScene.undo,
+      sceneReady: persistedScene.sceneReady,
     });
-  }, [bindScene, persistedScene.canUndo, persistedScene.objects, persistedScene.undo]);
+  }, [bindScene, persistedScene.canUndo, persistedScene.objects, persistedScene.sceneReady, persistedScene.undo]);
 
   if (presentation.surface === "status") {
     return (
@@ -217,6 +232,7 @@ export function AfcIntegratedEditorViewport({
         roomId={roomId}
         authority={runtime.authority}
         backgroundImageUrl={backgroundImageUrl}
+        lockBackgroundImage={lockBackgroundImage}
         originalImageUrl={runtime.originalImageUrl}
         transformMode={transformMode}
         onTransformModeChange={onTransformModeChange}
@@ -237,6 +253,11 @@ export function AfcIntegratedEditorViewport({
         roomScaleMultiplier={stage?.roomScaleMultiplier}
         trustedPath={stage?.trustedPath ?? null}
         trustedPathVisible={stage?.trustedPathVisible === true}
+        harmonizeMaterialCatalog={harmonizeMaterialCatalog}
+        harmonizeSourceVersionId={versionId}
+        harmonizeCertifiedCamera={runtime.certifiedFrozenCamera}
+        harmonizeFlushScene={persistedScene.flushPersistedScene}
+        harmonizeFlushRoomScale={stage?.flushRoomScale}
       />
       <StageFurnitureToolbar />
       {!persistedScene.sceneReady ? (

@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 
+import type { VariantMaterialMode } from "@/lib/vibode-stage/material-text";
+
 import { FIELD, SECONDARY } from "./editor-ui";
+import { PartnerVariantMaterialControl } from "./PartnerMaterialFields";
 
 export function PartnerVariantFields(props: Readonly<{
   heading: string;
@@ -26,6 +29,20 @@ export function PartnerVariantFields(props: Readonly<{
   onPriceCommit: () => void;
   onProductUrlChange: (value: string) => void;
   onProductUrlCommit: () => void;
+  primaryMode: VariantMaterialMode;
+  primaryText: string;
+  secondaryMode: VariantMaterialMode;
+  secondaryText: string;
+  inheritedPrimary: string;
+  inheritedSecondary: string;
+  primaryPending?: boolean;
+  secondaryPending?: boolean;
+  onPrimaryModeChange: (mode: VariantMaterialMode) => void;
+  onPrimaryTextChange: (value: string) => void;
+  onPrimaryCommit: () => void;
+  onSecondaryModeChange: (mode: VariantMaterialMode) => void;
+  onSecondaryTextChange: (value: string) => void;
+  onSecondaryCommit: () => void;
   onRemove?: () => void;
 }>) {
   return (
@@ -109,6 +126,28 @@ export function PartnerVariantFields(props: Readonly<{
             onBlur={props.onProductUrlCommit}
           />
         </label>
+        <PartnerVariantMaterialControl
+          label="Primary Material / Finish"
+          mode={props.primaryMode}
+          text={props.primaryText}
+          inherited={props.inheritedPrimary}
+          disabled={props.disabled}
+          pending={props.primaryPending}
+          onModeChange={props.onPrimaryModeChange}
+          onTextChange={props.onPrimaryTextChange}
+          onCommit={props.onPrimaryCommit}
+        />
+        <PartnerVariantMaterialControl
+          label="Secondary Material / Finish"
+          mode={props.secondaryMode}
+          text={props.secondaryText}
+          inherited={props.inheritedSecondary}
+          disabled={props.disabled}
+          pending={props.secondaryPending}
+          onModeChange={props.onSecondaryModeChange}
+          onTextChange={props.onSecondaryTextChange}
+          onCommit={props.onSecondaryCommit}
+        />
       </div>
       <div className="min-w-0 border-t border-slate-800 pt-3">
         {props.model}

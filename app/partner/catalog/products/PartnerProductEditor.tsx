@@ -20,15 +20,18 @@ import {
   collectionMembershipMutation,
   collectionProductIds,
   commitPartnerProductImage,
+  commitPartnerProductMaterial,
   commitPartnerProductName,
   commitPartnerProductPrice,
   commitPartnerProductUrl,
   commitPartnerVariantFinish,
+  commitPartnerVariantMaterial,
   commitPartnerVariantModelDimensions,
   commitPartnerVariantPrice,
   commitPartnerVariantSku,
   commitPartnerVariantUrl,
   commitPendingVariantFinish,
+  commitPendingVariantMaterial,
   commitPendingVariantModel,
   commitPendingVariantModelDimensions,
   commitPendingVariantPrice,
@@ -328,6 +331,8 @@ export function PartnerProductEditor(props: Readonly<{
       imageUrl: mergeField(current.imageUrl, previousProduct.imageUrl, nextProduct.imageUrl),
       productUrl: mergeField(current.productUrl, previousProduct.productUrl, nextProduct.productUrl),
       price: mergeField(current.price, previousProduct.price, nextProduct.price),
+      primaryMaterial: mergeField(current.primaryMaterial, previousProduct.primaryMaterial, nextProduct.primaryMaterial),
+      secondaryMaterial: mergeField(current.secondaryMaterial, previousProduct.secondaryMaterial, nextProduct.secondaryMaterial),
     });
     setVariantFields((current) => {
       if (replace) return variantFieldMap(props.product.productId, props.variants, next.document);
@@ -346,6 +351,18 @@ export function PartnerProductEditor(props: Readonly<{
           sku: mergeField(local.sku, prior.sku, saved.sku),
           price: mergeField(local.price, prior.price, saved.price),
           productUrl: mergeField(local.productUrl, prior.productUrl, saved.productUrl),
+          primaryMaterialMode: local.primaryMaterialMode === prior.primaryMaterialMode && local.primaryMaterialText === prior.primaryMaterialText
+            ? saved.primaryMaterialMode
+            : local.primaryMaterialMode,
+          primaryMaterialText: local.primaryMaterialMode === prior.primaryMaterialMode && local.primaryMaterialText === prior.primaryMaterialText
+            ? saved.primaryMaterialText
+            : local.primaryMaterialText,
+          secondaryMaterialMode: local.secondaryMaterialMode === prior.secondaryMaterialMode && local.secondaryMaterialText === prior.secondaryMaterialText
+            ? saved.secondaryMaterialMode
+            : local.secondaryMaterialMode,
+          secondaryMaterialText: local.secondaryMaterialMode === prior.secondaryMaterialMode && local.secondaryMaterialText === prior.secondaryMaterialText
+            ? saved.secondaryMaterialText
+            : local.secondaryMaterialText,
         };
       }
       return merged;
@@ -874,6 +891,30 @@ export function PartnerProductEditor(props: Readonly<{
             setProductFields((current) => ({ ...current, productUrl: value }));
           }}
           onProductUrlCommit={() => applyCommit(commitPartnerProductUrl(props.product.productId, productFields.productUrl, savedProduct.productUrl))}
+          primaryMaterial={productFields.primaryMaterial}
+          secondaryMaterial={productFields.secondaryMaterial}
+          primaryPending={draftDocument?.products.update.some((item) => item.productId === props.product.productId && item.primaryMaterial !== undefined)}
+          secondaryPending={draftDocument?.products.update.some((item) => item.productId === props.product.productId && item.secondaryMaterial !== undefined)}
+          onPrimaryMaterialChange={(value) => {
+            setSaveState("unsaved");
+            setProductFields((current) => ({ ...current, primaryMaterial: value }));
+          }}
+          onPrimaryMaterialCommit={() => applyCommit(commitPartnerProductMaterial(
+            props.product.productId,
+            "primary",
+            productFields.primaryMaterial,
+            savedProduct.primaryMaterial,
+          ))}
+          onSecondaryMaterialChange={(value) => {
+            setSaveState("unsaved");
+            setProductFields((current) => ({ ...current, secondaryMaterial: value }));
+          }}
+          onSecondaryMaterialCommit={() => applyCommit(commitPartnerProductMaterial(
+            props.product.productId,
+            "secondary",
+            productFields.secondaryMaterial,
+            savedProduct.secondaryMaterial,
+          ))}
           onCollectionToggle={onCollectionToggle}
         />
       </section>
@@ -1095,6 +1136,74 @@ export function PartnerProductEditor(props: Readonly<{
                         publishedFields.productUrl,
                         publishedSaved.productUrl,
                       ))}
+                      primaryMode={publishedFields.primaryMaterialMode}
+                      primaryText={publishedFields.primaryMaterialText}
+                      secondaryMode={publishedFields.secondaryMaterialMode}
+                      secondaryText={publishedFields.secondaryMaterialText}
+                      inheritedPrimary={savedProduct.primaryMaterial}
+                      inheritedSecondary={savedProduct.secondaryMaterial}
+                      primaryPending={draftDocument?.variants.update.some((item) => item.variantId === variant.variantId && item.primaryMaterial !== undefined)}
+                      secondaryPending={draftDocument?.variants.update.some((item) => item.variantId === variant.variantId && item.secondaryMaterial !== undefined)}
+                      onPrimaryModeChange={(mode) => {
+                        const next = {
+                          ...publishedFields,
+                          primaryMaterialMode: mode,
+                          primaryMaterialText: mode === "custom" ? publishedFields.primaryMaterialText : "",
+                        };
+                        setSaveState("unsaved");
+                        setVariantFields((current) => ({ ...current, [variant.variantId]: next }));
+                        if (mode !== "custom") {
+                          applyCommit(commitPartnerVariantMaterial(
+                            variant.variantId,
+                            "primary",
+                            { mode, text: next.primaryMaterialText },
+                            { mode: publishedSaved.primaryMaterialMode, text: publishedSaved.primaryMaterialText },
+                          ));
+                        }
+                      }}
+                      onPrimaryTextChange={(value) => {
+                        setSaveState("unsaved");
+                        setVariantFields((current) => ({
+                          ...current,
+                          [variant.variantId]: { ...publishedFields, primaryMaterialText: value },
+                        }));
+                      }}
+                      onPrimaryCommit={() => applyCommit(commitPartnerVariantMaterial(
+                        variant.variantId,
+                        "primary",
+                        { mode: publishedFields.primaryMaterialMode, text: publishedFields.primaryMaterialText },
+                        { mode: publishedSaved.primaryMaterialMode, text: publishedSaved.primaryMaterialText },
+                      ))}
+                      onSecondaryModeChange={(mode) => {
+                        const next = {
+                          ...publishedFields,
+                          secondaryMaterialMode: mode,
+                          secondaryMaterialText: mode === "custom" ? publishedFields.secondaryMaterialText : "",
+                        };
+                        setSaveState("unsaved");
+                        setVariantFields((current) => ({ ...current, [variant.variantId]: next }));
+                        if (mode !== "custom") {
+                          applyCommit(commitPartnerVariantMaterial(
+                            variant.variantId,
+                            "secondary",
+                            { mode, text: next.secondaryMaterialText },
+                            { mode: publishedSaved.secondaryMaterialMode, text: publishedSaved.secondaryMaterialText },
+                          ));
+                        }
+                      }}
+                      onSecondaryTextChange={(value) => {
+                        setSaveState("unsaved");
+                        setVariantFields((current) => ({
+                          ...current,
+                          [variant.variantId]: { ...publishedFields, secondaryMaterialText: value },
+                        }));
+                      }}
+                      onSecondaryCommit={() => applyCommit(commitPartnerVariantMaterial(
+                        variant.variantId,
+                        "secondary",
+                        { mode: publishedFields.secondaryMaterialMode, text: publishedFields.secondaryMaterialText },
+                        { mode: publishedSaved.secondaryMaterialMode, text: publishedSaved.secondaryMaterialText },
+                      ))}
                       model={(
                         <div className="space-y-4">
                           <PartnerVariantModelSummary
@@ -1175,6 +1284,74 @@ export function PartnerProductEditor(props: Readonly<{
                           [create.variantId]: { ...pendingFields, productUrl: value },
                         }));
                       }}
+                      primaryMode={pendingFields.primaryMaterialMode}
+                      primaryText={pendingFields.primaryMaterialText}
+                      secondaryMode={pendingFields.secondaryMaterialMode}
+                      secondaryText={pendingFields.secondaryMaterialText}
+                      inheritedPrimary={savedProduct.primaryMaterial}
+                      inheritedSecondary={savedProduct.secondaryMaterial}
+                      primaryPending={pendingFields.primaryMaterialMode !== "inherit" || pendingFields.primaryMaterialText.length > 0}
+                      secondaryPending={pendingFields.secondaryMaterialMode !== "inherit" || pendingFields.secondaryMaterialText.length > 0}
+                      onPrimaryModeChange={(mode) => {
+                        const next = {
+                          ...pendingFields,
+                          primaryMaterialMode: mode,
+                          primaryMaterialText: mode === "custom" ? pendingFields.primaryMaterialText : "",
+                        };
+                        setSaveState("unsaved");
+                        setVariantFields((current) => ({ ...current, [create.variantId]: next }));
+                        if (mode !== "custom") {
+                          applyCommit(commitPendingVariantMaterial(
+                            create.variantId,
+                            "primary",
+                            { mode, text: next.primaryMaterialText },
+                            { mode: pendingSaved.primaryMaterialMode, text: pendingSaved.primaryMaterialText },
+                          ));
+                        }
+                      }}
+                      onPrimaryTextChange={(value) => {
+                        setSaveState("unsaved");
+                        setVariantFields((current) => ({
+                          ...current,
+                          [create.variantId]: { ...pendingFields, primaryMaterialText: value },
+                        }));
+                      }}
+                      onPrimaryCommit={() => applyCommit(commitPendingVariantMaterial(
+                        create.variantId,
+                        "primary",
+                        { mode: pendingFields.primaryMaterialMode, text: pendingFields.primaryMaterialText },
+                        { mode: pendingSaved.primaryMaterialMode, text: pendingSaved.primaryMaterialText },
+                      ))}
+                      onSecondaryModeChange={(mode) => {
+                        const next = {
+                          ...pendingFields,
+                          secondaryMaterialMode: mode,
+                          secondaryMaterialText: mode === "custom" ? pendingFields.secondaryMaterialText : "",
+                        };
+                        setSaveState("unsaved");
+                        setVariantFields((current) => ({ ...current, [create.variantId]: next }));
+                        if (mode !== "custom") {
+                          applyCommit(commitPendingVariantMaterial(
+                            create.variantId,
+                            "secondary",
+                            { mode, text: next.secondaryMaterialText },
+                            { mode: pendingSaved.secondaryMaterialMode, text: pendingSaved.secondaryMaterialText },
+                          ));
+                        }
+                      }}
+                      onSecondaryTextChange={(value) => {
+                        setSaveState("unsaved");
+                        setVariantFields((current) => ({
+                          ...current,
+                          [create.variantId]: { ...pendingFields, secondaryMaterialText: value },
+                        }));
+                      }}
+                      onSecondaryCommit={() => applyCommit(commitPendingVariantMaterial(
+                        create.variantId,
+                        "secondary",
+                        { mode: pendingFields.secondaryMaterialMode, text: pendingFields.secondaryMaterialText },
+                        { mode: pendingSaved.secondaryMaterialMode, text: pendingSaved.secondaryMaterialText },
+                      ))}
                       onProductUrlCommit={() => applyCommit(commitPendingVariantUrl(
                         create.variantId,
                         pendingFields.productUrl,

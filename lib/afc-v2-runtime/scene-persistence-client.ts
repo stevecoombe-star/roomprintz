@@ -49,12 +49,16 @@ export type VersionSceneSaveResponse =
   | Readonly<{ status: "saved"; scene: PersistedVersionScene }>
   | Readonly<{ status: "error"; message: string }>;
 
-export function versionSceneUrl(identity: PersistedSceneIdentity): string {
+export function versionSceneUrl(
+  identity: PersistedSceneIdentity,
+  harmonizeAssetId?: string | null,
+): string {
   const params = new URLSearchParams({
     roomId: identity.roomId,
     versionId: identity.versionId,
     afcGenerationId: identity.afcGenerationId,
   });
+  if (harmonizeAssetId) params.set("harmonizeAssetId", harmonizeAssetId);
   return `${AFC_V2_3D_SCENE_PATH}?${params.toString()}`;
 }
 
