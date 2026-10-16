@@ -117,6 +117,70 @@ test("authorization rejects signed-out, non-admin, and disabled callers before a
     if (!signedOut.ok) assert.equal(signedOut.code, "unauthenticated");
   });
   assert.equal(reads, 0);
+  const unapproved = await planHarmonizeEnqueue({
+    actor: { userId: USER, email: "person@example.com" },
+    submission: {},
+    composite: png(1200, 896),
+    loadTrusted,
+    mode: "shopper",
+    shopperEligible: false,
+  });
+  assert.equal(unapproved.ok, false);
+  if (!unapproved.ok) assert.equal(unapproved.code, "forbidden");
+  const anonymousShopper = await planHarmonizeEnqueue({
+    actor: { userId: null, email: null },
+    submission: {},
+    composite: png(1200, 896),
+    loadTrusted,
+    mode: "shopper",
+    shopperEligible: true,
+  });
+  assert.equal(anonymousShopper.ok, false);
+  if (!anonymousShopper.ok) assert.equal(anonymousShopper.code, "unauthenticated");
+  assert.equal(reads, 0);
+});
+
+test("shopper mode admits only an allowlisted room owner", async () => {
+  const fixture = await matchingFixture();
+  const previous = process.env.VIBODE_HARMONIZE_SHOPPER_USER_IDS;
+  process.env.VIBODE_HARMONIZE_SHOPPER_USER_IDS = USER;
+  try {
+    const admitted = await planHarmonizeEnqueue({
+      actor: { userId: USER, email: "tester@example.com" },
+      submission: fixture.submission,
+      composite: fixture.composite,
+      loadTrusted: async () => ({ ok: true, room: fixture.room }),
+      mode: "shopper",
+    });
+    assert.equal(admitted.ok, true);
+    const otherTester = await planHarmonizeEnqueue({
+      actor: { userId: OTHER, email: "person@example.com" },
+      submission: fixture.submission,
+      composite: fixture.composite,
+      loadTrusted: async () => {
+        throw new Error("an unlisted user must not reach the room");
+      },
+      mode: "shopper",
+    });
+    assert.equal(otherTester.ok, false);
+    if (!otherTester.ok) assert.equal(otherTester.code, "forbidden");
+    await withAdmin(async () => {
+      const listedNonAdmin = await planHarmonizeEnqueue({
+        actor: { userId: USER, email: "tester@example.com" },
+        submission: fixture.submission,
+        composite: fixture.composite,
+        loadTrusted: async () => {
+          throw new Error("admin mode must not admit a shopper");
+        },
+        mode: "admin",
+      });
+      assert.equal(listedNonAdmin.ok, false);
+      if (!listedNonAdmin.ok) assert.equal(listedNonAdmin.code, "forbidden");
+    });
+  } finally {
+    if (previous === undefined) delete process.env.VIBODE_HARMONIZE_SHOPPER_USER_IDS;
+    else process.env.VIBODE_HARMONIZE_SHOPPER_USER_IDS = previous;
+  }
 });
 
 test("cross-room and cross-user captures are rejected", async () => {

@@ -60,25 +60,6 @@ type ExperienceValue = Readonly<{
 
 const HarmonizeExperienceContext = createContext<ExperienceValue | null>(null);
 
-function useIsVibodeAdmin(): boolean {
-  const [isAdmin, setIsAdmin] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/auth/admin-access", { method: "POST", cache: "no-store" })
-      .then((response) => response.json())
-      .then((payload: { isAdmin?: unknown }) => {
-        if (!cancelled) setIsAdmin(payload?.isAdmin === true);
-      })
-      .catch(() => {
-        if (!cancelled) setIsAdmin(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return isAdmin;
-}
-
 async function readExperienceRoom(roomId: string): Promise<
   | Readonly<{ available: true; job: HarmonizeExperienceJob | null }>
   | Readonly<{ available: false }>
@@ -102,7 +83,6 @@ export function HarmonizeExperienceProvider({
   roomId: string | null;
   children: ReactNode;
 }) {
-  const isAdmin = useIsVibodeAdmin();
   const [loadedRoomId, setLoadedRoomId] = useState<string | null>(null);
   const [loadedAvailable, setLoadedAvailable] = useState<boolean | null>(null);
   const [loadedJob, setLoadedJob] = useState<HarmonizeExperienceJob | null>(null);
@@ -112,8 +92,8 @@ export function HarmonizeExperienceProvider({
   const [reloadKey, setReloadKey] = useState(0);
   const submitLock = useRef(false);
   const watchReady = useRef(false);
-  const available = !isAdmin || !roomId || loadedRoomId !== roomId ? null : loadedAvailable;
-  const job = !isAdmin || !roomId || loadedRoomId !== roomId ? null : loadedJob;
+  const available = !roomId || loadedRoomId !== roomId ? null : loadedAvailable;
+  const job = !roomId || loadedRoomId !== roomId ? null : loadedJob;
   const phase = harmonizeExperiencePhase({ submitting, job });
   const settlement = job && !submitting && harmonizeShouldSettlePublication({
     jobId: job.id,
@@ -133,7 +113,7 @@ export function HarmonizeExperienceProvider({
   }, []);
 
   useEffect(() => {
-    if (!isAdmin || !roomId) return;
+    if (!roomId) return;
     let cancelled = false;
     const pull = () => {
       void readExperienceRoom(roomId).then((found) => {
@@ -177,7 +157,7 @@ export function HarmonizeExperienceProvider({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [isAdmin, phase, reloadKey, roomId, submitting]);
+  }, [phase, reloadKey, roomId, submitting]);
 
   const value = useMemo<ExperienceValue>(() => ({
     available,
@@ -188,7 +168,6 @@ export function HarmonizeExperienceProvider({
     startSubmit: () => {
       if (submitLock.current) return false;
       const access = harmonizeButtonAccess({
-        isAdmin: true,
         available,
         qaReady: true,
       });
@@ -315,7 +294,6 @@ export function useHarmonizedSelection(asset: unknown): Readonly<{
 }
 
 export function HarmonizeButton() {
-  const isAdmin = useIsVibodeAdmin();
   const control = useHarmonizeQaControl();
   const experience = useHarmonizeExperience();
   const [disclosure, setDisclosure] = useState<HarmonizeDisclosureChoice>("unknown");
@@ -324,7 +302,6 @@ export function HarmonizeButton() {
   const available = experience?.available ?? null;
   const phase = experience?.phase ?? "idle";
   const access = harmonizeButtonAccess({
-    isAdmin,
     available,
     qaReady: Boolean(control?.qaReady),
   });

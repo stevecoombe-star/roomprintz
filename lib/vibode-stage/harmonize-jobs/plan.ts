@@ -33,7 +33,7 @@ import {
 import { HARMONIZE_UNIVERSAL_PROMPT_VERSION } from "@/lib/vibode-stage/harmonize-universal-prompt-v2";
 import { effectiveMetricScale } from "@/lib/vibode-stage/room-scale";
 
-import { harmonizeActorDecision, harmonizeMode, type HarmonizeMode } from "./access";
+import { harmonizeActorDecision, harmonizeMode, harmonizeShopperEligible, type HarmonizeMode } from "./access";
 import { harmonizePublicationFields } from "./backdrop-kind";
 import {
   HARMONIZE_COMPOSITE_MAX_BYTES,
@@ -98,11 +98,13 @@ export async function planHarmonizeEnqueue(input: Readonly<{
   composite: Uint8Array;
   loadTrusted: (roomId: string, sourceVersionId: string) => Promise<HarmonizeTrustedLoad>;
   mode?: HarmonizeMode;
+  shopperEligible?: boolean;
 }>): Promise<HarmonizePlanResult> {
   const decision = harmonizeActorDecision({
     mode: input.mode ?? harmonizeMode(),
     userId: input.actor.userId,
     email: input.actor.email,
+    shopperEligible: input.shopperEligible ?? harmonizeShopperEligible(input.actor.userId),
   });
   if (decision !== "ok" || !input.actor.userId) return { ok: false, code: decision };
   const parsed = parseSubmission(input.submission);

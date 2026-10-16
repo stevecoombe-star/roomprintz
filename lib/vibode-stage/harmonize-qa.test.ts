@@ -804,7 +804,7 @@ test("reopening a room reads the job from the server and does not keep it in the
   assert.equal(recovered.available && recovered.job?.status, "queued");
 });
 
-test("the permanent header action stays admin-only and the server still authorizes the lookup", () => {
+test("the permanent header action follows the server lookup and the server still authorizes it", () => {
   const header = source("components/stage/StageEditorHeader.tsx");
   const button = source("components/stage/HarmonizeExperience.tsx");
   const route = source("app/api/vibode/harmonize/jobs/route.ts");
@@ -819,8 +819,8 @@ test("the permanent header action stays admin-only and the server still authoriz
   assert.match(header, /<HarmonizeButton \/>/);
   assert.equal(header.match(/<HarmonizeButton \/>/g)?.length, 1);
   assert.doesNotMatch(header, /HarmonizeExportButton|HarmonizeQaButton|Download|Test Harmonize|Save JPEG|Harmonize Export/);
-  assert.match(button, /\/api\/auth\/admin-access/);
-  assert.match(button, /isAdmin === true/);
+  assert.doesNotMatch(button, /\/api\/auth\/admin-access/);
+  assert.doesNotMatch(button, /isAdmin/);
   assert.match(button, /access === "hidden"/);
   assert.match(button, /Harmonize is unavailable/);
   assert.match(button, /aria-label="Harmonize"/);

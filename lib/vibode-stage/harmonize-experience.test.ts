@@ -117,12 +117,11 @@ const HARMONIZED_SELECTED = {
 const OWNER = "88888888-8888-4888-8888-888888888888";
 const OTHER_USER = "99999999-9999-4999-8999-999999999999";
 
-test("button access stays admin-only and disabled while generation is off", () => {
-  assert.equal(harmonizeButtonAccess({ isAdmin: false, available: true, qaReady: true }), "hidden");
-  assert.equal(harmonizeButtonAccess({ isAdmin: true, available: false, qaReady: true }), "disabled");
-  assert.equal(harmonizeButtonAccess({ isAdmin: true, available: null, qaReady: true }), "disabled");
-  assert.equal(harmonizeButtonAccess({ isAdmin: true, available: true, qaReady: false }), "disabled");
-  assert.equal(harmonizeButtonAccess({ isAdmin: true, available: true, qaReady: true }), "ready");
+test("button access follows the server lookup and stays hidden when intake is denied", () => {
+  assert.equal(harmonizeButtonAccess({ available: false, qaReady: true }), "hidden");
+  assert.equal(harmonizeButtonAccess({ available: null, qaReady: true }), "hidden");
+  assert.equal(harmonizeButtonAccess({ available: true, qaReady: false }), "disabled");
+  assert.equal(harmonizeButtonAccess({ available: true, qaReady: true }), "ready");
   assert.equal(harmonizeAcknowledgementGrantsAccess(), false);
   assert.equal(harmonizeButtonLabel("running").includes("%"), false);
   const header = source("components/stage/StageEditorHeader.tsx");
@@ -166,7 +165,7 @@ test("a second click cannot start another capture while one is in flight", () =>
   assert.equal(gate.start(), null);
   gate.finish();
   assert.equal(gate.start(), JOB);
-  const access = harmonizeButtonAccess({ isAdmin: true, available: true, qaReady: true });
+  const access = harmonizeButtonAccess({ available: true, qaReady: true });
   assert.equal(harmonizeCanSubmit({ access, phase: "preparing", gateHeld: false }), false);
   assert.equal(harmonizeCanSubmit({ access, phase: "idle", gateHeld: true }), false);
   assert.equal(harmonizeCanSubmit({ access, phase: "queued", gateHeld: false }), false);
