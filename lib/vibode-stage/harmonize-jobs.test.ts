@@ -183,6 +183,49 @@ test("shopper mode admits only an allowlisted room owner", async () => {
   }
 });
 
+test("public mode admits any authenticated room owner and ignores the shopper allowlist", async () => {
+  const fixture = await matchingFixture();
+  const previous = process.env.VIBODE_HARMONIZE_SHOPPER_USER_IDS;
+  delete process.env.VIBODE_HARMONIZE_SHOPPER_USER_IDS;
+  let reads = 0;
+  try {
+    const anonymous = await planHarmonizeEnqueue({
+      actor: { userId: null, email: null },
+      submission: fixture.submission,
+      composite: fixture.composite,
+      loadTrusted: async () => {
+        reads += 1;
+        throw new Error("anonymous public intake must not reach the room");
+      },
+      mode: "public",
+    });
+    assert.equal(anonymous.ok, false);
+    if (!anonymous.ok) assert.equal(anonymous.code, "unauthenticated");
+    assert.equal(reads, 0);
+    const admitted = await planHarmonizeEnqueue({
+      actor: { userId: USER, email: "new-user@example.com" },
+      submission: fixture.submission,
+      composite: fixture.composite,
+      loadTrusted: async () => ({ ok: true, room: fixture.room }),
+      mode: "public",
+      shopperEligible: false,
+    });
+    assert.equal(admitted.ok, true);
+    const otherUser = await planHarmonizeEnqueue({
+      actor: { userId: USER, email: "new-user@example.com" },
+      submission: fixture.submission,
+      composite: fixture.composite,
+      loadTrusted: async () => ({ ok: true, room: { ...fixture.room, userId: OTHER } }),
+      mode: "public",
+    });
+    assert.equal(otherUser.ok, false);
+    if (!otherUser.ok) assert.equal(otherUser.code, "not_found");
+  } finally {
+    if (previous === undefined) delete process.env.VIBODE_HARMONIZE_SHOPPER_USER_IDS;
+    else process.env.VIBODE_HARMONIZE_SHOPPER_USER_IDS = previous;
+  }
+});
+
 test("cross-room and cross-user captures are rejected", async () => {
   const fixture = await matchingFixture();
   await withAdmin(async () => {
