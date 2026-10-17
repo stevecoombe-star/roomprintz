@@ -1,6 +1,6 @@
 import { isAdminEmail } from "@/lib/adminAccess";
 
-export type HarmonizeMode = "off" | "admin" | "shopper";
+export type HarmonizeMode = "off" | "admin" | "shopper" | "public";
 
 export type HarmonizeActorDecision = "ok" | "disabled" | "unauthenticated" | "forbidden";
 
@@ -8,13 +8,14 @@ const SHOPPER_USER_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
- * Default off. Only the exact values `admin` and `shopper` open intake.
+ * Default off. Only `admin`, `shopper`, and `public` open intake.
  * Unset, empty, `off`, `on`, and every other value stay off.
  */
 export function harmonizeMode(env: NodeJS.ProcessEnv = process.env): HarmonizeMode {
   const requested = env.VIBODE_HARMONIZE_MODE?.trim().toLowerCase() ?? "";
   if (requested === "admin") return "admin";
   if (requested === "shopper") return "shopper";
+  if (requested === "public") return "public";
   return "off";
 }
 
@@ -50,6 +51,10 @@ export function harmonizeActorDecision(input: Readonly<{
     if (!isAdminEmail(input.email)) return "forbidden";
     return "ok";
   }
-  if (input.shopperEligible !== true) return "forbidden";
-  return "ok";
+  if (input.mode === "shopper") {
+    if (input.shopperEligible !== true) return "forbidden";
+    return "ok";
+  }
+  if (input.mode === "public") return "ok";
+  return "disabled";
 }

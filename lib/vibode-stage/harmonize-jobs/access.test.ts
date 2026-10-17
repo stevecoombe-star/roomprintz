@@ -22,9 +22,10 @@ test("unset, empty, off, on, and unknown intake modes stay off", () => {
   assert.equal(harmonizeMode(env({})), "off");
 });
 
-test("admin mode stays admin and shopper mode is explicit", () => {
+test("admin, shopper, and public modes are explicit", () => {
   assert.equal(harmonizeMode(env({ VIBODE_HARMONIZE_MODE: " admin " })), "admin");
   assert.equal(harmonizeMode(env({ VIBODE_HARMONIZE_MODE: "SHOPPER" })), "shopper");
+  assert.equal(harmonizeMode(env({ VIBODE_HARMONIZE_MODE: " public " })), "public");
 });
 
 test("the shopper allowlist ignores blank and invalid ids and admits nobody when empty", () => {
@@ -90,6 +91,24 @@ test("admin mode requires the admin identity and shopper mode requires eligibili
       userId: TESTER,
       email: "tester@example.com",
       shopperEligible: true,
+    }), "ok");
+    assert.equal(harmonizeActorDecision({
+      mode: "public",
+      userId: null,
+      email: null,
+      shopperEligible: true,
+    }), "unauthenticated");
+    assert.equal(harmonizeActorDecision({
+      mode: "public",
+      userId: STRANGER,
+      email: "new-user@example.com",
+      shopperEligible: false,
+    }), "ok");
+    assert.equal(harmonizeActorDecision({
+      mode: "public",
+      userId: TESTER,
+      email: "admin@example.com",
+      shopperEligible: false,
     }), "ok");
   } finally {
     if (previous === undefined) delete process.env.VIBODE_ADMIN_EMAIL;
