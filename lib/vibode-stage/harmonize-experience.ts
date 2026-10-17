@@ -154,13 +154,13 @@ export function harmonizeAcknowledgementGrantsAccess(): false {
   return false;
 }
 
+/** The jobs route is the access decision. A denied or still-loading lookup stays hidden. */
 export function harmonizeButtonAccess(input: Readonly<{
-  isAdmin: boolean;
   available: boolean | null;
   qaReady: boolean;
 }>): HarmonizeButtonAccess {
-  if (!input.isAdmin) return "hidden";
-  if (input.available !== true || !input.qaReady) return "disabled";
+  if (input.available !== true) return "hidden";
+  if (!input.qaReady) return "disabled";
   return "ready";
 }
 
