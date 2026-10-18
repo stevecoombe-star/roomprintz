@@ -2,8 +2,9 @@
  * REMOVE-1A inspection decisions.
  *
  * ORIGINAL and EMPTY stay immutable. Matching decoded dimensions are a grid
- * comparison only. Pixel registration stays unverified. This module does not
- * write History, the scene, room scale, or the certified camera.
+ * comparison only. Pixel registration stays unverified. Alignment and Brush
+ * share one inspection session. This module does not write History, the scene,
+ * room scale, or the certified camera.
  */
 
 import {
@@ -14,6 +15,14 @@ import {
   classifyAfcR3cImagePairCompatibility,
   type AfcR3cCompatibilityTier,
 } from "@/app/admin/3d-room-lab/research/afc-r3c-image-pair-compatibility";
+import {
+  REMOVE_BRUSH_DEFAULT_DIAMETER_PX,
+  REMOVE_BRUSH_DEFAULT_FEATHER_PX,
+  clampRemoveBrushDiameter,
+  clampRemoveBrushFeather,
+  type RemoveBrushTool,
+  type RemoveSessionMode,
+} from "@/lib/vibode-stage/remove-mask";
 
 export const REMOVE_PIXEL_REGISTRATION = "unverified" as const;
 
@@ -74,6 +83,12 @@ export type RemoveInspectionState = Readonly<{
   active: boolean;
   opacity: number;
   furnitureHidden: boolean;
+  mode: RemoveSessionMode;
+  tool: RemoveBrushTool;
+  diameterPx: number;
+  featherPx: number;
+  maskEpoch: number;
+  sessionSerial: number;
 }>;
 
 export type RemoveInspectionEvent =
@@ -81,7 +96,12 @@ export type RemoveInspectionEvent =
   | Readonly<{ type: "exit" }>
   | Readonly<{ type: "opacity"; opacity: number }>
   | Readonly<{ type: "preset"; preset: RemoveOpacityPresetId }>
-  | Readonly<{ type: "furniture"; hidden: boolean }>;
+  | Readonly<{ type: "furniture"; hidden: boolean }>
+  | Readonly<{ type: "mode"; mode: RemoveSessionMode }>
+  | Readonly<{ type: "tool"; tool: RemoveBrushTool }>
+  | Readonly<{ type: "diameter"; diameterPx: number }>
+  | Readonly<{ type: "feather"; featherPx: number }>
+  | Readonly<{ type: "clear-mask" }>;
 
 export type RemoveInspectionInteraction = Readonly<{
   furnitureManipulation: boolean;
@@ -104,7 +124,17 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 export function initialRemoveInspectionState(): RemoveInspectionState {
-  return { active: false, opacity: 50, furnitureHidden: false };
+  return {
+    active: false,
+    opacity: 50,
+    furnitureHidden: false,
+    mode: "alignment",
+    tool: "reveal",
+    diameterPx: REMOVE_BRUSH_DEFAULT_DIAMETER_PX,
+    featherPx: REMOVE_BRUSH_DEFAULT_FEATHER_PX,
+    maskEpoch: 0,
+    sessionSerial: 0,
+  };
 }
 
 export function clampRemoveOpacity(value: number): number {
@@ -198,20 +228,57 @@ export function reduceRemoveInspection(
   event: RemoveInspectionEvent,
 ): RemoveInspectionState {
   if (event.type === "enter") {
-    return { active: true, opacity: 50, furnitureHidden: false };
+    return {
+      ...state,
+      active: true,
+      opacity: 50,
+      furnitureHidden: false,
+      mode: "alignment",
+      maskEpoch: state.maskEpoch + 1,
+      sessionSerial: state.sessionSerial + 1,
+    };
   }
   if (event.type === "exit") {
-    return { ...state, active: false, furnitureHidden: false };
+    return {
+      ...state,
+      active: false,
+      furnitureHidden: false,
+      mode: "alignment",
+      maskEpoch: state.maskEpoch + 1,
+      sessionSerial: state.sessionSerial + 1,
+    };
   }
   if (!state.active) return state;
   if (event.type === "opacity") {
-    return { ...state, opacity: clampRemoveOpacity(event.opacity) };
+    const opacity = clampRemoveOpacity(event.opacity);
+    return opacity === state.opacity ? state : { ...state, opacity };
   }
   if (event.type === "preset") {
-    return { ...state, opacity: presetOpacity(event.preset) };
+    const opacity = presetOpacity(event.preset);
+    return opacity === state.opacity ? state : { ...state, opacity };
   }
   if (event.type === "furniture") {
-    return { ...state, furnitureHidden: event.hidden === true };
+    const furnitureHidden = event.hidden === true;
+    return furnitureHidden === state.furnitureHidden ? state : { ...state, furnitureHidden };
+  }
+  if (event.type === "mode") {
+    return event.mode === state.mode ? state : { ...state, mode: event.mode };
+  }
+  if (event.type === "tool") {
+    return event.tool === state.tool ? state : { ...state, tool: event.tool };
+  }
+  if (event.type === "diameter") {
+    const diameterPx = clampRemoveBrushDiameter(event.diameterPx);
+    const featherPx = clampRemoveBrushFeather(state.featherPx, diameterPx);
+    if (diameterPx === state.diameterPx && featherPx === state.featherPx) return state;
+    return { ...state, diameterPx, featherPx };
+  }
+  if (event.type === "feather") {
+    const featherPx = clampRemoveBrushFeather(event.featherPx, state.diameterPx);
+    return featherPx === state.featherPx ? state : { ...state, featherPx };
+  }
+  if (event.type === "clear-mask") {
+    return { ...state, maskEpoch: state.maskEpoch + 1 };
   }
   return state;
 }

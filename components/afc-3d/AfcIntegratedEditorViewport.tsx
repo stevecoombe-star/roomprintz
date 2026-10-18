@@ -270,6 +270,7 @@ export function AfcIntegratedEditorViewport({
           active: removeActive,
           furnitureHidden: removeInspection?.furnitureHidden === true,
         })}
+        scenePointerEvents={removeActive && removeInspection?.mode === "brush" ? "none" : "auto"}
         inspectionOverlay={<RemoveAlignmentOverlay />}
       />
       <StageFurnitureToolbar />

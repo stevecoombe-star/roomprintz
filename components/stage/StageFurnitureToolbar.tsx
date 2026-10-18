@@ -20,9 +20,9 @@ const FOCUS =
 export function StageFurnitureToolbar() {
   const stage = useOptionalStageEditor();
   const session = useAfcSceneObjectCrudSession();
-  const manipulationEnabled = removeInspectionAllowsFurnitureManipulation(
-    useRemoveAlignment()?.active === true,
-  );
+  const remove = useRemoveAlignment();
+  const manipulationEnabled = removeInspectionAllowsFurnitureManipulation(remove?.active === true);
+  const brushPointerIgnored = remove?.active === true && remove.mode === "brush";
   const selection = stage?.selection ?? null;
   if (!stage || !stage.active || !selection || !session?.selectedObjectId) return null;
   if (
@@ -50,7 +50,12 @@ export function StageFurnitureToolbar() {
       data-furniture-manipulation={manipulationEnabled ? "open" : "blocked"}
     >
       <div
-        className="pointer-events-auto absolute"
+        className={
+          brushPointerIgnored
+            ? "pointer-events-none absolute [&_*]:pointer-events-none"
+            : "pointer-events-auto absolute"
+        }
+        data-remove-brush-pointer={brushPointerIgnored ? "ignored" : "open"}
         style={{ left: placement.left, top: placement.top }}
       >
         {stage.toolbarSlider === "rotate" ? (

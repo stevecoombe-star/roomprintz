@@ -195,6 +195,7 @@ type Props = Readonly<{
   harmonizeFlushRoomScale?: () => Promise<boolean>;
   furnitureManipulationEnabled?: boolean;
   furnitureRenderingVisible?: boolean;
+  scenePointerEvents?: "auto" | "none";
   inspectionOverlay?: ReactNode;
 }>;
 
@@ -232,6 +233,7 @@ type ReadyProps = Readonly<{
   harmonizeFlushRoomScale?: () => Promise<boolean>;
   furnitureManipulationEnabled?: boolean;
   furnitureRenderingVisible?: boolean;
+  scenePointerEvents?: "auto" | "none";
   inspectionOverlay?: ReactNode;
 }>;
 
@@ -267,6 +269,7 @@ export function AfcProductionRoomViewer({
   harmonizeFlushRoomScale,
   furnitureManipulationEnabled = true,
   furnitureRenderingVisible = true,
+  scenePointerEvents = "auto",
   inspectionOverlay = null,
 }: Props) {
   const validated = useMemo(
@@ -329,6 +332,7 @@ export function AfcProductionRoomViewer({
       harmonizeFlushRoomScale={harmonizeFlushRoomScale}
       furnitureManipulationEnabled={furnitureManipulationEnabled}
       furnitureRenderingVisible={furnitureRenderingVisible}
+      scenePointerEvents={scenePointerEvents}
       inspectionOverlay={inspectionOverlay}
     />
   );
@@ -366,6 +370,7 @@ function AfcProductionRoomViewerReady({
   harmonizeFlushRoomScale,
   furnitureManipulationEnabled = true,
   furnitureRenderingVisible = true,
+  scenePointerEvents = "auto",
   inspectionOverlay = null,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -414,10 +419,13 @@ function AfcProductionRoomViewerReady({
   const harmonizeFlushRoomScaleRef = useRef(harmonizeFlushRoomScale);
   const furnitureManipulationRef = useRef(furnitureManipulationEnabled);
   const furnitureRenderingRef = useRef(furnitureRenderingVisible);
+  const scenePointerEventsRef = useRef(scenePointerEvents);
+  const syncScenePointerEventsRef = useRef<(() => void) | null>(null);
   const releaseUncommittedGestureRef = useRef<(() => void) | null>(null);
   const manipulationWasEnabledRef = useRef(furnitureManipulationEnabled);
   furnitureManipulationRef.current = furnitureManipulationEnabled;
   furnitureRenderingRef.current = furnitureRenderingVisible;
+  scenePointerEventsRef.current = scenePointerEvents;
   useLayoutEffect(() => {
     if (manipulationWasEnabledRef.current && !furnitureManipulationEnabled) {
       releaseUncommittedGestureRef.current?.();
@@ -538,6 +546,12 @@ function AfcProductionRoomViewerReady({
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     mount.appendChild(renderer.domElement);
+    const syncScenePointerEvents = () => {
+      renderer.domElement.style.pointerEvents =
+        scenePointerEventsRef.current === "none" ? "none" : "auto";
+    };
+    syncScenePointerEventsRef.current = syncScenePointerEvents;
+    syncScenePointerEvents();
 
     const scene = new THREE.Scene();
     scene.background = null;
@@ -1986,6 +2000,7 @@ function AfcProductionRoomViewerReady({
 
     return () => {
       disposed = true;
+      syncScenePointerEventsRef.current = null;
       releaseUncommittedGestureRef.current = null;
       harmonizeCaptureRef.current = null;
       applyRoomScaleRef.current = null;
@@ -2109,6 +2124,10 @@ function AfcProductionRoomViewerReady({
     };
   }, [registerHarmonizeExport, registerHarmonizeQa, roomId]);
 
+  useLayoutEffect(() => {
+    syncScenePointerEventsRef.current?.();
+  }, [scenePointerEvents]);
+
   useEffect(() => {
     applyRoomScaleRef.current?.(roomScaleMultiplier);
   }, [roomScaleMultiplier]);
@@ -2179,6 +2198,8 @@ function AfcProductionRoomViewerReady({
           <div
             ref={mountRef}
             className="absolute inset-0 z-10 bg-transparent"
+            data-scene-pointer-events={scenePointerEvents}
+            style={scenePointerEvents === "none" ? { pointerEvents: "none" } : undefined}
             aria-label={
               showInternalControls
                 ? "Production AFC frozen-camera runtime"

@@ -13,6 +13,11 @@ import {
 } from "react";
 
 import {
+  RemoveBrushCanvas,
+  type RemoveMaskHold,
+  type RemoveMaskSummary,
+} from "@/components/stage/RemoveBrushCanvas";
+import {
   REMOVE_ALIGNMENT_NOTE,
   REMOVE_HARMONIZE_NOTE,
   REMOVE_OPACITY_PRESETS,
@@ -28,6 +33,13 @@ import {
   type RemoveAlignmentLookup,
   type RemoveAlignmentReport,
 } from "@/lib/vibode-stage/remove-alignment";
+import {
+  formatRemoveMaskedCoverage,
+  removeBrushAdmission,
+  type RemoveBrushAdmission,
+  type RemoveBrushTool,
+  type RemoveSessionMode,
+} from "@/lib/vibode-stage/remove-mask";
 
 const FOCUS =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-400";
@@ -43,12 +55,27 @@ type RemoveAlignmentContextValue = Readonly<{
   furnitureHidden: boolean;
   furnitureRenderingVisible: boolean;
   disabledReason: string | null;
+  mode: RemoveSessionMode;
+  tool: RemoveBrushTool;
+  diameterPx: number;
+  featherPx: number;
+  maskEpoch: number;
+  sessionSerial: number;
+  brushAdmission: RemoveBrushAdmission | null;
+  maskSummary: RemoveMaskSummary | null;
+  maskHoldRef: { current: RemoveMaskHold | null };
   enter: () => void;
   exit: () => void;
   setOpacity: (opacity: number) => void;
   setPreset: (preset: (typeof REMOVE_OPACITY_PRESETS)[number]["id"]) => void;
   setFurnitureHidden: (hidden: boolean) => void;
+  setMode: (mode: RemoveSessionMode) => void;
+  setTool: (tool: RemoveBrushTool) => void;
+  setDiameter: (diameterPx: number) => void;
+  setFeather: (featherPx: number) => void;
+  clearMask: () => void;
   noteDisplayedSize: (artifact: "original" | "empty", size: DisplayedSize) => void;
+  noteMaskSummary: (summary: RemoveMaskSummary | null) => void;
   originalDisagreement: string | null;
   emptyDisagreement: string | null;
 }>;
@@ -81,6 +108,8 @@ export function RemoveAlignmentProvider({
     original: DisplayedSize | null;
     empty: DisplayedSize | null;
   }>>({ original: null, empty: null });
+  const [maskSummary, setMaskSummary] = useState<RemoveMaskSummary | null>(null);
+  const maskHoldRef = useRef<RemoveMaskHold | null>(null);
   const [trackedRoomId, setTrackedRoomId] = useState(roomId);
   if (trackedRoomId !== roomId) {
     setTrackedRoomId(roomId);
@@ -129,6 +158,40 @@ export function RemoveAlignmentProvider({
   }, [inspection.active]);
 
   const report = lookup.access === "ready" ? lookup.report : null;
+  const sessionActive = inspection.active && lookup.access === "ready";
+  const originalDisagreement = report
+    ? removeDecodedSizeDisagreement({
+      width: report.original.decodedWidth,
+      height: report.original.decodedHeight,
+    }, displayed.original)
+    : null;
+  const emptyDisagreement = report
+    ? removeDecodedSizeDisagreement({
+      width: report.empty.decodedWidth,
+      height: report.empty.decodedHeight,
+    }, displayed.empty)
+    : null;
+  const brushAdmission = report
+    ? removeBrushAdmission({
+      gridCompatibility: report.gridCompatibility,
+      originalDisagreement,
+      emptyDisagreement,
+    })
+    : null;
+
+  if (!sessionActive && maskSummary !== null) setMaskSummary(null);
+  if (
+    inspection.active
+    && inspection.mode === "brush"
+    && brushAdmission?.allowed !== true
+  ) {
+    dispatch({ type: "mode", mode: "alignment" });
+  }
+
+  useEffect(() => {
+    if (sessionActive) return;
+    maskHoldRef.current = null;
+  }, [sessionActive]);
   const enter = useCallback(() => {
     const requested = roomRef.current;
     if (!requested) return;
@@ -147,55 +210,92 @@ export function RemoveAlignmentProvider({
   const setFurnitureHidden = useCallback((hidden: boolean) => {
     dispatch({ type: "furniture", hidden });
   }, []);
+  const setMode = useCallback((mode: RemoveSessionMode) => {
+    dispatch({ type: "mode", mode });
+  }, []);
+  const setTool = useCallback((tool: RemoveBrushTool) => {
+    dispatch({ type: "tool", tool });
+  }, []);
+  const setDiameter = useCallback((diameterPx: number) => {
+    dispatch({ type: "diameter", diameterPx });
+  }, []);
+  const setFeather = useCallback((featherPx: number) => {
+    dispatch({ type: "feather", featherPx });
+  }, []);
+  const clearMask = useCallback(() => {
+    dispatch({ type: "clear-mask" });
+  }, []);
   const noteDisplayedSize = useCallback((artifact: "original" | "empty", size: DisplayedSize) => {
     setDisplayed((current) => ({ ...current, [artifact]: size }));
+  }, []);
+  const noteMaskSummary = useCallback((summary: RemoveMaskSummary | null) => {
+    setMaskSummary(summary);
   }, []);
 
   const value = useMemo<RemoveAlignmentContextValue>(() => ({
     roomId,
-    active: inspection.active && lookup.access === "ready",
+    active: sessionActive,
     access: lookup.access,
     report,
     opacity: inspection.opacity,
     furnitureHidden: inspection.furnitureHidden,
     furnitureRenderingVisible: removeFurnitureRenderingVisible({
-      active: inspection.active && lookup.access === "ready",
+      active: sessionActive,
       furnitureHidden: inspection.furnitureHidden,
     }),
     disabledReason: lookup.access === "disabled" ? lookup.reason : null,
+    mode: inspection.mode,
+    tool: inspection.tool,
+    diameterPx: inspection.diameterPx,
+    featherPx: inspection.featherPx,
+    maskEpoch: inspection.maskEpoch,
+    sessionSerial: inspection.sessionSerial,
+    brushAdmission,
+    maskSummary,
+    maskHoldRef,
     enter,
     exit,
     setOpacity,
     setPreset,
     setFurnitureHidden,
+    setMode,
+    setTool,
+    setDiameter,
+    setFeather,
+    clearMask,
     noteDisplayedSize,
-    originalDisagreement: report
-      ? removeDecodedSizeDisagreement({
-        width: report.original.decodedWidth,
-        height: report.original.decodedHeight,
-      }, displayed.original)
-      : null,
-    emptyDisagreement: report
-      ? removeDecodedSizeDisagreement({
-        width: report.empty.decodedWidth,
-        height: report.empty.decodedHeight,
-      }, displayed.empty)
-      : null,
+    noteMaskSummary,
+    originalDisagreement,
+    emptyDisagreement,
   }), [
-    displayed.empty,
-    displayed.original,
+    brushAdmission,
+    clearMask,
+    emptyDisagreement,
     enter,
     exit,
-    inspection.active,
+    inspection.diameterPx,
+    inspection.featherPx,
     inspection.furnitureHidden,
+    inspection.maskEpoch,
+    inspection.mode,
     inspection.opacity,
+    inspection.sessionSerial,
+    inspection.tool,
     lookup,
+    maskSummary,
     noteDisplayedSize,
+    noteMaskSummary,
+    originalDisagreement,
     roomId,
     report,
+    sessionActive,
+    setDiameter,
+    setFeather,
     setFurnitureHidden,
+    setMode,
     setOpacity,
     setPreset,
+    setTool,
   ]);
 
   return (
@@ -246,39 +346,62 @@ export function RemoveAlignmentControl() {
         <div
           role="region"
           aria-label="Remove inspection"
-          className="absolute right-0 top-full z-50 mt-1 w-80 rounded-md border border-neutral-700 bg-neutral-950 p-3 text-neutral-200 shadow-lg"
+          data-remove-mode={session.mode}
+          className="absolute right-0 top-full z-50 mt-1 max-h-[70vh] w-80 overflow-y-auto rounded-md border border-neutral-700 bg-neutral-950 p-3 text-neutral-200 shadow-lg"
         >
-          <div className="flex gap-1" role="group" aria-label="Alignment presets">
-            {REMOVE_OPACITY_PRESETS.map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                aria-pressed={pressedPreset === preset.id}
-                onClick={() => session.setPreset(preset.id)}
-                className={`rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
-                  pressedPreset === preset.id
-                    ? "border-neutral-500 bg-neutral-800 text-neutral-50"
-                    : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
-                }`}
-              >
-                {preset.label}
-              </button>
-            ))}
+          <div className="flex gap-1" role="group" aria-label="Remove mode">
+            <ModeButton
+              pressed={session.mode === "alignment"}
+              onClick={() => session.setMode("alignment")}
+            >
+              Alignment
+            </ModeButton>
+            <ModeButton
+              pressed={session.mode === "brush"}
+              disabled={session.brushAdmission?.allowed !== true}
+              title={session.brushAdmission?.allowed === false ? session.brushAdmission.reason : undefined}
+              onClick={() => session.setMode("brush")}
+            >
+              Brush
+            </ModeButton>
           </div>
-          <label className="mt-3 block text-[11px] text-neutral-400">
-            EMPTY opacity
-            <span className="float-right tabular-nums text-neutral-200">{session.opacity}%</span>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              value={session.opacity}
-              aria-label="EMPTY opacity"
-              onChange={(event) => session.setOpacity(Number(event.target.value))}
-              className="mt-1 h-1 w-full accent-neutral-200"
-            />
-          </label>
+          {session.mode === "alignment" ? (
+            <>
+              <div className="mt-3 flex gap-1" role="group" aria-label="Alignment presets">
+                {REMOVE_OPACITY_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    aria-pressed={pressedPreset === preset.id}
+                    onClick={() => session.setPreset(preset.id)}
+                    className={`rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+                      pressedPreset === preset.id
+                        ? "border-neutral-500 bg-neutral-800 text-neutral-50"
+                        : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <label className="mt-3 block text-[11px] text-neutral-400">
+                EMPTY opacity
+                <span className="float-right tabular-nums text-neutral-200">{session.opacity}%</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={session.opacity}
+                  aria-label="EMPTY opacity"
+                  onChange={(event) => session.setOpacity(Number(event.target.value))}
+                  className="mt-1 h-1 w-full accent-neutral-200"
+                />
+              </label>
+            </>
+          ) : (
+            <BrushControls session={session} />
+          )}
           <button
             type="button"
             aria-pressed={session.furnitureHidden}
@@ -298,6 +421,113 @@ export function RemoveAlignmentControl() {
   );
 }
 
+function ModeButton({
+  pressed,
+  disabled = false,
+  title,
+  onClick,
+  children,
+}: {
+  pressed: boolean;
+  disabled?: boolean;
+  title?: string;
+  onClick: () => void;
+  children: string;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={pressed}
+      disabled={disabled}
+      title={title}
+      onClick={() => {
+        if (disabled) return;
+        onClick();
+      }}
+      className={`rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+        disabled
+          ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+          : pressed
+            ? "border-neutral-500 bg-neutral-800 text-neutral-50"
+            : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function BrushControls({ session }: { session: RemoveAlignmentContextValue }) {
+  return (
+    <div className="mt-3">
+      <div className="flex gap-1" role="group" aria-label="Brush tool">
+        <ModeButton pressed={session.tool === "reveal"} onClick={() => session.setTool("reveal")}>
+          Reveal
+        </ModeButton>
+        <ModeButton pressed={session.tool === "restore"} onClick={() => session.setTool("restore")}>
+          Restore
+        </ModeButton>
+      </div>
+      <BrushSlider
+        label="Diameter"
+        ariaLabel="Brush diameter in ORIGINAL pixels"
+        min={1}
+        max={512}
+        value={session.diameterPx}
+        onChange={session.setDiameter}
+      />
+      <BrushSlider
+        label="Feather"
+        ariaLabel="Brush feather in ORIGINAL pixels"
+        min={0}
+        max={Math.floor(session.diameterPx / 2)}
+        value={session.featherPx}
+        onChange={session.setFeather}
+      />
+      <button
+        type="button"
+        onClick={session.clearMask}
+        className={`mt-3 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 ${FOCUS}`}
+      >
+        Clear Mask
+      </button>
+    </div>
+  );
+}
+
+function BrushSlider({
+  label,
+  ariaLabel,
+  min,
+  max,
+  value,
+  onChange,
+}: {
+  label: string;
+  ariaLabel: string;
+  min: number;
+  max: number;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="mt-3 block text-[11px] text-neutral-400">
+      {label}
+      <span className="float-right tabular-nums text-neutral-200">{value} px</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={1}
+        value={Math.min(max, Math.max(min, value))}
+        aria-label={ariaLabel}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="mt-1 h-1 w-full accent-neutral-200"
+      />
+    </label>
+  );
+}
+
 function AlignmentDetails({ session }: { session: RemoveAlignmentContextValue }) {
   const report = session.report;
   if (!report) return null;
@@ -307,6 +537,24 @@ function AlignmentDetails({ session }: { session: RemoveAlignmentContextValue })
         Alignment
       </summary>
       <dl className="mt-2 space-y-1 text-[10px] leading-relaxed text-neutral-400">
+        <Row label="Mode" value={session.mode} />
+        <Row label="Brush tool" value={session.tool} />
+        <Row label="Diameter" value={`${session.diameterPx} ORIGINAL px`} />
+        <Row label="Feather" value={`${session.featherPx} ORIGINAL px`} />
+        <Row
+          label="Mask resolution"
+          value={session.maskSummary
+            ? `${session.maskSummary.width}×${session.maskSummary.height}`
+            : "not allocated"}
+        />
+        <Row
+          label="Masked coverage"
+          value={formatRemoveMaskedCoverage(session.maskSummary?.coveragePercent ?? 0)}
+        />
+        <Row
+          label="Aspect rescaling"
+          value={report.gridCompatibility === "aspect_compatible_rescaled" ? "yes" : "no"}
+        />
         <Row label="Pixel registration" value={report.pixelRegistration} />
         <Row label="Grid comparison" value={report.gridCompatibility} />
         <Row label="Generation" value={report.generationId} />
@@ -365,6 +613,30 @@ export function RemoveAlignmentOverlay() {
   const report = session?.active ? session.report : null;
   if (!session || !report) return null;
   if (!session.roomId) return null;
+  if (session.mode === "brush" && session.brushAdmission?.allowed === true) {
+    return (
+      <div
+        className="pointer-events-none absolute inset-0 z-[1]"
+        data-remove-alignment-overlay="true"
+        data-remove-view="brush"
+        data-remove-mode="brush"
+      >
+        <RemoveBrushCanvas
+          active={session.active}
+          roomId={session.roomId}
+          report={report}
+          sessionSerial={session.sessionSerial}
+          maskEpoch={session.maskEpoch}
+          tool={session.tool}
+          diameterPx={session.diameterPx}
+          featherPx={session.featherPx}
+          maskHoldRef={session.maskHoldRef}
+          onMaskSummary={session.noteMaskSummary}
+          onDisplayedSize={session.noteDisplayedSize}
+        />
+      </div>
+    );
+  }
   const layers = removeOverlayLayers(session.opacity);
   const mode = removeViewMode(session.opacity);
   const note = session.noteDisplayedSize;

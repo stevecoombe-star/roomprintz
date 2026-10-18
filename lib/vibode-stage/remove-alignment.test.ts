@@ -192,7 +192,45 @@ test("inspection blocks furniture manipulation and History selection only while 
     active: exited.active,
     furnitureHidden: true,
   }), true);
+  assert.equal(exited.mode, "alignment");
+  assert.equal(exited.sessionSerial, entered.sessionSerial + 1);
+  assert.equal(exited.maskEpoch, hidden.maskEpoch + 1);
   assert.deepEqual(scene, before);
+});
+
+test("brush mode shares the inspection session and discards its mask epoch on exit", () => {
+  const idle = initialRemoveInspectionState();
+  assert.equal(idle.mode, "alignment");
+  assert.equal(reduceRemoveInspection(idle, { type: "mode", mode: "brush" }), idle);
+  assert.equal(reduceRemoveInspection(idle, { type: "clear-mask" }), idle);
+  const entered = reduceRemoveInspection(idle, { type: "enter" });
+  assert.equal(entered.mode, "alignment");
+  assert.equal(entered.maskEpoch, 1);
+  assert.equal(entered.sessionSerial, 1);
+  const brush = reduceRemoveInspection(entered, { type: "mode", mode: "brush" });
+  assert.equal(brush.mode, "brush");
+  assert.equal(brush.maskEpoch, entered.maskEpoch);
+  const shaped = reduceRemoveInspection(
+    reduceRemoveInspection(brush, { type: "tool", tool: "restore" }),
+    { type: "diameter", diameterPx: 3 },
+  );
+  assert.equal(shaped.tool, "restore");
+  assert.equal(shaped.diameterPx, 3);
+  assert.equal(shaped.featherPx, 1);
+  const cleared = reduceRemoveInspection(shaped, { type: "clear-mask" });
+  assert.equal(cleared.maskEpoch, shaped.maskEpoch + 1);
+  assert.equal(cleared.mode, "brush");
+  assert.equal(cleared.sessionSerial, shaped.sessionSerial);
+  const exited = reduceRemoveInspection(cleared, { type: "exit" });
+  assert.equal(exited.active, false);
+  assert.equal(exited.mode, "alignment");
+  assert.equal(exited.maskEpoch, cleared.maskEpoch + 1);
+  assert.equal(exited.sessionSerial, cleared.sessionSerial + 1);
+  assert.equal(removeInspectionAllowsFurnitureManipulation(exited.active), true);
+  const again = reduceRemoveInspection(exited, { type: "enter" });
+  assert.equal(again.sessionSerial, exited.sessionSerial + 1);
+  assert.equal(again.mode, "alignment");
+  assert.equal(again.tool, "restore");
 });
 
 test("lookup stays hidden unless the admin report is usable", () => {
