@@ -1,7 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import { HARMONIZE_AI_DISCLOSURE_TEXT, HARMONIZE_AI_LABEL, isHarmonizedHistoryAsset } from "@/lib/vibode-stage/harmonize-experience";
+import { removeInspectionAllowsHistorySelection } from "@/lib/vibode-stage/remove-alignment";
 import { getImageHistoryWorkflowGroups, type ImageHistoryTimelineKind } from "@/lib/vibode/image-history-timeline";
 import { getVibodeVersionKind, getWorkflowStepDisplayLabel } from "@/lib/vibode/version-kind";
 import type { VibodeRoomAsset } from "@/stores/editorStore";
@@ -130,6 +132,10 @@ export function ImageHistoryTimeline({
     [activeVersionId, versions]
   );
   const [expandedByKey, setExpandedByKey] = useState<Record<string, boolean>>({});
+  const historySelectionOpen = removeInspectionAllowsHistorySelection(
+    useRemoveAlignment()?.active === true,
+  );
+  const selectVersion = historySelectionOpen ? onSelectVersion : undefined;
 
   if (!timeline) return null;
   const activeKind = getVersionKind(timeline.active);
@@ -148,7 +154,7 @@ export function ImageHistoryTimeline({
   const shouldShowChildSummary = !(activeKind === "style" && timeline.childSummary.totalChildren === 0);
 
   return (
-    <section className={className}>
+    <section className={className} data-history-selection={historySelectionOpen ? "open" : "blocked"}>
       <div className="rounded-md border border-neutral-800 bg-neutral-900/50 px-3 py-2">
         <div className="overflow-x-auto pb-1">
           <div className="flex min-w-max items-center gap-2.5">
@@ -180,7 +186,7 @@ export function ImageHistoryTimeline({
                           key={`${group.key}-${version.id}`}
                           version={version}
                           isActive={version.id === timeline.active.id}
-                          onSelectVersion={onSelectVersion}
+                          onSelectVersion={selectVersion}
                           isRepresentative={
                             expandedByKey[group.key] === true &&
                             group.isExpandable &&
@@ -222,14 +228,14 @@ export function ImageHistoryTimeline({
                         key={`children-expanded-${version.id}`}
                         version={version}
                         isActive={version.id === timeline.active.id}
-                        onSelectVersion={onSelectVersion}
+                        onSelectVersion={selectVersion}
                       />
                     ))
                   ) : timeline.childSummary.representative ? (
                     <TimelineVersionCard
                       version={timeline.childSummary.representative}
                       isActive={false}
-                      onSelectVersion={onSelectVersion}
+                      onSelectVersion={selectVersion}
                     />
                   ) : (
                     <div className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-[10px] text-neutral-500">

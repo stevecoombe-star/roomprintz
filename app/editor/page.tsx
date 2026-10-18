@@ -12208,7 +12208,7 @@ function EditorPageInner() {
       <div className="flex min-h-0 flex-1 w-full overflow-hidden">
         {/* Canvas area */}
         <main className={`flex min-h-0 flex-1 overflow-hidden bg-neutral-950 ${viewportMode === "3d" ? "" : "items-center justify-center"}`}>
-          <StageEditorShell active={viewportMode === "3d"}>
+          <StageEditorShell active={viewportMode === "3d"} roomId={editorRoomId}>
           <div className="flex w-full flex-col items-center justify-center gap-3 px-3">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div

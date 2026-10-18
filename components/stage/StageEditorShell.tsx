@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 
 import { HarmonizeExportProvider } from "@/components/stage/HarmonizeExportContext";
+import { RemoveAlignmentProvider } from "@/components/stage/RemoveAlignmentSession";
 import { StageCatalogDrawer } from "@/components/stage/StageCatalogDrawer";
 import { StageEditorHeader } from "@/components/stage/StageEditorHeader";
 import { StageSummaryDrawer } from "@/components/stage/StageSummaryDrawer";
@@ -10,9 +11,11 @@ import { useOptionalStageEditor } from "@/components/stage/StageEditorContext";
 
 export function StageEditorShell({
   active,
+  roomId,
   children,
 }: {
   active: boolean;
+  roomId: string | null;
   children: ReactNode;
 }) {
   const stage = useOptionalStageEditor();
@@ -20,6 +23,7 @@ export function StageEditorShell({
 
   return (
     <HarmonizeExportProvider>
+      <RemoveAlignmentProvider roomId={roomId}>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-stage-shell="true">
         <StageEditorHeader />
         <div
@@ -33,6 +37,7 @@ export function StageEditorShell({
           <StageSummaryDrawer />
         </div>
       </div>
+      </RemoveAlignmentProvider>
     </HarmonizeExportProvider>
   );
 }

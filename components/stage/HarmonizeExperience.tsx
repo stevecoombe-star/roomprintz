@@ -391,7 +391,7 @@ export function HarmonizeButton() {
   };
 
   return (
-    <div className="relative">
+    <div className="relative shrink-0">
       <button
         type="button"
         data-harmonize="true"

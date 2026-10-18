@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 
+import { useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
 import {
   ROOM_SCALE_MAX,
@@ -11,6 +12,7 @@ import {
   roomScaleButtonLabel,
   stepRoomScaleMultiplier,
 } from "@/lib/vibode-stage/room-scale";
+import { removeInspectionInteraction } from "@/lib/vibode-stage/remove-alignment";
 import { TRUSTED_PATH_UNAVAILABLE_TITLE } from "@/lib/vibode-stage/trusted-path";
 
 const FOCUS =
@@ -18,7 +20,13 @@ const FOCUS =
 
 export function RoomScaleControl() {
   const stage = useStageEditor();
+  const roomScaleEnabled = removeInspectionInteraction(useRemoveAlignment()?.active === true).roomScale;
   const [open, setOpen] = useState(false);
+  const [trackedScaleEnabled, setTrackedScaleEnabled] = useState(roomScaleEnabled);
+  if (trackedScaleEnabled !== roomScaleEnabled) {
+    setTrackedScaleEnabled(roomScaleEnabled);
+    if (!roomScaleEnabled) setOpen(false);
+  }
   const rootRef = useRef<HTMLDivElement | null>(null);
   const labelId = useId();
   const multiplier = stage.roomScaleMultiplier;
@@ -42,13 +50,18 @@ export function RoomScaleControl() {
   }, [open]);
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative shrink-0">
       <button
         type="button"
         aria-expanded={open}
         aria-controls={labelId}
         aria-label={roomScaleButtonLabel(multiplier)}
-        onClick={() => setOpen((current) => !current)}
+        disabled={!roomScaleEnabled}
+        title={roomScaleEnabled ? undefined : "Room scale is paused during Remove inspection"}
+        onClick={() => {
+          if (!roomScaleEnabled) return;
+          setOpen((current) => !current);
+        }}
         className={`rounded-md border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-200 hover:bg-neutral-800 ${FOCUS}`}
       >
         {roomScaleButtonLabel(multiplier)}

@@ -201,7 +201,7 @@ test("PI-5B STAGE shell extends certified editor chrome instead of replacing it"
   assert.match(editor, /<ImageHistoryTimeline/);
   assert.match(editor, /h-\[70vh\] w-\[70vw\] max-w-\[1200px\]/);
   assert.doesNotMatch(editor, /<Editor3dModePanel/);
-  assert.match(editor, /<StageEditorShell active=\{viewportMode === "3d"\}>/);
+  assert.match(editor, /<StageEditorShell active=\{viewportMode === "3d"\} roomId=\{editorRoomId\}>/);
   assert.match(editor, /data-stage-canvas="true"/);
 
   assert.match(header, /Catalog/);

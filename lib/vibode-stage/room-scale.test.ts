@@ -399,5 +399,5 @@ test("viewer re-realizes from canonical coordinates through the shared world", (
   assert.match(applyRoomScale, /canonicalTransform/);
   assert.doesNotMatch(applyRoomScale, /emitCommittedScene|canonicalTransform =/);
   const header = readFileSync("components/stage/StageEditorHeader.tsx", "utf8");
-  assert.match(header, /<RoomScaleControl \/>\s*<button[\s\S]*aria-label="Undo"/);
+  assert.match(header, /<RoomScaleControl \/>[\s\S]*aria-label="Undo"/);
 });

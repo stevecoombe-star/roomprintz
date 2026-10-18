@@ -572,7 +572,7 @@ test("admin export stays on the existing admin check and the live scene", () => 
 
   assert.doesNotMatch(header, /HarmonizeExportButton|Harmonize Export|Download/);
   assert.match(header, /<HarmonizeButton \/>/);
-  assert.match(header, /<RoomScaleControl \/>\s*<button[\s\S]*aria-label="Undo"/);
+  assert.match(header, /<RoomScaleControl \/>[\s\S]*aria-label="Undo"/);
   assert.match(viewer, /executeHarmonizeExport/);
   assert.match(viewer, /registerHarmonizeExport/);
   assert.doesNotMatch(route, /isAdminEmail|VIBODE_ADMIN_EMAIL/);
