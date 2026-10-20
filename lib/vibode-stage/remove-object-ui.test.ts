@@ -12,6 +12,7 @@ import {
   applyRemoveObjectClick,
   clampRemoveObjectExpansion,
   dilateRemoveCoverage,
+  eligibleRemoveObjectIds,
   expandRemoveDirtyRect,
   failRemoveObjectLoad,
   formatRemoveObjectInferenceTime,
@@ -21,6 +22,7 @@ import {
   highlightRemoveObject,
   initialRemoveObjectUiState,
   mapOriginalBoxToBacking,
+  paintRemoveObjectProtection,
   readRemoveObjectUiPayload,
   reduceRemoveObjectSession,
   removeInspectionBackingSize,
@@ -29,6 +31,8 @@ import {
   removeObjectOutlineColor,
   removeObjectOutlineRender,
   removeObjectOutlineTone,
+  removeObjectProtectionAvailable,
+  removeObjectProtectionEngaged,
   requestRemoveObjects,
   settleRemoveObjectLoad,
   showAllRemoveObjectUi,
@@ -525,7 +529,7 @@ function reveal(input: Readonly<{
 }
 
 test("mask expansion grows on a Euclidean disk and radius 0 stays exact", () => {
-  assert.equal(REMOVE_OBJECT_EXPANSION_DEFAULT_PX, 4);
+  assert.equal(REMOVE_OBJECT_EXPANSION_DEFAULT_PX, 2);
   assert.equal(REMOVE_OBJECT_EXPANSION_MAX_PX, 6);
   assert.equal(clampRemoveObjectExpansion(0), 0);
   assert.equal(clampRemoveObjectExpansion(6), 6);
@@ -929,6 +933,103 @@ test("hidden outlines keep selection and hit testing", () => {
   }).tone, "blue");
 });
 
+test("protection covers every eligible identity mask and ignores selection", () => {
+  const width = 8;
+  const height = 8;
+  const visible = selectable("visible", "chair", 0.9, rectMask(width, height, 1, 1, 1, 1));
+  const hidden = selectable("hidden", "sofa", 0.8, rectMask(width, height, 4, 1, 1, 1));
+  const rejected = selectable("rejected", "lamp", 0.2, rectMask(width, height, 1, 4, 1, 1), false);
+  const objects = [visible, hidden, rejected];
+  const bits = [visible.mask.bits.slice(), hidden.mask.bits.slice(), rejected.mask.bits.slice()];
+  const state: RemoveObjectUiState = {
+    phase: "ready",
+    identity: null,
+    requestSerial: 3,
+    objects,
+    selectedIds: new Set(["hidden"]),
+    error: null,
+    diagnostics: null,
+  };
+  assert.equal(removeObjectProtectionAvailable(state), true);
+  assert.equal(removeObjectProtectionEngaged({ enabled: true, state }), true);
+  assert.equal(removeObjectProtectionEngaged({ enabled: false, state }), false);
+  assert.equal(eligibleRemoveObjectIds(objects).has("visible"), true);
+  assert.equal(eligibleRemoveObjectIds(objects).has("hidden"), true);
+  assert.equal(eligibleRemoveObjectIds(objects).has("rejected"), false);
+
+  const bounds = { x: 0, y: 0, width, height };
+  const protection = new Uint8Array(width * height);
+  assert.equal(paintRemoveObjectProtection({
+    destination: protection,
+    width,
+    height,
+    objects,
+    bounds,
+  }), true);
+  assert.equal(protection[1 * width + 1], 255);
+  assert.equal(protection[1 * width + 4], 255);
+  assert.equal(protection[4 * width + 1], 0);
+  const shown = showAllRemoveObjectUi(hideAllRemoveObjectUi(state));
+  const again = new Uint8Array(width * height);
+  assert.equal(paintRemoveObjectProtection({
+    destination: again,
+    width,
+    height,
+    objects: shown.objects,
+    bounds,
+  }), true);
+  assert.deepEqual(again, protection);
+  assert.deepEqual(visible.mask.bits, bits[0]);
+  assert.deepEqual(hidden.mask.bits, bits[1]);
+  assert.deepEqual(rejected.mask.bits, bits[2]);
+
+  const expanded = reveal({
+    width,
+    height,
+    objects,
+    selectedIds: new Set(["visible", "hidden"]),
+    expansionPx: 6,
+  });
+  assert.equal(expanded[1 * width + 7], 255);
+  assert.equal(protection[1 * width + 7], 0);
+  assert.equal(protection[1 * width + 1], 255);
+
+  const live = readyFrom(livePayload(false).payload);
+  const duplicate = livePayload(false).prepared.suppressed[0];
+  assert.ok(duplicate);
+  if (!duplicate) return;
+  assert.equal(eligibleRemoveObjectIds(live.objects).size, 10);
+  assert.equal(eligibleRemoveObjectIds(live.objects).has(duplicate.suppressedId), false);
+  const hiddenLive = hideAllRemoveObjectUi(live);
+  assert.equal(eligibleRemoveObjectIds(hiddenLive.objects).size, 10);
+  assert.equal(showAllRemoveObjectUi(hiddenLive).selectedIds.size, 0);
+  assert.equal(eligibleRemoveObjectIds(showAllRemoveObjectUi(hiddenLive).objects).size, 10);
+
+  const loading = reduceRemoveObjectSession({
+    state: initialRemoveObjectUiState(),
+    active: true,
+    identity: IDENTITY,
+  }).state;
+  assert.equal(removeObjectProtectionEngaged({ enabled: true, state: loading }), false);
+  const failed = failRemoveObjectLoad({
+    state: loading,
+    requestSerial: loading.requestSerial,
+    identity: IDENTITY,
+  });
+  assert.equal(failed.phase, "error");
+  assert.equal(removeObjectProtectionAvailable(failed), false);
+  assert.equal(removeObjectProtectionEngaged({ enabled: true, state: failed }), false);
+  const stale = reduceRemoveObjectSession({
+    state: live,
+    active: true,
+    identity: { ...IDENTITY, sessionSerial: IDENTITY.sessionSerial + 1 },
+  });
+  assert.equal(stale.command, "fetch");
+  assert.equal(stale.state.objects.length, 0);
+  assert.equal(removeObjectProtectionEngaged({ enabled: true, state: stale.state }), false);
+  assert.equal(live.objects.length, 10);
+});
+
 test("Objects mode wiring keeps segmentation off the brush and the scene", () => {
   const session = readFileSync(new URL("../../components/stage/RemoveAlignmentSession.tsx", import.meta.url), "utf8");
   const brush = readFileSync(new URL("../../components/stage/RemoveBrushCanvas.tsx", import.meta.url), "utf8");
@@ -946,6 +1047,7 @@ test("Objects mode wiring keeps segmentation off the brush and the scene", () =>
   assert.match(session, /type: "clear-mask"/);
   assert.match(session, /Mask Expansion/);
   assert.match(session, /Show Mask Outlines/);
+  assert.match(session, /Protect Objects/);
   assert.match(session, /onObjectClick=\{\(point\) => session\.clickObject\(point\.x, point\.y\)\}/);
   assert.equal(session.match(/requestRemoveObjects\(/g)?.length, 1);
   assert.equal(session.match(/\}, \[objectIdentity\]\);/g)?.length, 1);
@@ -955,9 +1057,13 @@ test("Objects mode wiring keeps segmentation off the brush and the scene", () =>
   assert.match(effect, /requestRemoveObjects/);
   assert.equal(effect.includes("objectExpansionPx"), false);
   assert.equal(effect.includes("objectOutlinesVisible"), false);
+  assert.equal(effect.includes("objectProtectionEnabled"), false);
+  assert.equal(effect.includes("setObjectProtection"), false);
   assert.doesNotMatch(session, /remove-segmentation|retry|ROBOFLOW|api_key/i);
   assert.match(brush, /syncRemoveInspectionCoverage/);
   assert.match(brush, /expansionPx: expansionRef.current/);
+  assert.match(brush, /protection: protectionPixels\(\)/);
+  assert.match(brush, /\}, \[expansionPx, interaction, objects, selectedIds\]\);/);
   assert.match(brush, /paintRemoveBrush/);
   assert.match(brush, /watchRemoveDevicePixelRatio/);
   assert.match(outlines, /mapOriginalBoxToBacking/);

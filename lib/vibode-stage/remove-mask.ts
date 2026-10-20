@@ -177,6 +177,7 @@ export function paintRemoveBrush(input: Readonly<{
   diameterPx: number;
   featherPx: number;
   tool: RemoveBrushTool;
+  protection?: Uint8Array;
 }>): RemoveDirtyRect | null {
   if (!grid(input.width, input.height) || input.mask.length !== input.width * input.height) {
     return null;
@@ -204,6 +205,14 @@ export function paintRemoveBrush(input: Readonly<{
         );
         if (coverage === 0) continue;
         const index = y * input.width + x;
+        if (
+          input.tool === "reveal"
+          && input.protection
+          && input.protection.length === input.mask.length
+          && (input.protection[index] ?? 0) !== 0
+        ) {
+          continue;
+        }
         input.mask[index] = applyRemoveCoverage(input.mask[index] ?? 0, coverage, input.tool);
       }
     }

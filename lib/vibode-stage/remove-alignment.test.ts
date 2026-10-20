@@ -236,50 +236,59 @@ test("brush mode shares the inspection session and discards its mask epoch on ex
 
 test("mask expansion and outline visibility follow the REMOVE session", () => {
   const idle = initialRemoveInspectionState();
-  assert.equal(idle.objectExpansionPx, 4);
+  assert.equal(idle.objectExpansionPx, 2);
   assert.equal(idle.objectOutlinesVisible, true);
-  assert.equal(reduceRemoveInspection(idle, { type: "object-expansion", expansionPx: 2 }), idle);
+  assert.equal(idle.objectProtectionEnabled, true);
+  assert.equal(reduceRemoveInspection(idle, { type: "object-expansion", expansionPx: 6 }), idle);
   assert.equal(reduceRemoveInspection(idle, { type: "object-outlines", visible: false }), idle);
+  assert.equal(reduceRemoveInspection(idle, { type: "object-protection", enabled: false }), idle);
 
   const entered = reduceRemoveInspection(idle, { type: "enter" });
   assert.equal(entered.mode, "objects");
-  assert.equal(entered.objectExpansionPx, 4);
+  assert.equal(entered.objectExpansionPx, 2);
   assert.equal(entered.objectOutlinesVisible, true);
-  assert.equal(reduceRemoveInspection(entered, { type: "object-expansion", expansionPx: 4 }), entered);
+  assert.equal(entered.objectProtectionEnabled, true);
+  assert.equal(reduceRemoveInspection(entered, { type: "object-expansion", expansionPx: 2 }), entered);
   assert.equal(reduceRemoveInspection(entered, { type: "object-outlines", visible: true }), entered);
+  assert.equal(reduceRemoveInspection(entered, { type: "object-protection", enabled: true }), entered);
   assert.equal(reduceRemoveInspection(entered, { type: "object-expansion", expansionPx: 0 }).objectExpansionPx, 0);
+  assert.equal(reduceRemoveInspection(entered, { type: "object-expansion", expansionPx: 6 }).objectExpansionPx, 6);
 
   const tuned = reduceRemoveInspection(
-    reduceRemoveInspection(entered, { type: "object-expansion", expansionPx: 2 }),
+    reduceRemoveInspection(entered, { type: "object-expansion", expansionPx: 6 }),
     { type: "object-outlines", visible: false },
   );
-  assert.equal(tuned.objectExpansionPx, 2);
+  assert.equal(tuned.objectExpansionPx, 6);
   assert.equal(tuned.objectOutlinesVisible, false);
   assert.equal(tuned.sessionSerial, entered.sessionSerial);
   assert.equal(tuned.maskEpoch, entered.maskEpoch);
   const alignment = reduceRemoveInspection(tuned, { type: "mode", mode: "alignment" });
   const brush = reduceRemoveInspection(alignment, { type: "mode", mode: "brush" });
   assert.equal(brush.mode, "brush");
-  assert.equal(brush.objectExpansionPx, 2);
+  assert.equal(brush.objectExpansionPx, 6);
   assert.equal(brush.objectOutlinesVisible, false);
   const cleared = reduceRemoveInspection(brush, { type: "clear-mask" });
-  assert.equal(cleared.objectExpansionPx, 2);
+  assert.equal(cleared.objectExpansionPx, 6);
   assert.equal(cleared.objectOutlinesVisible, false);
+  assert.equal(cleared.objectProtectionEnabled, true);
   assert.equal(cleared.maskEpoch, brush.maskEpoch + 1);
 
   const exited = reduceRemoveInspection(cleared, { type: "exit" });
   assert.equal(exited.active, false);
   assert.equal(exited.mode, "alignment");
-  assert.equal(exited.objectExpansionPx, 4);
+  assert.equal(exited.objectExpansionPx, 2);
   assert.equal(exited.objectOutlinesVisible, true);
+  assert.equal(exited.objectProtectionEnabled, true);
   const again = reduceRemoveInspection(exited, { type: "enter" });
-  assert.equal(again.objectExpansionPx, 4);
+  assert.equal(again.objectExpansionPx, 2);
   assert.equal(again.objectOutlinesVisible, true);
+  assert.equal(again.objectProtectionEnabled, true);
   assert.equal(again.mode, "objects");
 
   const reentered = reduceRemoveInspection(tuned, { type: "enter" });
-  assert.equal(reentered.objectExpansionPx, 4);
+  assert.equal(reentered.objectExpansionPx, 2);
   assert.equal(reentered.objectOutlinesVisible, true);
+  assert.equal(reentered.objectProtectionEnabled, true);
   assert.equal(
     reduceRemoveInspection(entered, { type: "object-expansion", expansionPx: 8 }).objectExpansionPx,
     6,
@@ -288,6 +297,22 @@ test("mask expansion and outline visibility follow the REMOVE session", () => {
     reduceRemoveInspection(entered, { type: "object-expansion", expansionPx: -1 }).objectExpansionPx,
     0,
   );
+});
+
+test("object protection is session-local and does not follow Clear Mask", () => {
+  const entered = reduceRemoveInspection(initialRemoveInspectionState(), { type: "enter" });
+  const off = reduceRemoveInspection(entered, { type: "object-protection", enabled: false });
+  assert.equal(off.objectProtectionEnabled, false);
+  assert.equal(off.maskEpoch, entered.maskEpoch);
+  assert.equal(off.objectExpansionPx, 2);
+  const brush = reduceRemoveInspection(off, { type: "mode", mode: "brush" });
+  const cleared = reduceRemoveInspection(brush, { type: "clear-mask" });
+  assert.equal(cleared.objectProtectionEnabled, false);
+  assert.equal(cleared.maskEpoch, brush.maskEpoch + 1);
+  assert.equal(cleared.objectExpansionPx, 2);
+  const exited = reduceRemoveInspection(cleared, { type: "exit" });
+  assert.equal(exited.objectProtectionEnabled, true);
+  assert.equal(reduceRemoveInspection(exited, { type: "enter" }).objectProtectionEnabled, true);
 });
 
 test("lookup stays hidden unless the admin report is usable", () => {

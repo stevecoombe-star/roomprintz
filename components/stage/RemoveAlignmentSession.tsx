@@ -52,6 +52,8 @@ import {
   highlightRemoveObject,
   initialRemoveObjectUiState,
   reduceRemoveObjectSession,
+  removeObjectProtectionAvailable,
+  removeObjectProtectionEngaged,
   removeObjectUiIdentityKey,
   requestRemoveObjects,
   settleRemoveObjectLoad,
@@ -82,6 +84,7 @@ type RemoveAlignmentContextValue = Readonly<{
   sessionSerial: number;
   objectExpansionPx: number;
   objectOutlinesVisible: boolean;
+  objectProtectionEnabled: boolean;
   brushAdmission: RemoveBrushAdmission | null;
   maskSummary: RemoveMaskSummary | null;
   maskHoldRef: { current: RemoveMaskHold | null };
@@ -100,6 +103,7 @@ type RemoveAlignmentContextValue = Readonly<{
   showAllObjects: () => void;
   setObjectExpansion: (expansionPx: number) => void;
   setObjectOutlinesVisible: (visible: boolean) => void;
+  setObjectProtection: (enabled: boolean) => void;
   objectUi: RemoveObjectUiState;
   noteDisplayedSize: (artifact: "original" | "empty", size: DisplayedSize) => void;
   noteMaskSummary: (summary: RemoveMaskSummary | null) => void;
@@ -335,6 +339,9 @@ export function RemoveAlignmentProvider({
   const setObjectOutlinesVisible = useCallback((visible: boolean) => {
     dispatch({ type: "object-outlines", visible });
   }, []);
+  const setObjectProtection = useCallback((enabled: boolean) => {
+    dispatch({ type: "object-protection", enabled });
+  }, []);
   const clearMask = useCallback(() => {
     dispatch({ type: "clear-mask" });
   }, []);
@@ -381,6 +388,7 @@ export function RemoveAlignmentProvider({
     sessionSerial: inspection.sessionSerial,
     objectExpansionPx: inspection.objectExpansionPx,
     objectOutlinesVisible: inspection.objectOutlinesVisible,
+    objectProtectionEnabled: inspection.objectProtectionEnabled,
     brushAdmission,
     maskSummary,
     maskHoldRef,
@@ -399,6 +407,7 @@ export function RemoveAlignmentProvider({
     showAllObjects,
     setObjectExpansion,
     setObjectOutlinesVisible,
+    setObjectProtection,
     objectUi,
     noteDisplayedSize,
     noteMaskSummary,
@@ -419,6 +428,7 @@ export function RemoveAlignmentProvider({
     inspection.mode,
     inspection.objectExpansionPx,
     inspection.objectOutlinesVisible,
+    inspection.objectProtectionEnabled,
     inspection.opacity,
     inspection.sessionSerial,
     inspection.tool,
@@ -437,6 +447,7 @@ export function RemoveAlignmentProvider({
     setMode,
     setObjectExpansion,
     setObjectOutlinesVisible,
+    setObjectProtection,
     setOpacity,
     setPreset,
     setTool,
@@ -618,7 +629,34 @@ function ModeButton({
   );
 }
 
+function protectionControl(session: RemoveAlignmentContextValue): Readonly<{
+  available: boolean;
+  pressed: boolean;
+  status: "on" | "off" | "unavailable";
+  label: string;
+  title: string | undefined;
+}> {
+  const available = removeObjectProtectionAvailable(session.objectUi);
+  if (!available) {
+    const title = session.objectUi.phase === "loading" || session.objectUi.phase === "idle"
+      ? "Finding objects…"
+      : session.objectUi.phase === "error"
+        ? session.objectUi.error ?? "Object masks are unavailable."
+        : "No removable objects found.";
+    return { available: false, pressed: false, status: "unavailable", label: "Unavailable", title };
+  }
+  const pressed = session.objectProtectionEnabled === true;
+  return {
+    available: true,
+    pressed,
+    status: pressed ? "on" : "off",
+    label: pressed ? "On" : "Off",
+    title: undefined,
+  };
+}
+
 function BrushControls({ session }: { session: RemoveAlignmentContextValue }) {
+  const protection = protectionControl(session);
   return (
     <div className="mt-3">
       <div className="flex gap-1" role="group" aria-label="Brush tool">
@@ -629,6 +667,28 @@ function BrushControls({ session }: { session: RemoveAlignmentContextValue }) {
           Restore
         </ModeButton>
       </div>
+      <button
+        type="button"
+        aria-pressed={protection.pressed}
+        disabled={!protection.available}
+        title={protection.title}
+        data-remove-brush="protect"
+        data-remove-protection={protection.status}
+        onClick={() => {
+          if (!protection.available) return;
+          session.setObjectProtection(!session.objectProtectionEnabled);
+        }}
+        className={`mt-3 flex w-full items-center justify-between rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+          protection.available
+            ? protection.pressed
+              ? "border-neutral-500 bg-neutral-800 text-neutral-50"
+              : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+            : "border-neutral-900 bg-neutral-950 text-neutral-600"
+        }`}
+      >
+        <span>Protect Objects</span>
+        <span className="tabular-nums">{protection.label}</span>
+      </button>
       <BrushSlider
         label="Diameter"
         ariaLabel="Brush diameter in ORIGINAL pixels"
@@ -913,6 +973,10 @@ export function RemoveAlignmentOverlay() {
           objects={session.objectUi.objects}
           selectedIds={session.objectUi.selectedIds}
           expansionPx={session.objectExpansionPx}
+          protectObjects={removeObjectProtectionEngaged({
+            enabled: session.objectProtectionEnabled,
+            state: session.objectUi,
+          })}
           onObjectClick={(point) => session.clickObject(point.x, point.y)}
           onObjectHover={(point) => {
             const next = point ? highlightRemoveObject(session.objectUi, point.x, point.y) : null;

@@ -5,6 +5,8 @@
  * Display coverage is `max(brush, selected object coverage)`. Mask expansion
  * dilates that coverage into its own buffer; radius 0 uses the exact union.
  * Packed identity masks stay immutable and remain the hit-test source.
+ * Protect Objects uses a separate union of every eligible identity mask.
+ * That union is undilated and ignores which objects are hidden.
  * Hide All, Show All, and object clicks change the selection only. Clear Mask
  * changes the brush buffer only. A session loads segmentation once for its
  * room, generation, ORIGINAL identity, and session serial. Mode switches do
@@ -30,7 +32,7 @@ export const REMOVE_OBJECT_UI_REQUEST_PATH = "/api/vibode/admin/remove-objects";
 export const REMOVE_OBJECT_OUTLINE_VISIBLE = "#f5c518";
 export const REMOVE_OBJECT_OUTLINE_HIDDEN = "#3d7eff";
 export const REMOVE_OBJECT_EXPANSION_MAX_PX = 6;
-export const REMOVE_OBJECT_EXPANSION_DEFAULT_PX = 4;
+export const REMOVE_OBJECT_EXPANSION_DEFAULT_PX = 2;
 
 const MAX_MASKS = 48;
 const MAX_EDGE = 8192;
@@ -404,6 +406,49 @@ function selectedCoverageBounds(
   }
   if (!any) return null;
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/** Eligible identity masks only. Hidden and visible objects are both included. */
+export function eligibleRemoveObjectIds(
+  objects: readonly RemoveObjectRecord[],
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const object of objects) {
+    if (object.eligibility.eligible) ids.add(object.id);
+  }
+  return ids;
+}
+
+export function removeObjectProtectionAvailable(state: RemoveObjectUiState): boolean {
+  return state.phase === "ready" && eligibleRemoveObjectIds(state.objects).size > 0;
+}
+
+export function removeObjectProtectionEngaged(input: Readonly<{
+  enabled: boolean;
+  state: RemoveObjectUiState;
+}>): boolean {
+  return input.enabled === true && removeObjectProtectionAvailable(input.state);
+}
+
+/**
+ * Undilated union of every eligible identity mask. Selection and expansion
+ * are not inputs. The packed bits are read and left unchanged.
+ */
+export function paintRemoveObjectProtection(input: Readonly<{
+  destination: Uint8Array;
+  width: number;
+  height: number;
+  objects: readonly RemoveObjectRecord[];
+  bounds: RemoveDirtyRect;
+}>): boolean {
+  return paintRemoveObjectUnion({
+    destination: input.destination,
+    width: input.width,
+    height: input.height,
+    objects: input.objects,
+    selectedIds: eligibleRemoveObjectIds(input.objects),
+    bounds: input.bounds,
+  });
 }
 
 /**

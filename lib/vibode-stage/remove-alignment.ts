@@ -95,6 +95,7 @@ export type RemoveInspectionState = Readonly<{
   sessionSerial: number;
   objectExpansionPx: number;
   objectOutlinesVisible: boolean;
+  objectProtectionEnabled: boolean;
 }>;
 
 export type RemoveInspectionEvent =
@@ -109,7 +110,8 @@ export type RemoveInspectionEvent =
   | Readonly<{ type: "feather"; featherPx: number }>
   | Readonly<{ type: "clear-mask" }>
   | Readonly<{ type: "object-expansion"; expansionPx: number }>
-  | Readonly<{ type: "object-outlines"; visible: boolean }>;
+  | Readonly<{ type: "object-outlines"; visible: boolean }>
+  | Readonly<{ type: "object-protection"; enabled: boolean }>;
 
 export type RemoveInspectionInteraction = Readonly<{
   furnitureManipulation: boolean;
@@ -144,6 +146,7 @@ export function initialRemoveInspectionState(): RemoveInspectionState {
     sessionSerial: 0,
     objectExpansionPx: REMOVE_OBJECT_EXPANSION_DEFAULT_PX,
     objectOutlinesVisible: true,
+    objectProtectionEnabled: true,
   };
 }
 
@@ -248,6 +251,7 @@ export function reduceRemoveInspection(
       sessionSerial: state.sessionSerial + 1,
       objectExpansionPx: REMOVE_OBJECT_EXPANSION_DEFAULT_PX,
       objectOutlinesVisible: true,
+      objectProtectionEnabled: true,
     };
   }
   if (event.type === "exit") {
@@ -260,6 +264,7 @@ export function reduceRemoveInspection(
       sessionSerial: state.sessionSerial + 1,
       objectExpansionPx: REMOVE_OBJECT_EXPANSION_DEFAULT_PX,
       objectOutlinesVisible: true,
+      objectProtectionEnabled: true,
     };
   }
   if (!state.active) return state;
@@ -303,6 +308,12 @@ export function reduceRemoveInspection(
     return objectOutlinesVisible === state.objectOutlinesVisible
       ? state
       : { ...state, objectOutlinesVisible };
+  }
+  if (event.type === "object-protection") {
+    const objectProtectionEnabled = event.enabled === true;
+    return objectProtectionEnabled === state.objectProtectionEnabled
+      ? state
+      : { ...state, objectProtectionEnabled };
   }
   return state;
 }

@@ -485,6 +485,73 @@ test("brush admission and an external mask share the ORIGINAL coverage grid", ()
   assert.equal(formatRemoveMaskedCoverage(removeMaskedCoveragePercent(new Uint8Array())), "0.00%");
 });
 
+test("protected reveal skips identity pixels and restore stays open", () => {
+  const width = 8;
+  const height = 1;
+  const protection = new Uint8Array(width);
+  protection[3] = 255;
+  const mask = new Uint8Array(width);
+  mask[3] = 90;
+  const dirty = paintRemoveBrush({
+    mask,
+    width,
+    height,
+    from: { x: 0.5, y: 0.5 },
+    to: { x: 6.5, y: 0.5 },
+    diameterPx: 1,
+    featherPx: 0,
+    tool: "reveal",
+    protection,
+  });
+  assert.ok(dirty);
+  assert.equal(mask[1], 255);
+  assert.equal(mask[2], 255);
+  assert.equal(mask[3], 90);
+  assert.equal(mask[4], 255);
+  assert.equal(mask[5], 255);
+  assert.equal(mask[6], 255);
+  const kept = mask.slice();
+  paintRemoveBrush({
+    mask,
+    width,
+    height,
+    from: null,
+    to: { x: 3.5, y: 0.5 },
+    diameterPx: 1,
+    featherPx: 0,
+    tool: "reveal",
+    protection,
+  });
+  assert.deepEqual(mask, kept);
+
+  const open = new Uint8Array(width);
+  paintRemoveBrush({
+    mask: open,
+    width,
+    height,
+    from: null,
+    to: { x: 3.5, y: 0.5 },
+    diameterPx: 1,
+    featherPx: 0,
+    tool: "reveal",
+  });
+  assert.equal(open[3], 255);
+
+  paintRemoveBrush({
+    mask,
+    width,
+    height,
+    from: null,
+    to: { x: 3.5, y: 0.5 },
+    diameterPx: 1,
+    featherPx: 0,
+    tool: "restore",
+    protection,
+  });
+  assert.equal(mask[3], 0);
+  assert.equal(mask[1], 255);
+});
+
 test("brush compositing stays off the History image and the WebGL scene", () => {
   const brush = readFileSync(new URL("../../components/stage/RemoveBrushCanvas.tsx", import.meta.url), "utf8");
   const session = readFileSync(new URL("../../components/stage/RemoveAlignmentSession.tsx", import.meta.url), "utf8");

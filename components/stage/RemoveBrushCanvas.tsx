@@ -20,6 +20,7 @@ import {
 } from "@/lib/vibode-stage/remove-mask";
 import {
   REMOVE_OBJECT_EXPANSION_DEFAULT_PX,
+  paintRemoveObjectProtection,
   removeInspectionBackingSize,
   syncRemoveInspectionCoverage,
   watchRemoveDevicePixelRatio,
@@ -191,6 +192,7 @@ export function RemoveBrushCanvas({
   objects = EMPTY_OBJECTS,
   selectedIds = EMPTY_SELECTION,
   expansionPx = REMOVE_OBJECT_EXPANSION_DEFAULT_PX,
+  protectObjects = false,
   onObjectClick,
   onObjectHover,
 }: {
@@ -210,6 +212,7 @@ export function RemoveBrushCanvas({
   objects?: readonly RemoveObjectRecord[];
   selectedIds?: ReadonlySet<string>;
   expansionPx?: number;
+  protectObjects?: boolean;
   onObjectClick?: (point: Readonly<{ x: number; y: number }>) => void;
   onObjectHover?: (point: Readonly<{ x: number; y: number }> | null) => void;
 }) {
@@ -229,6 +232,7 @@ export function RemoveBrushCanvas({
   const objectClickRef = useRef(onObjectClick);
   const objectHoverRef = useRef(onObjectHover);
   const expansionRef = useRef(expansionPx);
+  const protectRef = useRef(protectObjects);
   const repaintRef = useRef<(() => void) | null>(null);
   const endBrushRef = useRef<() => void>(() => {});
   const liveRef = useRef<LiveRemoveBrush>({
@@ -278,7 +282,8 @@ export function RemoveBrushCanvas({
   useLayoutEffect(() => {
     objectClickRef.current = onObjectClick;
     objectHoverRef.current = onObjectHover;
-  }, [onObjectClick, onObjectHover]);
+    protectRef.current = protectObjects;
+  }, [onObjectClick, onObjectHover, protectObjects]);
 
   useLayoutEffect(() => {
     expansionRef.current = expansionPx;
@@ -475,6 +480,29 @@ export function RemoveBrushCanvas({
     const objectUnion = new Uint8Array(hold.width * hold.height);
     const dilated = new Uint8Array(hold.width * hold.height);
     const effective = new Uint8Array(hold.width * hold.height);
+    let protectionCache: {
+      objects: readonly RemoveObjectRecord[];
+      pixels: Uint8Array;
+    } | null = null;
+    const protectionPixels = (): Uint8Array | undefined => {
+      if (!protectRef.current) return undefined;
+      const currentObjects = objectsRef.current;
+      if (protectionCache && protectionCache.objects === currentObjects) return protectionCache.pixels;
+      const buffer = new Uint8Array(hold.width * hold.height);
+      const painted = paintRemoveObjectProtection({
+        destination: buffer,
+        width: hold.width,
+        height: hold.height,
+        objects: currentObjects,
+        bounds: { x: 0, y: 0, width: hold.width, height: hold.height },
+      });
+      if (!painted) {
+        protectionCache = null;
+        return undefined;
+      }
+      protectionCache = { objects: currentObjects, pixels: buffer };
+      return buffer;
+    };
 
     const publish = () => {
       const current = maskHoldRef.current;
@@ -552,6 +580,7 @@ export function RemoveBrushCanvas({
           diameterPx: diameterRef.current,
           featherPx: featherRef.current,
           tool: toolRef.current,
+          protection: protectionPixels(),
         });
         if (dirty) paintDisplay(writeMask(dirty));
       }
