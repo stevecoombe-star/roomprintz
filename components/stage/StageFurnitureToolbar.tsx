@@ -22,7 +22,8 @@ export function StageFurnitureToolbar() {
   const session = useAfcSceneObjectCrudSession();
   const remove = useRemoveAlignment();
   const manipulationEnabled = removeInspectionAllowsFurnitureManipulation(remove?.active === true);
-  const brushPointerIgnored = remove?.active === true && remove.mode === "brush";
+  const brushPointerIgnored = remove?.active === true
+    && (remove.mode === "brush" || remove.mode === "objects");
   const selection = stage?.selection ?? null;
   if (!stage || !stage.active || !selection || !session?.selectedObjectId) return null;
   if (

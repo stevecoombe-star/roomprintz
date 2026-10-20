@@ -221,6 +221,8 @@ test("REMOVE object route is an admin POST with no browser image and no writes",
   for (const relativePath of [
     "components/stage/RemoveBrushCanvas.tsx",
     "components/stage/RemoveAlignmentSession.tsx",
+    "components/stage/RemoveObjectOutlines.tsx",
+    "lib/vibode-stage/remove-object-ui.ts",
     "lib/vibode-stage/remove-mask.ts",
     "lib/vibode-stage/harmonize-export-client.ts",
   ]) {

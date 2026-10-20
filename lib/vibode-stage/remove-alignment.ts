@@ -2,9 +2,9 @@
  * REMOVE-1A inspection decisions.
  *
  * ORIGINAL and EMPTY stay immutable. Matching decoded dimensions are a grid
- * comparison only. Pixel registration stays unverified. Alignment and Brush
- * share one inspection session. This module does not write History, the scene,
- * room scale, or the certified camera.
+ * comparison only. Pixel registration stays unverified. Objects, Alignment,
+ * and Brush share one inspection session. Enter opens Objects. This module
+ * does not write History, the scene, room scale, or the certified camera.
  */
 
 import {
@@ -23,6 +23,10 @@ import {
   type RemoveBrushTool,
   type RemoveSessionMode,
 } from "@/lib/vibode-stage/remove-mask";
+import {
+  REMOVE_OBJECT_EXPANSION_DEFAULT_PX,
+  clampRemoveObjectExpansion,
+} from "@/lib/vibode-stage/remove-object-ui";
 
 export const REMOVE_PIXEL_REGISTRATION = "unverified" as const;
 
@@ -89,6 +93,8 @@ export type RemoveInspectionState = Readonly<{
   featherPx: number;
   maskEpoch: number;
   sessionSerial: number;
+  objectExpansionPx: number;
+  objectOutlinesVisible: boolean;
 }>;
 
 export type RemoveInspectionEvent =
@@ -101,7 +107,9 @@ export type RemoveInspectionEvent =
   | Readonly<{ type: "tool"; tool: RemoveBrushTool }>
   | Readonly<{ type: "diameter"; diameterPx: number }>
   | Readonly<{ type: "feather"; featherPx: number }>
-  | Readonly<{ type: "clear-mask" }>;
+  | Readonly<{ type: "clear-mask" }>
+  | Readonly<{ type: "object-expansion"; expansionPx: number }>
+  | Readonly<{ type: "object-outlines"; visible: boolean }>;
 
 export type RemoveInspectionInteraction = Readonly<{
   furnitureManipulation: boolean;
@@ -134,6 +142,8 @@ export function initialRemoveInspectionState(): RemoveInspectionState {
     featherPx: REMOVE_BRUSH_DEFAULT_FEATHER_PX,
     maskEpoch: 0,
     sessionSerial: 0,
+    objectExpansionPx: REMOVE_OBJECT_EXPANSION_DEFAULT_PX,
+    objectOutlinesVisible: true,
   };
 }
 
@@ -233,9 +243,11 @@ export function reduceRemoveInspection(
       active: true,
       opacity: 50,
       furnitureHidden: false,
-      mode: "alignment",
+      mode: "objects",
       maskEpoch: state.maskEpoch + 1,
       sessionSerial: state.sessionSerial + 1,
+      objectExpansionPx: REMOVE_OBJECT_EXPANSION_DEFAULT_PX,
+      objectOutlinesVisible: true,
     };
   }
   if (event.type === "exit") {
@@ -246,6 +258,8 @@ export function reduceRemoveInspection(
       mode: "alignment",
       maskEpoch: state.maskEpoch + 1,
       sessionSerial: state.sessionSerial + 1,
+      objectExpansionPx: REMOVE_OBJECT_EXPANSION_DEFAULT_PX,
+      objectOutlinesVisible: true,
     };
   }
   if (!state.active) return state;
@@ -279,6 +293,16 @@ export function reduceRemoveInspection(
   }
   if (event.type === "clear-mask") {
     return { ...state, maskEpoch: state.maskEpoch + 1 };
+  }
+  if (event.type === "object-expansion") {
+    const objectExpansionPx = clampRemoveObjectExpansion(event.expansionPx);
+    return objectExpansionPx === state.objectExpansionPx ? state : { ...state, objectExpansionPx };
+  }
+  if (event.type === "object-outlines") {
+    const objectOutlinesVisible = event.visible === true;
+    return objectOutlinesVisible === state.objectOutlinesVisible
+      ? state
+      : { ...state, objectOutlinesVisible };
   }
   return state;
 }

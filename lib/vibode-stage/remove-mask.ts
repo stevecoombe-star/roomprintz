@@ -20,7 +20,7 @@ export const REMOVE_BRUSH_DEFAULT_FEATHER_PX = 16;
 export const REMOVE_BRUSH_DIAMETER_MIN = 1;
 export const REMOVE_BRUSH_DIAMETER_MAX = 512;
 
-export type RemoveSessionMode = "alignment" | "brush";
+export type RemoveSessionMode = "objects" | "alignment" | "brush";
 export type RemoveBrushTool = "reveal" | "restore";
 export type RemoveGridTier =
   | "exact_grid_compatible"

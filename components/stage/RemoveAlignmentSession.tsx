@@ -17,6 +17,7 @@ import {
   type RemoveMaskHold,
   type RemoveMaskSummary,
 } from "@/components/stage/RemoveBrushCanvas";
+import { RemoveObjectOutlines } from "@/components/stage/RemoveObjectOutlines";
 import {
   REMOVE_ALIGNMENT_NOTE,
   REMOVE_HARMONIZE_NOTE,
@@ -40,6 +41,24 @@ import {
   type RemoveBrushTool,
   type RemoveSessionMode,
 } from "@/lib/vibode-stage/remove-mask";
+import {
+  REMOVE_OBJECT_EXPANSION_MAX_PX,
+  applyRemoveObjectClick,
+  failRemoveObjectLoad,
+  formatRemoveObjectInferenceTime,
+  formatRemoveObjectRejected,
+  formatRemoveObjectSuppressed,
+  hideAllRemoveObjectUi,
+  highlightRemoveObject,
+  initialRemoveObjectUiState,
+  reduceRemoveObjectSession,
+  removeObjectUiIdentityKey,
+  requestRemoveObjects,
+  settleRemoveObjectLoad,
+  showAllRemoveObjectUi,
+  type RemoveObjectUiIdentity,
+  type RemoveObjectUiState,
+} from "@/lib/vibode-stage/remove-object-ui";
 
 const FOCUS =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-400";
@@ -61,6 +80,8 @@ type RemoveAlignmentContextValue = Readonly<{
   featherPx: number;
   maskEpoch: number;
   sessionSerial: number;
+  objectExpansionPx: number;
+  objectOutlinesVisible: boolean;
   brushAdmission: RemoveBrushAdmission | null;
   maskSummary: RemoveMaskSummary | null;
   maskHoldRef: { current: RemoveMaskHold | null };
@@ -74,6 +95,12 @@ type RemoveAlignmentContextValue = Readonly<{
   setDiameter: (diameterPx: number) => void;
   setFeather: (featherPx: number) => void;
   clearMask: () => void;
+  clickObject: (x: number, y: number) => void;
+  hideAllObjects: () => void;
+  showAllObjects: () => void;
+  setObjectExpansion: (expansionPx: number) => void;
+  setObjectOutlinesVisible: (visible: boolean) => void;
+  objectUi: RemoveObjectUiState;
   noteDisplayedSize: (artifact: "original" | "empty", size: DisplayedSize) => void;
   noteMaskSummary: (summary: RemoveMaskSummary | null) => void;
   originalDisagreement: string | null;
@@ -110,6 +137,15 @@ export function RemoveAlignmentProvider({
   }>>({ original: null, empty: null });
   const [maskSummary, setMaskSummary] = useState<RemoveMaskSummary | null>(null);
   const maskHoldRef = useRef<RemoveMaskHold | null>(null);
+  const [objectUi, setObjectUi] = useState<RemoveObjectUiState>(initialRemoveObjectUiState());
+  const objectUiRef = useRef(objectUi);
+  const loadRef = useRef<null | {
+    key: string;
+    serial: number;
+    controller: AbortController;
+    promise: Promise<Readonly<{ payload: unknown; elapsedMs: number }>>;
+  }>(null);
+  const ticketRef = useRef(0);
   const [trackedRoomId, setTrackedRoomId] = useState(roomId);
   if (trackedRoomId !== roomId) {
     setTrackedRoomId(roomId);
@@ -192,6 +228,77 @@ export function RemoveAlignmentProvider({
     if (sessionActive) return;
     maskHoldRef.current = null;
   }, [sessionActive]);
+
+  const objectIdentity = useMemo<RemoveObjectUiIdentity | null>(() => {
+    if (!sessionActive || !roomId || !report) return null;
+    return {
+      roomId,
+      generationId: report.generationId,
+      originalSha256: report.original.sha256.toLowerCase(),
+      originalWidth: report.original.decodedWidth,
+      originalHeight: report.original.decodedHeight,
+      sessionSerial: inspection.sessionSerial,
+    };
+  }, [inspection.sessionSerial, report, roomId, sessionActive]);
+
+  useEffect(() => {
+    const decision = reduceRemoveObjectSession({
+      state: objectUiRef.current,
+      active: objectIdentity !== null,
+      identity: objectIdentity,
+    });
+    objectUiRef.current = decision.state;
+    setObjectUi(decision.state);
+    if (decision.command === "abort") {
+      loadRef.current?.controller.abort();
+      loadRef.current = null;
+      return undefined;
+    }
+    if (!objectIdentity) return undefined;
+    const objectIdentityKey = removeObjectUiIdentityKey(objectIdentity);
+    if (decision.command === "fetch") {
+      loadRef.current?.controller.abort();
+      const controller = new AbortController();
+      const serial = decision.state.requestSerial;
+      const promise = requestRemoveObjects({ identity: objectIdentity, signal: controller.signal });
+      loadRef.current = { key: objectIdentityKey, serial, controller, promise };
+    }
+    const entry = loadRef.current;
+    if (!entry || decision.state.phase !== "loading" || entry.key !== objectIdentityKey) return undefined;
+    const ticket = ticketRef.current + 1;
+    ticketRef.current = ticket;
+    const serial = entry.serial;
+    void entry.promise.then((result) => {
+      if (ticketRef.current !== ticket) return;
+      setObjectUi((current) => {
+        const next = settleRemoveObjectLoad({
+          state: current,
+          requestSerial: serial,
+          identity: objectIdentity,
+          payload: result.payload,
+          elapsedMs: result.elapsedMs,
+        });
+        objectUiRef.current = next;
+        return next;
+      });
+    }).catch(() => {
+      if (ticketRef.current !== ticket) return;
+      if (entry.controller.signal.aborted) return;
+      setObjectUi((current) => {
+        const next = failRemoveObjectLoad({
+          state: current,
+          requestSerial: serial,
+          identity: objectIdentity,
+        });
+        objectUiRef.current = next;
+        return next;
+      });
+    });
+    return () => {
+      ticketRef.current += 1;
+    };
+  }, [objectIdentity]);
+
   const enter = useCallback(() => {
     const requested = roomRef.current;
     if (!requested) return;
@@ -222,9 +329,31 @@ export function RemoveAlignmentProvider({
   const setFeather = useCallback((featherPx: number) => {
     dispatch({ type: "feather", featherPx });
   }, []);
+  const setObjectExpansion = useCallback((expansionPx: number) => {
+    dispatch({ type: "object-expansion", expansionPx });
+  }, []);
+  const setObjectOutlinesVisible = useCallback((visible: boolean) => {
+    dispatch({ type: "object-outlines", visible });
+  }, []);
   const clearMask = useCallback(() => {
     dispatch({ type: "clear-mask" });
   }, []);
+  const updateObjectUi = useCallback((reduce: (state: RemoveObjectUiState) => RemoveObjectUiState) => {
+    setObjectUi((current) => {
+      const next = reduce(current);
+      objectUiRef.current = next;
+      return next;
+    });
+  }, []);
+  const clickObject = useCallback((x: number, y: number) => {
+    updateObjectUi((current) => applyRemoveObjectClick(current, x, y));
+  }, [updateObjectUi]);
+  const hideAllObjects = useCallback(() => {
+    updateObjectUi(hideAllRemoveObjectUi);
+  }, [updateObjectUi]);
+  const showAllObjects = useCallback(() => {
+    updateObjectUi(showAllRemoveObjectUi);
+  }, [updateObjectUi]);
   const noteDisplayedSize = useCallback((artifact: "original" | "empty", size: DisplayedSize) => {
     setDisplayed((current) => ({ ...current, [artifact]: size }));
   }, []);
@@ -250,6 +379,8 @@ export function RemoveAlignmentProvider({
     featherPx: inspection.featherPx,
     maskEpoch: inspection.maskEpoch,
     sessionSerial: inspection.sessionSerial,
+    objectExpansionPx: inspection.objectExpansionPx,
+    objectOutlinesVisible: inspection.objectOutlinesVisible,
     brushAdmission,
     maskSummary,
     maskHoldRef,
@@ -263,6 +394,12 @@ export function RemoveAlignmentProvider({
     setDiameter,
     setFeather,
     clearMask,
+    clickObject,
+    hideAllObjects,
+    showAllObjects,
+    setObjectExpansion,
+    setObjectOutlinesVisible,
+    objectUi,
     noteDisplayedSize,
     noteMaskSummary,
     originalDisagreement,
@@ -270,14 +407,18 @@ export function RemoveAlignmentProvider({
   }), [
     brushAdmission,
     clearMask,
+    clickObject,
     emptyDisagreement,
     enter,
     exit,
+    hideAllObjects,
     inspection.diameterPx,
     inspection.featherPx,
     inspection.furnitureHidden,
     inspection.maskEpoch,
     inspection.mode,
+    inspection.objectExpansionPx,
+    inspection.objectOutlinesVisible,
     inspection.opacity,
     inspection.sessionSerial,
     inspection.tool,
@@ -285,6 +426,7 @@ export function RemoveAlignmentProvider({
     maskSummary,
     noteDisplayedSize,
     noteMaskSummary,
+    objectUi,
     originalDisagreement,
     roomId,
     report,
@@ -293,9 +435,12 @@ export function RemoveAlignmentProvider({
     setFeather,
     setFurnitureHidden,
     setMode,
+    setObjectExpansion,
+    setObjectOutlinesVisible,
     setOpacity,
     setPreset,
     setTool,
+    showAllObjects,
   ]);
 
   return (
@@ -351,6 +496,12 @@ export function RemoveAlignmentControl() {
         >
           <div className="flex gap-1" role="group" aria-label="Remove mode">
             <ModeButton
+              pressed={session.mode === "objects"}
+              onClick={() => session.setMode("objects")}
+            >
+              Objects
+            </ModeButton>
+            <ModeButton
               pressed={session.mode === "alignment"}
               onClick={() => session.setMode("alignment")}
             >
@@ -399,8 +550,10 @@ export function RemoveAlignmentControl() {
                 />
               </label>
             </>
-          ) : (
+          ) : session.mode === "brush" ? (
             <BrushControls session={session} />
+          ) : (
+            <ObjectControls session={session} />
           )}
           <button
             type="button"
@@ -412,9 +565,17 @@ export function RemoveAlignmentControl() {
                 : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
             }`}
           >
-            {session.furnitureHidden ? "Show furniture" : "Hide furniture"}
-          </button>
-          <AlignmentDetails session={session} />
+          {session.furnitureHidden ? "Show furniture" : "Hide furniture"}
+        </button>
+        <button
+          type="button"
+          data-remove-objects="done"
+          onClick={session.exit}
+          className={`mt-2 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-200 hover:bg-neutral-800 ${FOCUS}`}
+        >
+          Done
+        </button>
+        <AlignmentDetails session={session} />
         </div>
       ) : null}
     </div>
@@ -528,6 +689,75 @@ function BrushSlider({
   );
 }
 
+function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
+  const ready = session.objectUi.phase === "ready" && session.objectUi.objects.length > 0;
+  const canReveal = ready && session.brushAdmission?.allowed === true;
+  const reason = session.brushAdmission?.allowed === false ? session.brushAdmission.reason : undefined;
+  return (
+    <div className="mt-3">
+      <p className="text-[11px] text-neutral-300" role="status" data-remove-objects="status">
+        {objectStatus(session)}
+      </p>
+      {reason ? (
+        <p className="mt-2 text-[11px] leading-relaxed text-neutral-500">{reason}</p>
+      ) : null}
+      <div className="mt-3 flex gap-1" role="group" aria-label="Object selection">
+        <ModeButton
+          pressed={false}
+          disabled={!canReveal}
+          title={reason}
+          onClick={session.hideAllObjects}
+        >
+          Hide All
+        </ModeButton>
+        <ModeButton
+          pressed={false}
+          disabled={!canReveal}
+          title={reason}
+          onClick={session.showAllObjects}
+        >
+          Show All
+        </ModeButton>
+      </div>
+      <div data-remove-objects="expansion">
+        <BrushSlider
+          label="Mask Expansion"
+          ariaLabel="Mask Expansion"
+          min={0}
+          max={REMOVE_OBJECT_EXPANSION_MAX_PX}
+          value={session.objectExpansionPx}
+          onChange={session.setObjectExpansion}
+        />
+      </div>
+      <button
+        type="button"
+        aria-pressed={session.objectOutlinesVisible}
+        data-remove-objects="outlines"
+        onClick={() => session.setObjectOutlinesVisible(!session.objectOutlinesVisible)}
+        className={`mt-3 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+          session.objectOutlinesVisible
+            ? "border-neutral-500 bg-neutral-800 text-neutral-50"
+            : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+        }`}
+      >
+        Show Mask Outlines
+      </button>
+    </div>
+  );
+}
+
+function objectStatus(session: RemoveAlignmentContextValue): string {
+  if (session.objectUi.phase === "error") {
+    return session.objectUi.error ?? "Segmentation failed.";
+  }
+  if (session.objectUi.phase !== "ready") return "Finding objects…";
+  if (session.objectUi.objects.length === 0) return "No removable objects found.";
+  const hidden = session.objectUi.selectedIds.size;
+  return hidden === 0
+    ? `${session.objectUi.objects.length} objects`
+    : `${session.objectUi.objects.length} objects, ${hidden} hidden`;
+}
+
 function AlignmentDetails({ session }: { session: RemoveAlignmentContextValue }) {
   const report = session.report;
   if (!report) return null;
@@ -551,6 +781,29 @@ function AlignmentDetails({ session }: { session: RemoveAlignmentContextValue })
           label="Masked coverage"
           value={formatRemoveMaskedCoverage(session.maskSummary?.coveragePercent ?? 0)}
         />
+        <Row label="Segmentation" value={segmentationLabel(session)} />
+        {session.objectUi.diagnostics ? (
+          <>
+            <Row label="Provider" value={session.objectUi.diagnostics.provider} />
+            <Row label="Model" value={session.objectUi.diagnostics.modelId} />
+            <Row label="Mask count" value={String(session.objectUi.diagnostics.maskCount)} />
+            <Row label="Eligible objects" value={String(session.objectUi.diagnostics.eligibleCount)} />
+            <Row label="Hidden objects" value={String(session.objectUi.selectedIds.size)} />
+            <Row
+              label="Suppressed duplicates"
+              value={formatRemoveObjectSuppressed(session.objectUi.diagnostics.suppressed)}
+            />
+            <Row
+              label="Rejected masks"
+              value={formatRemoveObjectRejected(session.objectUi.diagnostics.rejected)}
+            />
+            <Row
+              label="Inference time"
+              value={formatRemoveObjectInferenceTime(session.objectUi.diagnostics)}
+            />
+          </>
+        ) : null}
+        <Row label="ORIGINAL/EMPTY" value={report.gridCompatibility} />
         <Row
           label="Aspect rescaling"
           value={report.gridCompatibility === "aspect_compatible_rescaled" ? "yes" : "no"}
@@ -576,6 +829,12 @@ function AlignmentDetails({ session }: { session: RemoveAlignmentContextValue })
       <p className="mt-1 text-[10px] leading-relaxed text-neutral-500">{REMOVE_HARMONIZE_NOTE}</p>
     </details>
   );
+}
+
+function segmentationLabel(session: RemoveAlignmentContextValue): string {
+  if (session.objectUi.phase === "error") return session.objectUi.error ?? "Segmentation failed.";
+  if (session.objectUi.phase === "ready") return "ready";
+  return "Finding objects…";
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -610,17 +869,33 @@ function formatError(value: number | null): string {
 
 export function RemoveAlignmentOverlay() {
   const session = useRemoveAlignment();
+  const hoverKey = `${session?.sessionSerial ?? 0}:${session?.mode ?? ""}`;
+  const [hoverKeySeen, setHoverKeySeen] = useState(hoverKey);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  if (hoverKeySeen !== hoverKey) {
+    setHoverKeySeen(hoverKey);
+    setHoveredId(null);
+  }
   const report = session?.active ? session.report : null;
-  if (!session || !report) return null;
-  if (!session.roomId) return null;
-  if (session.mode === "brush" && session.brushAdmission?.allowed === true) {
+  if (!session || !report || !session.roomId) return null;
+  const compositing = session.brushAdmission?.allowed === true
+    && (session.mode === "brush" || session.mode === "objects");
+  if (compositing) {
+    const objectsMode = session.mode === "objects";
     return (
       <div
         className="pointer-events-none absolute inset-0 z-[1]"
         data-remove-alignment-overlay="true"
-        data-remove-view="brush"
-        data-remove-mode="brush"
+        data-remove-view={session.mode}
+        data-remove-mode={session.mode}
       >
+        {objectsMode ? (
+          <OriginalInspectionImage
+            roomId={session.roomId}
+            generationId={report.generationId}
+            onDisplayedSize={session.noteDisplayedSize}
+          />
+        ) : null}
         <RemoveBrushCanvas
           active={session.active}
           roomId={session.roomId}
@@ -633,7 +908,35 @@ export function RemoveAlignmentOverlay() {
           maskHoldRef={session.maskHoldRef}
           onMaskSummary={session.noteMaskSummary}
           onDisplayedSize={session.noteDisplayedSize}
+          interaction={objectsMode ? "objects" : "brush"}
+          backdrop={!objectsMode}
+          objects={session.objectUi.objects}
+          selectedIds={session.objectUi.selectedIds}
+          expansionPx={session.objectExpansionPx}
+          onObjectClick={(point) => session.clickObject(point.x, point.y)}
+          onObjectHover={(point) => {
+            const next = point ? highlightRemoveObject(session.objectUi, point.x, point.y) : null;
+            setHoveredId((current) => current === next ? current : next);
+          }}
         />
+        {objectsMode ? <ObjectLayer session={session} hoveredId={hoveredId} /> : null}
+      </div>
+    );
+  }
+  if (session.mode === "objects") {
+    return (
+      <div
+        className="pointer-events-none absolute inset-0 z-[1]"
+        data-remove-alignment-overlay="true"
+        data-remove-view="objects"
+        data-remove-mode="objects"
+      >
+        <OriginalInspectionImage
+          roomId={session.roomId}
+          generationId={report.generationId}
+          onDisplayedSize={session.noteDisplayedSize}
+        />
+        <ObjectLayer session={session} hoveredId={null} />
       </div>
     );
   }
@@ -648,13 +951,10 @@ export function RemoveAlignmentOverlay() {
       aria-hidden="true"
     >
       {layers.showOriginal ? (
-        // eslint-disable-next-line @next/next/no-img-element -- admin inspection bytes are served by the remove route
-        <img
-          src={removeAlignmentArtifactPath(session.roomId, "original", report.generationId)}
-          alt=""
-          draggable={false}
-          className="absolute inset-0 h-full w-full"
-          onLoad={(event) => note("original", naturalSize(event.currentTarget))}
+        <OriginalInspectionImage
+          roomId={session.roomId}
+          generationId={report.generationId}
+          onDisplayedSize={note}
         />
       ) : null}
       {layers.showEmpty ? (
@@ -669,6 +969,64 @@ export function RemoveAlignmentOverlay() {
         />
       ) : null}
     </div>
+  );
+}
+
+function OriginalInspectionImage({
+  roomId,
+  generationId,
+  onDisplayedSize,
+}: {
+  roomId: string;
+  generationId: string;
+  onDisplayedSize: (artifact: "original" | "empty", size: DisplayedSize) => void;
+}) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- admin inspection bytes are served by the remove route
+    <img
+      src={removeAlignmentArtifactPath(roomId, "original", generationId)}
+      alt=""
+      draggable={false}
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      onLoad={(event) => onDisplayedSize("original", naturalSize(event.currentTarget))}
+    />
+  );
+}
+
+function ObjectLayer({
+  session,
+  hoveredId,
+}: {
+  session: RemoveAlignmentContextValue;
+  hoveredId: string | null;
+}) {
+  return (
+    <>
+      {session.objectUi.phase === "ready" && session.objectUi.objects.length > 0 ? (
+        <RemoveObjectOutlines
+          objects={session.objectUi.objects}
+          selectedIds={session.objectUi.selectedIds}
+          hoveredId={hoveredId}
+          outlinesVisible={session.objectOutlinesVisible}
+        />
+      ) : null}
+      {session.objectUi.phase === "ready" ? null : session.objectUi.phase === "error" ? (
+        <div
+          className="pointer-events-none absolute inset-x-6 top-6 text-center text-xs text-neutral-100"
+          role="alert"
+          data-remove-objects="error"
+        >
+          {session.objectUi.error}
+        </div>
+      ) : (
+        <div
+          className="pointer-events-none absolute inset-x-6 top-6 text-center text-xs text-neutral-100"
+          role="status"
+        >
+          Finding objects…
+        </div>
+      )}
+    </>
   );
 }
 

@@ -19,6 +19,13 @@ import {
   type RemoveStrokeEffect,
 } from "@/lib/vibode-stage/remove-mask";
 import {
+  REMOVE_OBJECT_EXPANSION_DEFAULT_PX,
+  removeInspectionBackingSize,
+  syncRemoveInspectionCoverage,
+  watchRemoveDevicePixelRatio,
+} from "@/lib/vibode-stage/remove-object-ui";
+import type { RemoveObjectRecord } from "@/lib/vibode-stage/remove-objects";
+import {
   removeAlignmentArtifactPath,
   type RemoveAlignmentReport,
 } from "@/lib/vibode-stage/remove-alignment";
@@ -48,6 +55,8 @@ type LiveRemoveBrush = Readonly<{
 }>;
 
 const FULL_IMAGE = "full";
+const EMPTY_OBJECTS: readonly RemoveObjectRecord[] = [];
+const EMPTY_SELECTION: ReadonlySet<string> = new Set();
 
 function closeBitmap(bitmap: ImageBitmap | null) {
   if (!bitmap) return;
@@ -73,13 +82,15 @@ async function loadRemoveArtifact(url: string, signal: AbortSignal): Promise<Ima
 }
 
 function syncBackingStore(canvas: HTMLCanvasElement): "skip" | "same" | "resized" {
-  if (canvas.clientWidth <= 0 || canvas.clientHeight <= 0) return "skip";
-  const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.max(1, Math.round(canvas.clientWidth * ratio));
-  const height = Math.max(1, Math.round(canvas.clientHeight * ratio));
-  if (canvas.width === width && canvas.height === height) return "same";
-  canvas.width = width;
-  canvas.height = height;
+  const backing = removeInspectionBackingSize(
+    canvas.clientWidth,
+    canvas.clientHeight,
+    window.devicePixelRatio || 1,
+  );
+  if (!backing) return "skip";
+  if (canvas.width === backing.width && canvas.height === backing.height) return "same";
+  canvas.width = backing.width;
+  canvas.height = backing.height;
   return "resized";
 }
 
@@ -175,6 +186,13 @@ export function RemoveBrushCanvas({
   maskHoldRef,
   onMaskSummary,
   onDisplayedSize,
+  interaction = "brush",
+  backdrop = true,
+  objects = EMPTY_OBJECTS,
+  selectedIds = EMPTY_SELECTION,
+  expansionPx = REMOVE_OBJECT_EXPANSION_DEFAULT_PX,
+  onObjectClick,
+  onObjectHover,
 }: {
   active: boolean;
   roomId: string;
@@ -187,6 +205,13 @@ export function RemoveBrushCanvas({
   maskHoldRef: { current: RemoveMaskHold | null };
   onMaskSummary: (summary: RemoveMaskSummary | null) => void;
   onDisplayedSize: (artifact: "original" | "empty", size: { width: number; height: number }) => void;
+  interaction?: "brush" | "objects";
+  backdrop?: boolean;
+  objects?: readonly RemoveObjectRecord[];
+  selectedIds?: ReadonlySet<string>;
+  expansionPx?: number;
+  onObjectClick?: (point: Readonly<{ x: number; y: number }>) => void;
+  onObjectHover?: (point: Readonly<{ x: number; y: number }> | null) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const cursorRef = useRef<HTMLDivElement | null>(null);
@@ -198,6 +223,14 @@ export function RemoveBrushCanvas({
   const featherRef = useRef(featherPx);
   const summaryRef = useRef(onMaskSummary);
   const displayedSizeRef = useRef(onDisplayedSize);
+  const interactionRef = useRef(interaction);
+  const objectsRef = useRef(objects);
+  const selectedRef = useRef(selectedIds);
+  const objectClickRef = useRef(onObjectClick);
+  const objectHoverRef = useRef(onObjectHover);
+  const expansionRef = useRef(expansionPx);
+  const repaintRef = useRef<(() => void) | null>(null);
+  const endBrushRef = useRef<() => void>(() => {});
   const liveRef = useRef<LiveRemoveBrush>({
     active,
     sessionSerial,
@@ -241,6 +274,23 @@ export function RemoveBrushCanvas({
     sessionSerial,
     tool,
   ]);
+
+  useLayoutEffect(() => {
+    objectClickRef.current = onObjectClick;
+    objectHoverRef.current = onObjectHover;
+  }, [onObjectClick, onObjectHover]);
+
+  useLayoutEffect(() => {
+    expansionRef.current = expansionPx;
+    interactionRef.current = interaction;
+    objectsRef.current = objects;
+    selectedRef.current = selectedIds;
+    if (interaction !== "brush") {
+      if (cursorRef.current) cursorRef.current.style.display = "none";
+      endBrushRef.current();
+    }
+    repaintRef.current?.();
+  }, [expansionPx, interaction, objects, selectedIds]);
 
   useEffect(() => () => {
     const pair = bitmapsRef.current;
@@ -416,12 +466,15 @@ export function RemoveBrushCanvas({
     maskCanvas.width = hold.width;
     maskCanvas.height = hold.height;
     const scratch = document.createElement("canvas");
-    const display = canvas.getContext("2d", { alpha: false });
+    const display = canvas.getContext("2d", { alpha: interactionRef.current === "objects" });
     const maskContext = maskCanvas.getContext("2d");
     if (!display || !maskContext) {
       maskCanvas.width = 0;
       return undefined;
     }
+    const objectUnion = new Uint8Array(hold.width * hold.height);
+    const dilated = new Uint8Array(hold.width * hold.height);
+    const effective = new Uint8Array(hold.width * hold.height);
 
     const publish = () => {
       const current = maskHoldRef.current;
@@ -432,8 +485,21 @@ export function RemoveBrushCanvas({
         coveragePercent: removeMaskedCoveragePercent(current.pixels),
       });
     };
-    const writeMask = (rect: RemoveDirtyRect) => {
-      writeMaskRegion(maskContext, pixels, hold.width, rect);
+    const writeMask = (rect: RemoveDirtyRect): RemoveDirtyRect => {
+      const written = syncRemoveInspectionCoverage({
+        brush: pixels,
+        objectUnion,
+        dilated,
+        destination: effective,
+        width: hold.width,
+        height: hold.height,
+        objects: objectsRef.current,
+        selectedIds: selectedRef.current,
+        bounds: rect,
+        expansionPx: expansionRef.current,
+      });
+      writeMaskRegion(maskContext, written ? effective : pixels, hold.width, written ?? rect);
+      return written ?? rect;
     };
     const paintDisplay = (dirty: RemoveDirtyRect | typeof FULL_IMAGE) => {
       const backing = syncBackingStore(canvas);
@@ -487,10 +553,7 @@ export function RemoveBrushCanvas({
           featherPx: featherRef.current,
           tool: toolRef.current,
         });
-        if (dirty) {
-          writeMask(dirty);
-          paintDisplay(dirty);
-        }
+        if (dirty) paintDisplay(writeMask(dirty));
       }
       if (effect.releasePointerId != null) {
         try {
@@ -510,10 +573,18 @@ export function RemoveBrushCanvas({
       originalWidth: hold.width,
       originalHeight: hold.height,
     });
+    const releaseBrush = () => {
+      if (stroke.current.phase !== "active") return;
+      const ended = reduceRemoveStroke(stroke.current, { type: "end" });
+      stroke.current = ended.state;
+      applyEffect(ended.effect);
+    };
+    endBrushRef.current = releaseBrush;
+    repaintRef.current = () => paintDisplay(FULL_IMAGE);
     const updateCursor = (event: PointerEvent) => {
       const cursor = cursorRef.current;
       const parent = canvas.parentElement;
-      if (!cursor || !parent) return;
+      if (!cursor || !parent || interactionRef.current !== "brush") return;
       const frame = canvas.getBoundingClientRect();
       const location = mapRemovePointer({
         clientX: event.clientX,
@@ -540,6 +611,12 @@ export function RemoveBrushCanvas({
     const onDown = (event: PointerEvent) => {
       if (event.cancelable) event.preventDefault();
       event.stopPropagation();
+      if (interactionRef.current === "objects") {
+        releaseBrush();
+        const location = locate(event);
+        if (location.status === "inside") objectClickRef.current?.(location);
+        return;
+      }
       const location = locate(event);
       if (location.status === "unavailable") {
         const ended = reduceRemoveStroke(stroke.current, { type: "unavailable", pointerId: event.pointerId });
@@ -559,6 +636,11 @@ export function RemoveBrushCanvas({
       updateCursor(event);
     };
     const onMove = (event: PointerEvent) => {
+      if (interactionRef.current === "objects") {
+        const location = locate(event);
+        objectHoverRef.current?.(location.status === "inside" ? location : null);
+        return;
+      }
       updateCursor(event);
       const location = locate(event);
       if (location.status === "unavailable") {
@@ -576,6 +658,7 @@ export function RemoveBrushCanvas({
       applyEffect(result.effect);
     };
     const onUp = (event: PointerEvent) => {
+      if (interactionRef.current === "objects") return;
       const result = reduceRemoveStroke(stroke.current, {
         type: "up",
         pointerId: event.pointerId,
@@ -599,6 +682,10 @@ export function RemoveBrushCanvas({
       applyEffect(result.effect);
     };
     const onLeave = () => {
+      if (interactionRef.current === "objects") {
+        objectHoverRef.current?.(null);
+        return;
+      }
       if (cursorRef.current && stroke.current.phase !== "active") {
         cursorRef.current.style.display = "none";
       }
@@ -613,13 +700,17 @@ export function RemoveBrushCanvas({
     const observer = new ResizeObserver(redraw);
     observer.observe(canvas);
     window.addEventListener("resize", redraw);
+    const stopRatio = watchRemoveDevicePixelRatio(redraw);
 
     return () => {
+      repaintRef.current = null;
+      endBrushRef.current = () => {};
       const ended = reduceRemoveStroke(stroke.current, { type: "end" });
       stroke.current = ended.state;
       applyEffect(ended.effect);
       observer.disconnect();
       window.removeEventListener("resize", redraw);
+      stopRatio();
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
@@ -633,11 +724,14 @@ export function RemoveBrushCanvas({
 
   return (
     <>
-      <div className="absolute inset-0 bg-neutral-950" data-remove-brush-backdrop="true" />
+      {backdrop ? (
+        <div className="absolute inset-0 bg-neutral-950" data-remove-brush-backdrop="true" />
+      ) : null}
       <canvas
         ref={canvasRef}
-        aria-label="Remove brush"
+        aria-label={interaction === "objects" ? "Remove objects" : "Remove brush"}
         data-remove-brush-canvas="true"
+        data-remove-interaction={interaction}
         className="absolute inset-0 h-full w-full"
         style={{ pointerEvents: "auto", touchAction: "none" }}
       />
