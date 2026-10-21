@@ -42,6 +42,24 @@ import {
   type RemoveSessionMode,
 } from "@/lib/vibode-stage/remove-mask";
 import {
+  REMOVE_CLEANUP_EXCLUSION_COPY,
+  beginRemoveCleanupDownload,
+  buildRemoveCleanupExportBody,
+  cancelRemoveCleanupConfirmation,
+  finishRemoveCleanupExport,
+  hiddenRemoveCleanupObjects,
+  initialRemoveCleanupUiState,
+  openRemoveCleanupConfirmation,
+  removeCleanupConfirmationSummary,
+  removeCleanupExportAvailability,
+  removeCleanupExportLabel,
+  requestRemoveCleanupExport,
+  saveRemoveCleanupZip,
+  snapshotRemoveCleanupObjects,
+  type RemoveCleanupSnapshotObject,
+  type RemoveCleanupUiState,
+} from "@/lib/vibode-stage/remove-cleanup-contract";
+import {
   REMOVE_OBJECT_EXPANSION_MAX_PX,
   applyRemoveObjectClick,
   failRemoveObjectLoad,
@@ -105,6 +123,14 @@ type RemoveAlignmentContextValue = Readonly<{
   setObjectOutlinesVisible: (visible: boolean) => void;
   setObjectProtection: (enabled: boolean) => void;
   objectUi: RemoveObjectUiState;
+  cleanupPhase: RemoveCleanupUiState["phase"];
+  cleanupError: string | null;
+  cleanupAvailable: boolean;
+  cleanupLabel: string;
+  cleanupSummary: string;
+  openCleanupExport: () => void;
+  cancelCleanupExport: () => void;
+  downloadCleanupExport: () => void;
   noteDisplayedSize: (artifact: "original" | "empty", size: DisplayedSize) => void;
   noteMaskSummary: (summary: RemoveMaskSummary | null) => void;
   originalDisagreement: string | null;
@@ -143,6 +169,10 @@ export function RemoveAlignmentProvider({
   const maskHoldRef = useRef<RemoveMaskHold | null>(null);
   const [objectUi, setObjectUi] = useState<RemoveObjectUiState>(initialRemoveObjectUiState());
   const objectUiRef = useRef(objectUi);
+  const [cleanupUi, setCleanupUi] = useState<RemoveCleanupUiState>(initialRemoveCleanupUiState());
+  const [cleanupSnapshot, setCleanupSnapshot] = useState<RemoveCleanupSnapshotObject[]>([]);
+  const [cleanupController, setCleanupController] = useState<AbortController | null>(null);
+  const cleanupClaimRef = useRef(false);
   const loadRef = useRef<null | {
     key: string;
     serial: number;
@@ -244,6 +274,17 @@ export function RemoveAlignmentProvider({
       sessionSerial: inspection.sessionSerial,
     };
   }, [inspection.sessionSerial, report, roomId, sessionActive]);
+  const cleanupIdentityKey = objectIdentity
+    ? removeObjectUiIdentityKey(objectIdentity)
+    : "inactive";
+  const [trackedCleanupKey, setTrackedCleanupKey] = useState(cleanupIdentityKey);
+  if (trackedCleanupKey !== cleanupIdentityKey) {
+    setTrackedCleanupKey(cleanupIdentityKey);
+    cleanupController?.abort();
+    setCleanupController(null);
+    setCleanupSnapshot([]);
+    setCleanupUi(initialRemoveCleanupUiState());
+  }
 
   useEffect(() => {
     const decision = reduceRemoveObjectSession({
@@ -303,6 +344,10 @@ export function RemoveAlignmentProvider({
     };
   }, [objectIdentity]);
 
+  useEffect(() => {
+    cleanupClaimRef.current = false;
+  }, [cleanupIdentityKey]);
+
   const enter = useCallback(() => {
     const requested = roomRef.current;
     if (!requested) return;
@@ -361,6 +406,89 @@ export function RemoveAlignmentProvider({
   const showAllObjects = useCallback(() => {
     updateObjectUi(showAllRemoveObjectUi);
   }, [updateObjectUi]);
+  const hiddenCleanupObjects = useMemo(
+    () => (objectUi.phase === "ready"
+      ? hiddenRemoveCleanupObjects(objectUi.objects, objectUi.selectedIds)
+      : []),
+    [objectUi],
+  );
+  if (hiddenCleanupObjects.length === 0 && cleanupUi.phase === "confirming") {
+    setCleanupSnapshot([]);
+    setCleanupUi(cancelRemoveCleanupConfirmation(cleanupUi));
+  }
+  const openCleanupExport = useCallback(() => {
+    const hidden = objectUi.phase === "ready"
+      ? hiddenRemoveCleanupObjects(objectUi.objects, objectUi.selectedIds)
+      : [];
+    const available = removeCleanupExportAvailability({
+      segmentationPhase: objectUi.phase,
+      hiddenCount: hidden.length,
+      exporting: cleanupUi.phase === "exporting",
+    });
+    if (!available || cleanupUi.phase === "exporting") return;
+    setCleanupSnapshot(snapshotRemoveCleanupObjects(hidden));
+    setCleanupUi(openRemoveCleanupConfirmation(cleanupUi, true));
+  }, [cleanupUi, objectUi]);
+  const cancelCleanupExport = useCallback(() => {
+    setCleanupSnapshot([]);
+    setCleanupUi(cancelRemoveCleanupConfirmation(cleanupUi));
+  }, [cleanupUi]);
+  const downloadCleanupExport = useCallback(() => {
+    const begun = beginRemoveCleanupDownload({
+      state: cleanupUi,
+      claimed: cleanupClaimRef.current,
+    });
+    if (!begun.begin) return;
+    cleanupClaimRef.current = true;
+    setCleanupUi(begun.state);
+    const identity = objectIdentity;
+    const snapshot = cleanupSnapshot;
+    const flightId = begun.state.flightId;
+    if (!identity || snapshot.length === 0) {
+      cleanupClaimRef.current = false;
+      setCleanupUi(finishRemoveCleanupExport(begun.state, flightId, {
+        ok: false,
+        reason: "Clean Up export is not available for this room.",
+      }));
+      return;
+    }
+    const controller = new AbortController();
+    setCleanupController(controller);
+    void (async () => {
+      let outcome: Readonly<
+        | { ok: true; bytes: Uint8Array; fileName: string }
+        | { ok: false; reason: string }
+      >;
+      try {
+        const body = await buildRemoveCleanupExportBody({
+          roomId: identity.roomId,
+          generationId: identity.generationId,
+          originalSha256: identity.originalSha256,
+          originalDecodedWidth: identity.originalWidth,
+          originalDecodedHeight: identity.originalHeight,
+          objects: snapshot,
+        });
+        if (controller.signal.aborted) return;
+        const exported = await requestRemoveCleanupExport({ body, signal: controller.signal });
+        if (controller.signal.aborted) return;
+        outcome = exported;
+      } catch {
+        if (controller.signal.aborted) return;
+        outcome = { ok: false, reason: "Clean Up export failed." };
+      }
+      cleanupClaimRef.current = false;
+      if (controller.signal.aborted) return;
+      if (outcome.ok) {
+        try {
+          saveRemoveCleanupZip(outcome.fileName, outcome.bytes);
+        } catch {
+          outcome = { ok: false, reason: "Clean Up export could not be saved." };
+        }
+      }
+      if (controller.signal.aborted) return;
+      setCleanupUi((current) => finishRemoveCleanupExport(current, flightId, outcome));
+    })();
+  }, [cleanupSnapshot, cleanupUi, objectIdentity]);
   const noteDisplayedSize = useCallback((artifact: "original" | "empty", size: DisplayedSize) => {
     setDisplayed((current) => ({ ...current, [artifact]: size }));
   }, []);
@@ -409,17 +537,36 @@ export function RemoveAlignmentProvider({
     setObjectOutlinesVisible,
     setObjectProtection,
     objectUi,
+    cleanupPhase: cleanupUi.phase,
+    cleanupError: cleanupUi.error,
+    cleanupAvailable: removeCleanupExportAvailability({
+      segmentationPhase: objectUi.phase,
+      hiddenCount: hiddenCleanupObjects.length,
+      exporting: cleanupUi.phase === "exporting",
+    }),
+    cleanupLabel: removeCleanupExportLabel(hiddenCleanupObjects.length),
+    cleanupSummary: removeCleanupConfirmationSummary(
+      cleanupUi.phase === "idle" ? hiddenCleanupObjects : cleanupSnapshot,
+    ),
+    openCleanupExport,
+    cancelCleanupExport,
+    downloadCleanupExport,
     noteDisplayedSize,
     noteMaskSummary,
     originalDisagreement,
     emptyDisagreement,
   }), [
     brushAdmission,
+    cancelCleanupExport,
+    cleanupSnapshot,
+    cleanupUi,
     clearMask,
     clickObject,
+    downloadCleanupExport,
     emptyDisagreement,
     enter,
     exit,
+    hiddenCleanupObjects,
     hideAllObjects,
     inspection.diameterPx,
     inspection.featherPx,
@@ -437,6 +584,7 @@ export function RemoveAlignmentProvider({
     noteDisplayedSize,
     noteMaskSummary,
     objectUi,
+    openCleanupExport,
     originalDisagreement,
     roomId,
     report,
@@ -778,6 +926,62 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
         >
           Show All
         </ModeButton>
+      </div>
+      <div className="mt-3" data-remove-cleanup="panel">
+        {session.cleanupPhase === "idle" ? (
+          <button
+            type="button"
+            data-remove-cleanup="export"
+            disabled={!session.cleanupAvailable}
+            onClick={session.openCleanupExport}
+            className={`rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+              session.cleanupAvailable
+                ? "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+                : "border-neutral-900 bg-neutral-950 text-neutral-600"
+            }`}
+          >
+            {session.cleanupLabel}
+          </button>
+        ) : (
+          <div data-remove-cleanup="confirm">
+            <p className="text-[11px] leading-relaxed text-neutral-300">{session.cleanupSummary}</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-neutral-400">{REMOVE_CLEANUP_EXCLUSION_COPY}</p>
+            <div className="mt-2 flex gap-1">
+              <button
+                type="button"
+                data-remove-cleanup="download"
+                disabled={session.cleanupPhase === "exporting"}
+                onClick={session.downloadCleanupExport}
+                className={`rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+                  session.cleanupPhase === "exporting"
+                    ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+                    : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+                }`}
+              >
+                {session.cleanupPhase === "exporting" ? "Preparing…" : "Download"}
+              </button>
+              <button
+                type="button"
+                data-remove-cleanup="cancel"
+                disabled={session.cleanupPhase === "exporting"}
+                onClick={session.cancelCleanupExport}
+                className={`rounded-md border px-2 py-1 text-[11px] ${FOCUS} disabled:border-neutral-900 disabled:bg-neutral-950 disabled:text-neutral-600 border-neutral-700 text-neutral-300 hover:bg-neutral-800`}
+              >
+                Cancel
+              </button>
+            </div>
+            {session.cleanupPhase === "exporting" ? (
+              <p className="mt-2 text-[11px] text-neutral-400" role="status" data-remove-cleanup="status">
+                Preparing Clean Up inputs…
+              </p>
+            ) : null}
+          </div>
+        )}
+        {session.cleanupError ? (
+          <p className="mt-2 text-[11px] leading-relaxed text-red-300" role="alert" data-remove-cleanup="error">
+            {session.cleanupError}
+          </p>
+        ) : null}
       </div>
       <div data-remove-objects="expansion">
         <BrushSlider
