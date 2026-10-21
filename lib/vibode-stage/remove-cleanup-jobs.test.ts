@@ -11,16 +11,20 @@ import type { AfcGenerationRecord, AfcRoomPointer } from "@/lib/afc-v2-productio
 import { REMOVE_CLEANUP_EXCLUSION_COPY } from "@/lib/vibode-stage/remove-cleanup-contract";
 import {
   describeCleanupGenerationSelection,
+  REMOVE_CLEANUP_RETRY_NOTE,
   removeCleanupGenerationAvailability,
+  removeCleanupRetryAvailable,
 } from "@/lib/vibode-stage/remove-cleanup-generation-ui";
 import { createMemoryCleanupArtifacts } from "@/lib/vibode-stage/remove-cleanup-jobs/artifacts";
 import { enqueuePreparedCleanupJob } from "@/lib/vibode-stage/remove-cleanup-jobs/enqueue";
+import { enqueueCleanupJob } from "@/lib/vibode-stage/remove-cleanup-jobs/engine";
 import { executeCleanupClaim } from "@/lib/vibode-stage/remove-cleanup-jobs/execute";
 import {
   handleRemoveCleanupCandidate,
   handleRemoveCleanupDiscard,
   handleRemoveCleanupEnqueue,
   handleRemoveCleanupJobStatus,
+  handleRemoveCleanupRetry,
 } from "@/lib/vibode-stage/remove-cleanup-jobs/http";
 import {
   REMOVE_CLEANUP_DAILY_PROVIDER_LIMIT,
@@ -661,4 +665,139 @@ test("confirmation keeps the frozen selection", () => {
     hiddenCount: 0,
     busy: false,
   }), false);
+});
+
+test("a failed cleanup job retries into a new queued job without changing the failed row", async () => {
+  const prepared = await snapshot();
+  const box = control();
+  const queued = await enqueuePreparedCleanupJob(box.runtime, prepared, {
+    userId: ADMIN,
+    roomUserId: ADMIN,
+    currentGenerationId: GENERATION,
+  });
+  assert.equal(queued.ok, true);
+  if (!queued.ok) return;
+  const original = box.runtime.database.jobs[0];
+  assert.ok(original);
+  assert.equal(original.retryOfJobId, null);
+  assert.equal(original.retryOrdinal, 0);
+  original.status = "succeeded";
+  assert.deepEqual(await box.runtime.retry(ADMIN, original.id), { ok: false, code: "not_failed" });
+  original.status = "running";
+  assert.deepEqual(await box.runtime.retry(ADMIN, original.id), { ok: false, code: "not_failed" });
+  original.status = "queued";
+  assert.deepEqual(await box.runtime.retry(ADMIN, original.id), { ok: false, code: "not_failed" });
+  original.status = "failed";
+  original.failureCode = "provider_uncertain";
+  original.failureMessage = "Provider returned HTTP 402.";
+  original.providerStartedAtMs = box.runtime.now();
+  original.providerHttpStatus = 402;
+  original.completedAtMs = box.runtime.now();
+  original.attemptCount = 1;
+  const failed = structuredClone(original);
+  assert.deepEqual(await box.runtime.retry(OTHER, original.id), { ok: false, code: "not_found" });
+  assert.deepEqual(original, failed);
+
+  const httpDeps = {
+    getAdmin: async () => ({ id: ADMIN }),
+    prepareDeps: deps(30, 20, prepared.artifacts.originalBytes()),
+    control: box.runtime,
+  };
+  const retried = await handleRemoveCleanupRetry(httpDeps, original.id);
+  assert.equal(retried.status, 200);
+  const body = await retried.json() as { created: boolean; job: { jobId: string; status: string } };
+  assert.equal(body.created, true);
+  assert.equal(body.job.status, "queued");
+  assert.notEqual(body.job.jobId, original.id);
+  const created = box.runtime.database.jobs.find((job) => job.id === body.job.jobId);
+  assert.ok(created);
+  assert.equal(created.retryOfJobId, original.id);
+  assert.equal(created.retryOrdinal, 1);
+  assert.equal(created.inputFingerprint, original.inputFingerprint);
+  assert.notEqual(created.paidRequestFingerprint, original.paidRequestFingerprint);
+  assert.match(created.paidRequestFingerprint, /^[0-9a-f]{64}$/);
+  assert.equal(created.originalPath, original.originalPath);
+  assert.equal(created.overlayPath, original.overlayPath);
+  assert.equal(created.promptPath, original.promptPath);
+  assert.equal(created.masksPath, original.masksPath);
+  assert.equal(created.originalSha256, original.originalSha256);
+  assert.equal(created.overlaySha256, original.overlaySha256);
+  assert.equal(created.promptSha256, original.promptSha256);
+  assert.equal(created.maskManifestSha256, original.maskManifestSha256);
+  assert.equal(created.providerStartedAtMs, null);
+  assert.equal(created.outputPath, null);
+  assert.equal(created.attemptCount, 0);
+  assert.deepEqual(original, failed);
+  assert.equal(box.runtime.database.jobs.length, 2);
+
+  const duplicate = await handleRemoveCleanupRetry(httpDeps, original.id);
+  const duplicateBody = await duplicate.json() as { created: boolean; job: { jobId: string } };
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicateBody.created, false);
+  assert.equal(duplicateBody.job.jobId, created.id);
+  assert.equal(box.runtime.database.jobs.length, 2);
+
+  const sameSelection = enqueueCleanupJob(box.runtime.database, {
+    id: original.id,
+    userId: original.userId,
+    roomUserId: original.userId,
+    roomId: original.roomId,
+    afcGenerationId: original.afcGenerationId,
+    currentGenerationId: original.afcGenerationId,
+    paidRequestFingerprint: original.paidRequestFingerprint,
+    inputFingerprint: original.inputFingerprint,
+    hiddenConcepts: original.hiddenConcepts,
+    selection: original.selection,
+    originalSha256: original.originalSha256,
+    originalMime: original.originalMime,
+    originalByteCount: original.originalByteCount,
+    originalWidth: original.originalWidth,
+    originalHeight: original.originalHeight,
+    overlaySha256: original.overlaySha256,
+    promptSha256: original.promptSha256,
+    promptVersion: original.promptVersion,
+    maskManifestSha256: original.maskManifestSha256,
+    aspectRatioFamily: original.aspectRatioFamily,
+    documented1kGridWidth: original.documented1kGridWidth,
+    documented1kGridHeight: original.documented1kGridHeight,
+    originalPath: original.originalPath,
+    overlayPath: original.overlayPath,
+    promptPath: original.promptPath,
+    masksPath: original.masksPath,
+  }, box.runtime.now());
+  assert.equal(sameSelection.ok, true);
+  if (sameSelection.ok) {
+    assert.equal(sameSelection.created, false);
+    assert.equal(sameSelection.job.id, original.id);
+  }
+  assert.equal(box.runtime.database.jobs.length, 2);
+
+  const hidden = await handleRemoveCleanupRetry({
+    ...httpDeps,
+    getAdmin: async () => ({ id: OTHER }),
+  }, original.id);
+  assert.equal(hidden.status, 404);
+
+  const sql = source("supabase/migrations/20261021141800_vibode_cleanup_generation_retry.sql");
+  const route = source("app/api/vibode/admin/remove-cleanup-jobs/[jobId]/retry/route.ts");
+  const component = source("components/stage/RemoveCleanupGeneration.tsx");
+  assert.match(sql, /retry_of_job_id uuid null references public\.vibode_cleanup_generations\(id\)/);
+  assert.doesNotMatch(sql, /retry_of_job_id uuid null references public\.vibode_cleanup_generations\(id\) on delete cascade/);
+  assert.match(sql, /retry_vibode_cleanup_generation\(\s*p_user_id uuid,\s*p_job_id uuid\s*\)/);
+  assert.match(sql, /grant execute on function public\.retry_vibode_cleanup_generation\(uuid, uuid\) to service_role/);
+  assert.match(sql, /revoke all on function public\.retry_vibode_cleanup_generation\(uuid, uuid\) from public, anon, authenticated/);
+  assert.equal(sql.includes("vibode_harmonize"), false);
+  assert.match(route, /handleRemoveCleanupRetry/);
+  assert.doesNotMatch(route, /generativelanguage|roboflow|remove-objects/);
+  assert.match(component, /Retry Clean Up/);
+  assert.match(component, /\/retry/);
+  assert.match(component, /disabled=\{retrying\}/);
+  assert.match(component, /retryLock\.current/);
+  assert.match(component, /publishCleanupJob\(payload\.job/);
+  assert.equal(REMOVE_CLEANUP_RETRY_NOTE, "Retry creates a new generation attempt from the same stored inputs.");
+  assert.equal(removeCleanupRetryAvailable({ status: "failed", busy: false }), true);
+  assert.equal(removeCleanupRetryAvailable({ status: "failed", busy: true }), false);
+  assert.equal(removeCleanupRetryAvailable({ status: "succeeded", busy: false }), false);
+  assert.equal(removeCleanupRetryAvailable({ status: "queued", busy: false }), false);
+  assert.doesNotMatch(component, /requestRemoveObjects|serverless\.roboflow|generativelanguage/);
 });

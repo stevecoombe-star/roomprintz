@@ -80,6 +80,18 @@ export async function handleRemoveCleanupCandidate(
   });
 }
 
+export async function handleRemoveCleanupRetry(deps: CleanupHttpDeps, jobId: string): Promise<Response> {
+  const admin = await deps.getAdmin();
+  if (!admin || !JOB_ID.test(jobId)) return json({ error: "Not found." }, 404);
+  const retried = await deps.control.retry(admin.id, jobId);
+  if (!retried.ok) return json(cleanupPublicBody(retried.code), cleanupPublicStatus(retried.code));
+  const current = await currentGeneration(deps, retried.job.roomId, admin.id);
+  return json({
+    created: retried.created,
+    job: cleanupJobStatusView(retried.job, current),
+  }, 200);
+}
+
 export async function handleRemoveCleanupDiscard(deps: CleanupHttpDeps, jobId: string): Promise<Response> {
   const admin = await deps.getAdmin();
   if (!admin || !JOB_ID.test(jobId)) return json({ error: "Not found." }, 404);

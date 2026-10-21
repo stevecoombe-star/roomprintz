@@ -97,6 +97,8 @@ export type CleanupJobRow = {
   createdAtMs: number;
   updatedAtMs: number;
   completedAtMs: number | null;
+  retryOfJobId: string | null;
+  retryOrdinal: number;
 };
 
 export type CleanupJobDatabase = {
@@ -174,6 +176,13 @@ export type CleanupFailResult =
 export type CleanupDiscardResult =
   | Readonly<{ ok: true; job: CleanupJobRow; effect: "cancelled" | "marked" | "already" }>
   | Readonly<{ ok: false; code: "not_found" }>;
+
+export type CleanupRetryResult =
+  | Readonly<{ ok: true; created: boolean; job: CleanupJobRow }>
+  | Readonly<{
+      ok: false;
+      code: "not_found" | "not_failed" | "active_job" | "daily_limit" | "global_daily_limit";
+    }>;
 
 export type CleanupStatusView = Readonly<{
   jobId: string;

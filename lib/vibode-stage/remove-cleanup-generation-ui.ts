@@ -64,6 +64,16 @@ export function describeCleanupGenerationSelection(
   return { count: objects.length, concepts };
 }
 
+export const REMOVE_CLEANUP_RETRY_NOTE =
+  "Retry creates a new generation attempt from the same stored inputs.";
+
+export function removeCleanupRetryAvailable(input: Readonly<{
+  status: CleanupPublicStatus | null;
+  busy: boolean;
+}>): boolean {
+  return input.status === "failed" && input.busy !== true;
+}
+
 export function cleanupGenerationErrorCopy(code: string | null): string | null {
   if (!code) return null;
   if (code === "daily_limit" || code === "global_daily_limit") return "Daily Clean Up limit reached.";

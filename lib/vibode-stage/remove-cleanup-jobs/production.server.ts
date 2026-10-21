@@ -15,6 +15,7 @@ import type {
   CleanupFailResult,
   CleanupJobInsert,
   CleanupJobRow,
+  CleanupRetryResult,
 } from "./types";
 
 type Row = Record<string, unknown>;
@@ -35,6 +36,7 @@ export function createSupabaseCleanupControl(
     readJob: async (userId, jobId) => readOne(client, { id: jobId, user_id: userId }),
     readRoom: async (userId, roomId) => readLatest(client, userId, roomId),
     discard: (userId, jobId) => discardRpc(client, userId, jobId),
+    retry: (userId, jobId) => retryRpc(client, userId, jobId),
     claim: (jobId = null) => claimRpc(client, jobId),
     heartbeat: (jobId, claimNonce) => flagRpc(client, "heartbeat_vibode_cleanup_generation", jobId, claimNonce),
     contact: (jobId, claimNonce) => contactRpc(client, jobId, claimNonce),
@@ -141,6 +143,17 @@ async function discardRpc(client: SupabaseClient, userId: string, jobId: string)
   if (!job) return { ok: false, code: "not_found" };
   const effect = result.row.effect === "cancelled" || result.row.effect === "already" ? result.row.effect : "marked";
   return { ok: true, job, effect };
+}
+
+async function retryRpc(client: SupabaseClient, userId: string, jobId: string): Promise<CleanupRetryResult> {
+  const result = await call(client, "retry_vibode_cleanup_generation", {
+    p_user_id: userId,
+    p_job_id: jobId,
+  });
+  if (!result.ok) return { ok: false, code: retryCode(result.code) };
+  const job = jobFromRecord(record(result.row.job));
+  if (!job) return { ok: false, code: "not_found" };
+  return { ok: true, created: result.row.created === true, job };
 }
 
 async function recoverableRpc(client: SupabaseClient): Promise<CleanupJobRow[]> {
@@ -259,6 +272,8 @@ function jobFromRecord(row: Row | null): CleanupJobRow | null {
     providerHttpStatus: numberValue(row.provider_http_status),
     latencyMs: numberValue(row.latency_ms),
     discardedAtMs: millis(row.discarded_at),
+    retryOfJobId: text(row.retry_of_job_id),
+    retryOrdinal: numberValue(row.retry_ordinal) ?? 0,
     notBeforeMs: millis(row.not_before) ?? 0,
     createdAtMs: millis(row.created_at) ?? 0,
     updatedAtMs: millis(row.updated_at) ?? 0,
@@ -309,6 +324,17 @@ function enqueueCode(code: string): Extract<CleanupEnqueueResult, { ok: false }>
     || code === "idempotency_conflict"
   ) return code;
   return "invalid_submission";
+}
+
+function retryCode(code: string): Extract<CleanupRetryResult, { ok: false }>["code"] {
+  if (
+    code === "not_found"
+    || code === "not_failed"
+    || code === "active_job"
+    || code === "daily_limit"
+    || code === "global_daily_limit"
+  ) return code;
+  return "not_found";
 }
 
 function contactCode(code: string): Extract<CleanupContactResult, { ok: false }>["code"] {

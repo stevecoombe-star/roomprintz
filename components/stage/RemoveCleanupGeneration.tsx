@@ -15,7 +15,9 @@ import {
   cleanupGenerationPhaseFromStatus,
   cleanupGenerationStatusLabel,
   describeCleanupGenerationSelection,
+  REMOVE_CLEANUP_RETRY_NOTE,
   removeCleanupGenerationAvailability,
+  removeCleanupRetryAvailable,
   type CleanupGenerationPhase,
   type CleanupReviewMode,
 } from "@/lib/vibode-stage/remove-cleanup-generation-ui";
@@ -37,6 +39,8 @@ export function RemoveCleanupGeneration({ objectUi }: { objectUi: RemoveObjectUi
   const [phase, setPhase] = useState<CleanupGenerationPhase>("idle");
   const [job, setJob] = useState<CleanupStatusView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const retryLock = useRef(false);
   const [review, setReview] = useState<CleanupReviewMode>("compare");
   const [candidateUrl, setCandidateUrl] = useState<string | null>(null);
   const candidateObjectUrl = useRef<string | null>(null);
@@ -113,6 +117,35 @@ export function RemoveCleanupGeneration({ objectUi }: { objectUi: RemoveObjectUi
     });
   }
 
+  async function retryFailed() {
+    if (!job || job.status !== "failed" || retryLock.current) return;
+    retryLock.current = true;
+    setRetrying(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/vibode/admin/remove-cleanup-jobs/${job.jobId}/retry`, {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => null) as { job?: CleanupStatusView; error?: string } | null;
+      if (!response.ok || !payload?.job) {
+        setError(typeof payload?.error === "string" ? payload.error : "Clean Up could not be retried.");
+        return;
+      }
+      setError(null);
+      await publishCleanupJob(payload.job, new AbortController().signal, {
+        setJob,
+        setPhase,
+        setCandidateUrl,
+        candidateObjectUrl,
+      });
+    } finally {
+      retryLock.current = false;
+      setRetrying(false);
+    }
+  }
+
   async function discard() {
     if (!job) return;
     const response = await fetch(`/api/vibode/admin/remove-cleanup-jobs/${job.jobId}/discard`, {
@@ -129,7 +162,20 @@ export function RemoveCleanupGeneration({ objectUi }: { objectUi: RemoveObjectUi
 
   return (
     <div className="mt-3" data-remove-cleanup-generation="panel">
-      {phase === "idle" || phase === "failed" || phase === "discarded" ? (
+      {phase === "failed" && job && removeCleanupRetryAvailable({ status: job.status, busy: false }) ? (
+        <div className="mt-2" data-remove-cleanup-generation="retry-panel">
+          <button
+            type="button"
+            data-remove-cleanup-generation="retry"
+            disabled={retrying}
+            onClick={() => void retryFailed()}
+            className={`${BUTTON} ${retrying ? "border-neutral-900 bg-neutral-950 text-neutral-600" : "border-neutral-700 text-neutral-300"}`}
+          >
+            Retry Clean Up
+          </button>
+          <p className="mt-1 text-[11px] leading-relaxed text-neutral-400">{REMOVE_CLEANUP_RETRY_NOTE}</p>
+        </div>
+      ) : phase === "idle" || phase === "failed" || phase === "discarded" ? (
         confirming ? (
           <div data-remove-cleanup-generation="confirm">
             <p className="text-[11px] leading-relaxed text-neutral-300">

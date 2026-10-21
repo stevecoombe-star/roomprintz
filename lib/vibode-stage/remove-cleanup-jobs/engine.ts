@@ -3,7 +3,8 @@
  *
  * Production locking lives in Postgres. This module is the local
  * certification double and must stay aligned with
- * supabase/migrations/20261020193000_vibode_cleanup_generations.sql.
+ * supabase/migrations/20261020193000_vibode_cleanup_generations.sql and
+ * supabase/migrations/20261021141800_vibode_cleanup_generation_retry.sql.
  *
  * A job that has recorded provider contact is never claimed for another
  * paid POST. An expired lease before contact may requeue. An expired lease
@@ -13,7 +14,7 @@
  * process dies before the POST begins. It cannot create a second POST.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   REMOVE_CLEANUP_DAILY_PROVIDER_LIMIT,
@@ -38,6 +39,7 @@ import type {
   CleanupJobDatabase,
   CleanupJobInsert,
   CleanupJobRow,
+  CleanupRetryResult,
 } from "./types";
 
 const DAY_MS = 86_400_000;
@@ -73,6 +75,42 @@ export function enqueueCleanupJob(
     return { ok: false, code: "global_daily_limit" };
   }
   const job = rowFrom(insert, nowMs);
+  db.jobs.push(job);
+  return { ok: true, created: true, job };
+}
+
+export function retryCleanupJob(
+  db: CleanupJobDatabase,
+  userId: string,
+  jobId: string,
+  nowMs: number,
+): CleanupRetryResult {
+  const source = findJob(db, jobId);
+  if (!source || source.userId !== userId) return { ok: false, code: "not_found" };
+  if (source.status !== "failed") return { ok: false, code: "not_failed" };
+  const activeRetry = db.jobs.find((job) =>
+    job.userId === userId && job.retryOfJobId === source.id && isActive(job)
+  );
+  if (activeRetry) return { ok: true, created: false, job: activeRetry };
+  if (db.jobs.some((job) => job.userId === userId && isActive(job))) {
+    return { ok: false, code: "active_job" };
+  }
+  if (providerStartedCount(db, userId, nowMs) >= REMOVE_CLEANUP_DAILY_PROVIDER_LIMIT) {
+    return { ok: false, code: "daily_limit" };
+  }
+  if (globalProviderStartedCount(db, nowMs) >= REMOVE_CLEANUP_GLOBAL_DAILY_PROVIDER_LIMIT) {
+    return { ok: false, code: "global_daily_limit" };
+  }
+  const childOrdinal = db.jobs
+    .filter((job) => job.retryOfJobId === source.id)
+    .reduce((max, job) => Math.max(max, job.retryOrdinal), 0);
+  const retryOrdinal = Math.max(source.retryOrdinal + 1, childOrdinal + 1);
+  const job = cloneQueuedRetry(source, {
+    id: randomUUID(),
+    paidRequestFingerprint: retryPaidFingerprint(source, retryOrdinal),
+    retryOrdinal,
+    nowMs,
+  });
   db.jobs.push(job);
   return { ok: true, created: true, job };
 }
@@ -384,7 +422,61 @@ function rowFrom(insert: CleanupJobInsert, nowMs: number): CleanupJobRow {
     createdAtMs: nowMs,
     updatedAtMs: nowMs,
     completedAtMs: null,
+    retryOfJobId: null,
+    retryOrdinal: 0,
   };
+}
+
+function cloneQueuedRetry(
+  source: CleanupJobRow,
+  input: Readonly<{ id: string; paidRequestFingerprint: string; retryOrdinal: number; nowMs: number }>,
+): CleanupJobRow {
+  return {
+    ...source,
+    id: input.id,
+    paidRequestFingerprint: input.paidRequestFingerprint,
+    status: "queued",
+    hiddenConcepts: [...source.hiddenConcepts],
+    selection: source.selection.map((item) => ({ ...item })),
+    outputPath: null,
+    outputSha256: null,
+    outputWidth: null,
+    outputHeight: null,
+    returnedModelId: null,
+    interactionId: null,
+    usage: null,
+    providerStartedAtMs: null,
+    providerAttemptId: null,
+    claimNonce: null,
+    claimExpiresAtMs: null,
+    claimedAtMs: null,
+    heartbeatAtMs: null,
+    attemptCount: 0,
+    failureCode: null,
+    failureMessage: null,
+    providerStatus: null,
+    providerHttpStatus: null,
+    latencyMs: null,
+    discardedAtMs: null,
+    notBeforeMs: input.nowMs,
+    createdAtMs: input.nowMs,
+    updatedAtMs: input.nowMs,
+    completedAtMs: null,
+    retryOfJobId: source.id,
+    retryOrdinal: input.retryOrdinal,
+  };
+}
+
+function retryPaidFingerprint(source: CleanupJobRow, retryOrdinal: number): string {
+  return createHash("sha256")
+    .update(source.paidRequestFingerprint)
+    .update(":")
+    .update(source.id)
+    .update(":")
+    .update(String(retryOrdinal))
+    .update(":")
+    .update(randomUUID())
+    .digest("hex");
 }
 
 function claimFrom(job: CleanupJobRow): CleanupClaim {

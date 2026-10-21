@@ -37,6 +37,7 @@ export function cleanupPublicStatus(code: string): number {
       return 429;
     case "active_job":
     case "idempotency_conflict":
+    case "not_failed":
       return 409;
     case "inadmissible_aspect":
       return 422;
@@ -52,6 +53,7 @@ export function cleanupPublicBody(code: string): Readonly<{ error: string }> {
   if (code === "forbidden" || code === "not_found" || code === "stale_generation") return { error: "Not found." };
   if (code === "daily_limit" || code === "global_daily_limit") return { error: "Daily Clean Up limit reached." };
   if (code === "active_job") return { error: "A Clean Up job is already active." };
+  if (code === "not_failed") return { error: "Only a failed Clean Up can be retried." };
   if (code === "inadmissible_aspect") return { error: "This photo's aspect ratio is not supported." };
   return { error: "Clean Up could not be started." };
 }

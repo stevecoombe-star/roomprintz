@@ -5,6 +5,7 @@ import {
   createCleanupJobDatabase,
   discardCleanupJob,
   enqueueCleanupJob,
+  retryCleanupJob,
   failCleanupJob,
   heartbeatCleanupJob,
   markCleanupProviderContact,
@@ -25,6 +26,7 @@ import type {
   CleanupJobDatabase,
   CleanupJobInsert,
   CleanupJobRow,
+  CleanupRetryResult,
 } from "./types";
 
 export type CleanupControl = {
@@ -34,6 +36,7 @@ export type CleanupControl = {
   readJob(userId: string, jobId: string): Promise<CleanupJobRow | null>;
   readRoom(userId: string, roomId: string): Promise<CleanupJobRow | null>;
   discard(userId: string, jobId: string): Promise<CleanupDiscardResult>;
+  retry(userId: string, jobId: string): Promise<CleanupRetryResult>;
   claim(jobId?: string | null): Promise<CleanupClaim | null>;
   heartbeat(jobId: string, claimNonce: string): Promise<boolean>;
   contact(jobId: string, claimNonce: string): Promise<CleanupContactResult>;
@@ -65,6 +68,9 @@ export function createMemoryCleanupControl(input: Readonly<{
     },
     async discard(userId, jobId) {
       return discardCleanupJob(database, userId, jobId, now());
+    },
+    async retry(userId, jobId) {
+      return retryCleanupJob(database, userId, jobId, now());
     },
     async claim(jobId = null) {
       return claimNextCleanupJob(database, now(), jobId);
