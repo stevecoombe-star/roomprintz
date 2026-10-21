@@ -84,6 +84,7 @@ import {
   getWorkflowStepDisplayLabel,
   type VibodeVersionKind,
 } from "@/lib/vibode/version-kind";
+import { cleanupHistoryVersionSecondaryLabel } from "@/lib/vibode-stage/remove-cleanup-history-ui";
 
 import {
   createInitialEditorViewportMode,
@@ -2259,7 +2260,7 @@ function getVersionSecondaryLabel(asset: VibodeRoomAsset): string {
     typeof asset.model_version === "string" && asset.model_version.trim().length > 0
       ? asset.model_version
       : "Unknown model";
-  return `Stage ${stageLabel} · ${modelLabel}`;
+  return cleanupHistoryVersionSecondaryLabel(asset, `Stage ${stageLabel} · ${modelLabel}`);
 }
 
 async function loadRoomHydrationData(
@@ -5445,6 +5446,11 @@ function EditorPageInner() {
     () => readOriginalPlacementSnapshotFromMetadata(selectedVersion?.metadata),
     [selectedVersion?.metadata]
   );
+  const refreshCleanupHistory = useCallback(async (roomId: string) => {
+    const previousActiveId = activeAssetIdRef.current;
+    await refreshRoomVersions(roomId);
+    if (previousActiveId) setActiveAssetId(previousActiveId);
+  }, [refreshRoomVersions, setActiveAssetId]);
   const selectedVersionIdRef = useRef<string | null>(selectedVersionId);
   const selectedVersionRenderedPlacementStateHashRef = useRef<string | null>(
     selectedVersionRenderedPlacementStateHash
@@ -12208,7 +12214,7 @@ function EditorPageInner() {
       <div className="flex min-h-0 flex-1 w-full overflow-hidden">
         {/* Canvas area */}
         <main className={`flex min-h-0 flex-1 overflow-hidden bg-neutral-950 ${viewportMode === "3d" ? "" : "items-center justify-center"}`}>
-          <StageEditorShell active={viewportMode === "3d"} roomId={editorRoomId}>
+          <StageEditorShell active={viewportMode === "3d"} roomId={editorRoomId} onCleanupHistoryAccepted={refreshCleanupHistory}>
           <div className="flex w-full flex-col items-center justify-center gap-3 px-3">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div

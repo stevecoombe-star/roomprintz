@@ -32,6 +32,7 @@ import {
   type CleanupCandidatePhase,
 } from "@/lib/vibode-stage/remove-cleanup-review";
 import type { CleanupStatusView } from "@/lib/vibode-stage/remove-cleanup-jobs/types";
+import { cleanupHistoryRoomToRefresh } from "@/lib/vibode-stage/remove-cleanup-history-ui";
 import type { RemoveObjectUiState } from "@/lib/vibode-stage/remove-object-ui";
 
 const FOCUS =
@@ -41,7 +42,13 @@ const BUTTON = `rounded-md border px-2 py-1 text-[11px] ${FOCUS}`;
 
 const POLL_INTERVAL_MS = 2000;
 
-export function RemoveCleanupGeneration({ objectUi }: { objectUi: RemoveObjectUiState }) {
+export function RemoveCleanupGeneration({
+  objectUi,
+  onHistoryAccepted,
+}: {
+  objectUi: RemoveObjectUiState;
+  onHistoryAccepted?: (roomId: string) => void | Promise<void>;
+}) {
   const identity = objectUi.phase === "ready" ? objectUi.identity : null;
   const hidden = objectUi.phase === "ready"
     ? hiddenRemoveCleanupObjects(objectUi.objects, objectUi.selectedIds)
@@ -56,6 +63,7 @@ export function RemoveCleanupGeneration({ objectUi }: { objectUi: RemoveObjectUi
   const [confirmingAccept, setConfirmingAccept] = useState(false);
   const [accepting, setAccepting] = useState(false);
   const acceptLock = useRef(false);
+  const refreshedHistoryJobIds = useRef(new Set<string>());
   const [review, setReview] = useState<CleanupReviewMode>("compare");
   const [viewerOpen, setViewerOpen] = useState(false);
   const [loadedCandidate, setLoadedCandidate] = useState<{ jobId: string; attempt: number; url: string } | null>(null);
@@ -241,12 +249,26 @@ export function RemoveCleanupGeneration({ objectUi }: { objectUi: RemoveObjectUi
         cache: "no-store",
       });
       const payload = await response.json().catch(() => null) as { job?: CleanupStatusView; error?: string; activated?: boolean } | null;
+      const roomToRefresh = cleanupHistoryRoomToRefresh({
+        responseOk: response.ok && Boolean(payload?.job),
+        activated: payload?.activated === true,
+        roomId: payload?.job?.roomId ?? null,
+        jobId: payload?.job?.jobId ?? null,
+        refreshedJobIds: refreshedHistoryJobIds.current,
+      });
       if (!response.ok || !payload?.job || payload.activated === true) {
         setError(typeof payload?.error === "string" ? payload.error : "Clean Up could not be saved to History.");
         return;
       }
       setConfirmingAccept(false);
       publishCleanupJob(payload.job, setJob, setPhase);
+      if (!roomToRefresh) return;
+      refreshedHistoryJobIds.current.add(payload.job.jobId);
+      try {
+        await onHistoryAccepted?.(roomToRefresh);
+      } catch {
+        // The asset is already accepted. A manual History reload can show it.
+      }
     } finally {
       acceptLock.current = false;
       setAccepting(false);

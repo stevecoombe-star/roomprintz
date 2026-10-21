@@ -376,7 +376,7 @@ test("Remove is wired into the 3D header, overlay, and inspection gates", () => 
   assert.match(scrollRow, /aria-label="Summary"/);
   assert.doesNotMatch(scrollRow, /RemoveAlignmentControl|HarmonizeButton|RoomScaleControl/);
   assert.match(header, /inspection\.undo/);
-  assert.match(shell, /<RemoveAlignmentProvider roomId=\{roomId\}>/);
+  assert.match(shell, /<RemoveAlignmentProvider roomId=\{roomId\} onCleanupHistoryAccepted=\{onCleanupHistoryAccepted\}>/);
   assert.match(integrated, /removeInspectionAllowsFurnitureManipulation\(removeActive\)/);
   assert.match(integrated, /removeFurnitureRenderingVisible/);
   assert.match(integrated, /<RemoveAlignmentOverlay \/>/);

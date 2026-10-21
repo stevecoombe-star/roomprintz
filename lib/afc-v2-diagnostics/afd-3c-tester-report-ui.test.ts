@@ -570,7 +570,7 @@ test("AFD-3C mounts in Editor chrome without touching STAGE drawers or canvas si
   assert.match(editor, /roomId=\{editorRoomId\}/);
   assert.match(editor, /preparePhase=\{prepare3dPhase\}/);
   assert.match(editor, /h-\[70vh\] w-\[70vw\] max-w-\[1200px\]/);
-  assert.match(editor, /<StageEditorShell active=\{viewportMode === "3d"\} roomId=\{editorRoomId\}>/);
+  assert.match(editor, /<StageEditorShell active=\{viewportMode === "3d"\} roomId=\{editorRoomId\} onCleanupHistoryAccepted=\{refreshCleanupHistory\}>/);
   assert.match(editor, /<ImageHistoryTimeline/);
   assert.doesNotMatch(editor, /Re-run room read|canRerun|run_again/);
   assert.doesNotMatch(header, /AfcQaTesterReport|Report an issue/);

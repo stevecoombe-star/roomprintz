@@ -12,7 +12,11 @@ import {
   createCleanupHistoryLedger,
   isCleanupHistoryAsset,
 } from "@/lib/vibode-stage/remove-cleanup-history";
-import { cleanupHistoryFallbackVersions } from "@/lib/vibode-stage/remove-cleanup-history-ui";
+import {
+  cleanupHistoryFallbackVersions,
+  cleanupHistoryRoomToRefresh,
+  cleanupHistoryVersionSecondaryLabel,
+} from "@/lib/vibode-stage/remove-cleanup-history-ui";
 import { acceptSupabaseCleanupHistory } from "@/lib/vibode-stage/remove-cleanup-jobs/accept.server";
 import { createMemoryCleanupArtifacts } from "@/lib/vibode-stage/remove-cleanup-jobs/artifacts";
 import { handleRemoveCleanupAccept } from "@/lib/vibode-stage/remove-cleanup-jobs/http";
@@ -435,6 +439,94 @@ test("a Clean Up card is shown once, in its lineage group or the fallback strip"
   const harmonized = { id: "asset-3", metadata: { harmonizeJobId: JOB } };
   const fallback = cleanupHistoryFallbackVersions([cleanup, duplicate, hidden, harmonized], new Set(["asset-1"]));
   assert.deepEqual(fallback.map((version) => version.id), ["asset-2"]);
+});
+
+test("successful acceptance refreshes one room and a failed or activating response does not", () => {
+  const refreshed = new Set<string>();
+  assert.equal(cleanupHistoryRoomToRefresh({
+    responseOk: true,
+    activated: false,
+    roomId: ROOM,
+    jobId: JOB,
+    refreshedJobIds: refreshed,
+  }), ROOM);
+  refreshed.add(JOB);
+  assert.equal(cleanupHistoryRoomToRefresh({
+    responseOk: true,
+    activated: false,
+    roomId: ROOM,
+    jobId: JOB,
+    refreshedJobIds: refreshed,
+  }), null);
+  assert.equal(cleanupHistoryRoomToRefresh({
+    responseOk: false,
+    activated: false,
+    roomId: ROOM,
+    jobId: JOB,
+    refreshedJobIds: new Set(),
+  }), null);
+  assert.equal(cleanupHistoryRoomToRefresh({
+    responseOk: true,
+    activated: true,
+    roomId: ROOM,
+    jobId: JOB,
+    refreshedJobIds: new Set(),
+  }), null);
+});
+
+test("Clean Up versions are labeled Clean Up Room and other stage rows keep their label", () => {
+  const stageLabel = "Stage 3 · gemini-3-pro-image";
+  assert.equal(
+    cleanupHistoryVersionSecondaryLabel({ metadata: { cleanupJobId: JOB } }, stageLabel),
+    CLEANUP_HISTORY_LABEL,
+  );
+  assert.equal(
+    cleanupHistoryVersionSecondaryLabel({ metadata: { versionKind: "stage" }, model_version: "gemini-3-pro-image" }, stageLabel),
+    stageLabel,
+  );
+  assert.equal(
+    cleanupHistoryVersionSecondaryLabel({ asset_type: "base" }, "Original upload"),
+    "Original upload",
+  );
+});
+
+test("acceptance refresh keeps the current image and updates both History surfaces", () => {
+  const editor = source("app/editor/page.tsx");
+  const generation = source("components/stage/RemoveCleanupGeneration.tsx");
+  const session = source("components/stage/RemoveAlignmentSession.tsx");
+  const shell = source("components/stage/StageEditorShell.tsx");
+  const accept = generation.slice(
+    generation.indexOf("async function acceptIntoHistory"),
+    generation.indexOf("async function discard"),
+  );
+  const failure = accept.slice(0, accept.indexOf("publishCleanupJob"));
+  const recovery = accept.slice(accept.indexOf("catch {"));
+  assert.doesNotMatch(failure, /onHistoryAccepted/);
+  assert.ok(accept.indexOf("publishCleanupJob") < accept.indexOf("onHistoryAccepted"));
+  assert.match(accept, /await onHistoryAccepted\?\.\(roomToRefresh\)/);
+  assert.doesNotMatch(recovery, /setJob|setPhase|setError|handleSelectVersion/);
+  const callback = editor.slice(
+    editor.indexOf("const refreshCleanupHistory"),
+    editor.indexOf("const selectedVersionIdRef"),
+  );
+  assert.match(callback, /await refreshRoomVersions\(roomId\)/);
+  assert.match(callback, /setActiveAssetId\(previousActiveId\)/);
+  assert.doesNotMatch(callback, /handleSelectVersion|applyVersionToEditorState|setWorkingImageUrl|publishHarmonize|room_scale_multiplier/);
+  assert.match(shell, /onCleanupHistoryAccepted=\{onCleanupHistoryAccepted\}/);
+  assert.match(session, /onHistoryAccepted=\{session\.onCleanupHistoryAccepted\}/);
+  assert.match(editor, /<ImageHistoryTimeline[\s\S]*versions=\{versions\}/);
+  assert.match(editor, /\{versions\.length\} version/);
+  assert.match(editor, /cleanupHistoryVersionSecondaryLabel/);
+  const original = "96063c22-c76a-485d-b77b-6d74a991c4c2";
+  const accepted = "9b44883f-f7f8-4a2f-9a5d-2d321045e29e";
+  const fallback = cleanupHistoryFallbackVersions(
+    [
+      { id: original, asset_type: "base" },
+      { id: accepted, metadata: { cleanupJobId: JOB, versionKind: "stage" } },
+    ],
+    new Set([original]),
+  );
+  assert.deepEqual(fallback.map((version) => version.id), [accepted]);
 });
 
 function recordingClient(input: Readonly<{

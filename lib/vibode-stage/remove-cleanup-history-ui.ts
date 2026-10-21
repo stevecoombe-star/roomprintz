@@ -10,6 +10,27 @@ export function isCleanupHistoryAsset(asset: unknown): boolean {
   return Boolean(uuid(row.cleanup_job_id) ?? uuid(row.cleanupJobId) ?? uuid(metadata?.cleanupJobId));
 }
 
+/** Versions-panel label for one accepted Clean Up image. Other stage rows keep their own label. */
+export function cleanupHistoryVersionSecondaryLabel(asset: unknown, stageLabel: string): string {
+  return isCleanupHistoryAsset(asset) ? CLEANUP_HISTORY_LABEL : stageLabel;
+}
+
+/**
+ * Room whose History list should refresh after one successful, inactive acceptance.
+ * A failed or activating response, or a job already refreshed, returns null.
+ */
+export function cleanupHistoryRoomToRefresh(input: Readonly<{
+  responseOk: boolean;
+  activated: boolean;
+  roomId: string | null;
+  jobId: string | null;
+  refreshedJobIds: ReadonlySet<string>;
+}>): string | null {
+  if (!input.responseOk || input.activated) return null;
+  if (!input.roomId || !input.jobId || input.refreshedJobIds.has(input.jobId)) return null;
+  return input.roomId;
+}
+
 /** Cards already shown by a lineage group stay out of the fallback strip. */
 export function cleanupHistoryFallbackVersions<T extends { id: string }>(
   versions: readonly T[],

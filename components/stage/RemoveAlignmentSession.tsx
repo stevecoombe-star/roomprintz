@@ -134,6 +134,7 @@ type RemoveAlignmentContextValue = Readonly<{
   downloadCleanupExport: () => void;
   noteDisplayedSize: (artifact: "original" | "empty", size: DisplayedSize) => void;
   noteMaskSummary: (summary: RemoveMaskSummary | null) => void;
+  onCleanupHistoryAccepted?: (roomId: string) => void | Promise<void>;
   originalDisagreement: string | null;
   emptyDisagreement: string | null;
 }>;
@@ -151,9 +152,11 @@ async function loadRemoveAlignment(roomId: string): Promise<RemoveAlignmentLooku
 
 export function RemoveAlignmentProvider({
   roomId,
+  onCleanupHistoryAccepted,
   children,
 }: {
   roomId: string | null;
+  onCleanupHistoryAccepted?: (roomId: string) => void | Promise<void>;
   children: ReactNode;
 }) {
   const roomRef = useRef(roomId);
@@ -554,6 +557,7 @@ export function RemoveAlignmentProvider({
     downloadCleanupExport,
     noteDisplayedSize,
     noteMaskSummary,
+    onCleanupHistoryAccepted,
     originalDisagreement,
     emptyDisagreement,
   }), [
@@ -585,6 +589,7 @@ export function RemoveAlignmentProvider({
     noteDisplayedSize,
     noteMaskSummary,
     objectUi,
+    onCleanupHistoryAccepted,
     openCleanupExport,
     originalDisagreement,
     roomId,
@@ -983,7 +988,10 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
             {session.cleanupError}
           </p>
         ) : null}
-        <RemoveCleanupGeneration objectUi={session.objectUi} />
+        <RemoveCleanupGeneration
+          objectUi={session.objectUi}
+          onHistoryAccepted={session.onCleanupHistoryAccepted}
+        />
       </div>
       <div data-remove-objects="expansion">
         <BrushSlider
