@@ -308,7 +308,7 @@ export async function prepareAuthorizedRemoveCleanupInput(
   const body = await readBoundedBody(request, REMOVE_CLEANUP_MAX_BODY_BYTES);
   if (body === "too-large") return fail(400, "Request body is too large.");
   const admin = await deps.getAdmin();
-  if (!admin) return fail(403, "Admin access required.");
+  if (!admin) return fail(403, "Sign in required.");
   const parsed = parseRemoveCleanupExportRequest(body);
   if (!parsed.ok) return fail(400, parsed.reason);
 

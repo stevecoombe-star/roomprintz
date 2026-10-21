@@ -207,7 +207,8 @@ test("cleanup route loads ORIGINAL itself and does not call a provider", () => {
   assert.match(route, /export const runtime = "nodejs"/);
   assert.match(route, /export const dynamic = "force-dynamic"/);
   assert.match(route, /loadOwnedOriginalForProductionAnalysis/);
-  assert.match(route, /getAuthenticatedAdminUser/);
+  assert.match(route, /readRemoveActor/);
+  assert.doesNotMatch(route, /getAuthenticatedAdminUser|isAdminEmail/);
   assert.doesNotMatch(route, /export async function GET|createRoboflowRemoveSegmentationProvider/);
   assert.match(handler, /prepareAuthorizedRemoveCleanupInput/);
   assert.match(handler, /Cache-Control": "no-store"/);
@@ -228,7 +229,7 @@ test("non-admin, non-owner, unknown room, stale generation, and unready generati
   const anonymous = harness({ admin: null });
   const hidden = await handleRemoveCleanupExport(post(requestBody()), anonymous.deps);
   assert.equal(hidden.status, 403);
-  assert.equal(await reasonOf(hidden), "Admin access required.");
+  assert.equal(await reasonOf(hidden), "Sign in required.");
   assert.equal(anonymous.calls.room, 0);
   assert.equal(anonymous.calls.original, 0);
 

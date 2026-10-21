@@ -12,7 +12,8 @@ test("REMOVE-1A route is an admin read of certified ORIGINAL and validated EMPTY
   assert.match(route, /export const dynamic = "force-dynamic"/);
   assert.match(route, /export async function GET/);
   assert.doesNotMatch(route, /export async function POST|export async function PUT|export async function PATCH|export async function DELETE/);
-  assert.match(route, /getAuthenticatedAdminUser\(\)/);
+  assert.match(route, /readRemoveActor\(\)/);
+  assert.doesNotMatch(route, /getAuthenticatedAdminUser|isAdminEmail/);
   assert.match(route, /room\.userId !== admin\.id/);
   assert.match(route, /loadOwnedOriginalForProductionAnalysis/);
   assert.match(route, /selectHarmonizeEmptyBytes/);

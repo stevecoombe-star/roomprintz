@@ -151,6 +151,7 @@ function harness(patch: {
   originalBytes?: Uint8Array | null;
   fetchImpl?: typeof fetch;
   provider?: RemoveObjectsAdminDeps["provider"];
+  quota?: "allow" | "user_limit" | "global_limit" | "unavailable";
 } = {}) {
   const calls = {
     admin: 0,
@@ -159,6 +160,7 @@ function harness(patch: {
     artifact: [] as string[],
     original: 0,
     fetch: 0,
+    reserve: 0,
   };
   const provider = patch.provider ?? createRoboflowRemoveSegmentationProvider({
     apiKey: API_KEY,
@@ -195,6 +197,11 @@ function harness(patch: {
       if (patch.originalBytes === null) return { ok: false };
       return { ok: true, bytes: patch.originalBytes ?? ORIGINAL_BYTES };
     },
+    reserveSegmentation: async () => {
+      calls.reserve += 1;
+      if (patch.quota && patch.quota !== "allow") return { ok: false, code: patch.quota };
+      return { ok: true };
+    },
     provider,
   };
   return { calls, deps };
@@ -208,7 +215,9 @@ test("REMOVE object route is an admin POST with no browser image and no writes",
   assert.match(route, /export const dynamic = "force-dynamic"/);
   assert.match(route, /export async function POST/);
   assert.doesNotMatch(route, /export async function GET|export async function PUT|export async function PATCH/);
-  assert.match(route, /getAuthenticatedAdminUser/);
+  assert.match(route, /readRemoveActor/);
+  assert.match(route, /reserveRemoveSegmentation/);
+  assert.doesNotMatch(route, /getAuthenticatedAdminUser|isAdminEmail/);
   assert.match(route, /loadOwnedOriginalForProductionAnalysis/);
   assert.doesNotMatch(route, /ROBOFLOW_API_KEY|serverless\.roboflow\.com|fal\.ai|gemini|openai/i);
   assert.match(handler, /room\.userId !== admin\.id/);
@@ -228,6 +237,39 @@ test("REMOVE object route is an admin POST with no browser image and no writes",
   ]) {
     assert.equal(source(relativePath).includes("remove-segmentation"), false);
   }
+  const reserveAt = handler.indexOf("deps.reserveSegmentation");
+  const segmentAt = handler.indexOf("deps.provider.segment");
+  assert.ok(reserveAt >= 0 && segmentAt > reserveAt);
+  const sql = source("supabase/migrations/20261021180000_vibode_remove_segmentation_limits.sql");
+  assert.match(sql, /vibode_remove_segmentation_user_daily_limit\(\)[\s\S]*select 24;/);
+  assert.match(sql, /vibode_remove_segmentation_global_daily_limit\(\)[\s\S]*select 200;/);
+  assert.match(sql, /grant execute on function public\.reserve_vibode_remove_segmentation/);
+  assert.doesNotMatch(sql, /update public\.vibode_rooms|room_scale_multiplier|generativelanguage|roboflow/);
+});
+
+test("a daily segmentation ceiling refuses Roboflow before contact", async () => {
+  const userLimited = harness({ quota: "user_limit" });
+  const userResponse = await handleRemoveObjectsAdmin(
+    post({ roomId: ROOM, generationId: GENERATION }),
+    userLimited.deps,
+  );
+  assert.equal(userResponse.status, 429);
+  assert.equal(userLimited.calls.reserve, 1);
+  assert.equal(userLimited.calls.fetch, 0);
+
+  const globalLimited = harness({ quota: "global_limit" });
+  assert.equal((await handleRemoveObjectsAdmin(
+    post({ roomId: ROOM, generationId: GENERATION }),
+    globalLimited.deps,
+  )).status, 429);
+  assert.equal(globalLimited.calls.fetch, 0);
+
+  const unavailable = harness({ quota: "unavailable" });
+  assert.equal((await handleRemoveObjectsAdmin(
+    post({ roomId: ROOM, generationId: GENERATION }),
+    unavailable.deps,
+  )).status, 503);
+  assert.equal(unavailable.calls.fetch, 0);
 });
 
 test("admin, ownership, stale generation, and ORIGINAL identity block inference", async () => {

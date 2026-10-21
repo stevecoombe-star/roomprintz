@@ -1,8 +1,9 @@
-import { getAuthenticatedAdminUser, getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 import {
   createProductionAfcStoreFromEnv,
   loadOwnedOriginalForProductionAnalysis,
 } from "@/lib/afc-v2-production/production-persistence.server";
+import { readRemoveActor } from "@/lib/vibode-stage/remove-access.server";
 import { handleRemoveCleanupExport } from "@/lib/vibode-stage/remove-cleanup-export.server";
 
 export const runtime = "nodejs";
@@ -10,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   return handleRemoveCleanupExport(request, {
-    getAdmin: getAuthenticatedAdminUser,
+    getAdmin: readRemoveActor,
     createStore: createProductionAfcStoreFromEnv,
     createService: getServiceRoleSupabaseClient,
     loadOriginal: async (service, input) => {

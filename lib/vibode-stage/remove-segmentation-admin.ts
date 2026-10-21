@@ -1,9 +1,10 @@
 /**
- * Admin REMOVE object segmentation.
+ * Room-owner REMOVE object segmentation.
  *
  * The browser sends a room id and a generation id. This handler loads the
  * authoritative ORIGINAL only after the same ownership and readiness checks
- * as REMOVE alignment. It does not write History, the scene, or the database.
+ * as REMOVE alignment. A SAM 3 reservation is required before the provider
+ * is contacted. It does not write History or the scene.
  */
 
 import { isAfcV2ArtifactLineageRecorded } from "@/lib/afc-v2-production/artifact-lineage-diagnostic";
@@ -52,6 +53,16 @@ export type RemoveObjectsOriginalLoad =
   | Readonly<{ ok: true; bytes: Uint8Array }>
   | Readonly<{ ok: false }>;
 
+export type RemoveSegmentationReserve = (input: Readonly<{
+  userId: string;
+  roomId: string;
+  generationId: string;
+  originalSha256: string;
+}>) => Promise<
+  | Readonly<{ ok: true }>
+  | Readonly<{ ok: false; code: "user_limit" | "global_limit" | "unavailable" | "not_found" }>
+>;
+
 export type RemoveObjectsAdminDeps = Readonly<{
   getAdmin: () => Promise<{ id: string } | null>;
   createStore: () => RemoveObjectsAdminStore | null;
@@ -60,6 +71,7 @@ export type RemoveObjectsAdminDeps = Readonly<{
     service: unknown,
     input: Readonly<{ userId: string; room: AfcRoomPointer }>,
   ) => Promise<RemoveObjectsOriginalLoad>;
+  reserveSegmentation: RemoveSegmentationReserve;
   provider: RemoveSegmentationProvider;
 }>;
 
@@ -75,7 +87,7 @@ export async function handleRemoveObjectsAdmin(
   }
 
   const admin = await deps.getAdmin();
-  if (!admin) return jsonError("Admin access required.", 403);
+  if (!admin) return jsonError("Sign in required.", 403);
 
   const store = deps.createStore();
   const service = deps.createService();
@@ -114,7 +126,8 @@ export async function handleRemoveObjectsAdmin(
     ? await store.getArtifact(generation.emptyStoragePath)
     : null;
   const selected = selectHarmonizeEmptyBytes({
-    callerIsAdmin: true,
+    callerIsAdmin: false,
+    roomOwnerAccess: true,
     callerUserId: admin.id,
     roomId: parsed.roomId,
     room,
@@ -159,6 +172,20 @@ export async function handleRemoveObjectsAdmin(
     || original.decodedWidth * original.decodedHeight > REMOVE_SEGMENTATION_MAX_PIXELS
   ) {
     return jsonError("ORIGINAL image exceeds the segmentation limit.", 422);
+  }
+
+  const reserved = await deps.reserveSegmentation({
+    userId: admin.id,
+    roomId: parsed.roomId,
+    generationId: generation.id,
+    originalSha256: original.sha256,
+  });
+  if (!reserved.ok) {
+    if (reserved.code === "user_limit" || reserved.code === "global_limit") {
+      return jsonError("Daily Remove detection limit reached.", 429);
+    }
+    if (reserved.code === "not_found") return jsonError("Room not found.", 404);
+    return jsonError("Remove object detection is unavailable.", 503);
   }
 
   let result: RemoveSegmentationResult;

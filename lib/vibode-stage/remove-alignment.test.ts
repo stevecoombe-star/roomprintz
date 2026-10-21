@@ -418,14 +418,15 @@ test("Remove is wired into the 3D header, overlay, and inspection gates", () => 
   assert.ok(reveal >= 0 && reveal < render);
   assert.match(capture, /objectLayer\.visible = sceneReadyRef\.current && furnitureRenderingRef\.current/);
 
-  assert.match(route, /getAuthenticatedAdminUser/);
+  assert.match(route, /readRemoveActor/);
+  assert.doesNotMatch(route, /getAuthenticatedAdminUser|isAdminEmail/);
   assert.match(route, /selectHarmonizeEmptyBytes/);
   assert.match(route, /durableArtifactBytesMatch/);
   assert.match(route, /assertProductionPayloadPrivacy/);
   assert.match(route, /assessRemoveAlignment/);
   assert.doesNotMatch(route, /updateGeneration|insert\(|openai|gemini|CREATE TABLE|migration/i);
   assert.doesNotMatch(route, /sourceImageUrl/);
-  const adminAt = route.indexOf("getAuthenticatedAdminUser");
+  const adminAt = route.indexOf("readRemoveActor");
   const storeAt = route.indexOf("createProductionAfcStoreFromEnv");
   assert.ok(adminAt >= 0 && storeAt > adminAt);
 });

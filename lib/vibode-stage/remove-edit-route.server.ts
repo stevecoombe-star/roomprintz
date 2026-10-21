@@ -1,4 +1,4 @@
-import { getAuthenticatedAdminUser, getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 import { isAfcV2ArtifactLineageRecorded } from "@/lib/afc-v2-production/artifact-lineage-diagnostic";
 import {
   durableArtifactBytesMatch,
@@ -23,6 +23,7 @@ import {
 import { REMOVE_EDIT_ALIGNMENT_ERROR, REMOVE_EDIT_STALE_ERROR } from "@/lib/vibode-stage/remove-edit";
 import type { RemoveEditHttpDeps } from "@/lib/vibode-stage/remove-edit-http";
 import type { RemoveEditStorage } from "@/lib/vibode-stage/remove-edit-publish.server";
+import { readRemoveActor } from "@/lib/vibode-stage/remove-access.server";
 import { createCleanupServiceClient } from "@/lib/vibode-stage/remove-cleanup-jobs/service-client";
 
 export function createRemoveEditRouteDeps(): RemoveEditHttpDeps | null {
@@ -72,7 +73,7 @@ export function createRemoveEditRouteDeps(): RemoveEditHttpDeps | null {
   };
   return {
     getAdmin: async () => {
-      const user = await getAuthenticatedAdminUser();
+      const user = await readRemoveActor();
       return user ? { id: user.id } : null;
     },
     storage,
@@ -131,7 +132,8 @@ export function createRemoveEditRouteDeps(): RemoveEditHttpDeps | null {
         ? await store.getArtifact(generation.emptyStoragePath)
         : null;
       const selected = selectHarmonizeEmptyBytes({
-        callerIsAdmin: true,
+        callerIsAdmin: false,
+        roomOwnerAccess: true,
         callerUserId: adminId,
         roomId: body.roomId,
         room,

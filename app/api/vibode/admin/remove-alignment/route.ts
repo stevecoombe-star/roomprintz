@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { getAuthenticatedAdminUser, getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import { readRemoveActor } from "@/lib/vibode-stage/remove-access.server";
 import { isAfcV2ArtifactLineageRecorded } from "@/lib/afc-v2-production/artifact-lineage-diagnostic";
 import { assertProductionPayloadPrivacy } from "@/lib/afc-v2-production/privacy";
 import { durableArtifactBytesMatch } from "@/lib/afc-v2-production/production-artifact-integrity";
@@ -89,8 +90,8 @@ export async function GET(request: Request) {
     return jsonError("generationId is invalid.", 400);
   }
 
-  const admin = await getAuthenticatedAdminUser();
-  if (!admin) return jsonError("Admin access required.", 403);
+  const admin = await readRemoveActor();
+  if (!admin) return jsonError("Sign in required.", 403);
 
   const store = createProductionAfcStoreFromEnv();
   const service = getServiceRoleSupabaseClient();
@@ -128,7 +129,8 @@ export async function GET(request: Request) {
     ? await store.getArtifact(generation.emptyStoragePath)
     : null;
   const selected = selectHarmonizeEmptyBytes({
-    callerIsAdmin: true,
+    callerIsAdmin: false,
+    roomOwnerAccess: true,
     callerUserId: admin.id,
     roomId,
     room,
