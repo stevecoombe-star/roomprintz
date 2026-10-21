@@ -12,12 +12,16 @@ import { useOptionalStageEditor } from "@/components/stage/StageEditorContext";
 export function StageEditorShell({
   active,
   roomId,
+  activeHistoryAssetId = null,
   onCleanupHistoryAccepted,
+  onRemoveEditSaved,
   children,
 }: {
   active: boolean;
   roomId: string | null;
+  activeHistoryAssetId?: string | null;
   onCleanupHistoryAccepted?: (roomId: string) => void | Promise<void>;
+  onRemoveEditSaved?: (roomId: string, assetId: string) => Promise<void>;
   children: ReactNode;
 }) {
   const stage = useOptionalStageEditor();
@@ -25,7 +29,12 @@ export function StageEditorShell({
 
   return (
     <HarmonizeExportProvider>
-      <RemoveAlignmentProvider roomId={roomId} onCleanupHistoryAccepted={onCleanupHistoryAccepted}>
+      <RemoveAlignmentProvider
+        roomId={roomId}
+        activeHistoryAssetId={activeHistoryAssetId}
+        onCleanupHistoryAccepted={onCleanupHistoryAccepted}
+        onRemoveEditSaved={onRemoveEditSaved}
+      >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-stage-shell="true">
         <StageEditorHeader />
         <div

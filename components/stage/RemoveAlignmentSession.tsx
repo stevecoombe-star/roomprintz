@@ -20,6 +20,15 @@ import {
 import { RemoveCleanupGeneration } from "@/components/stage/RemoveCleanupGeneration";
 import { RemoveObjectOutlines } from "@/components/stage/RemoveObjectOutlines";
 import {
+  REMOVE_EDIT_ACTIVATE_ERROR,
+  REMOVE_EDIT_ALIGNMENT_ERROR,
+  REMOVE_EDIT_SAVE_ERROR,
+  buildRemoveEditCoverage,
+  bytesToBase64,
+  removeEditExportAdmission,
+  removeEditHasChanges,
+} from "@/lib/vibode-stage/remove-edit";
+import {
   REMOVE_ALIGNMENT_NOTE,
   REMOVE_HARMONIZE_NOTE,
   REMOVE_OPACITY_PRESETS,
@@ -135,6 +144,9 @@ type RemoveAlignmentContextValue = Readonly<{
   noteDisplayedSize: (artifact: "original" | "empty", size: DisplayedSize) => void;
   noteMaskSummary: (summary: RemoveMaskSummary | null) => void;
   onCleanupHistoryAccepted?: (roomId: string) => void | Promise<void>;
+  saveRemoveEdits: () => void;
+  removeSavePhase: "idle" | "saving" | "error";
+  removeSaveError: string | null;
   originalDisagreement: string | null;
   emptyDisagreement: string | null;
 }>;
@@ -152,11 +164,15 @@ async function loadRemoveAlignment(roomId: string): Promise<RemoveAlignmentLooku
 
 export function RemoveAlignmentProvider({
   roomId,
+  activeHistoryAssetId = null,
   onCleanupHistoryAccepted,
+  onRemoveEditSaved,
   children,
 }: {
   roomId: string | null;
+  activeHistoryAssetId?: string | null;
   onCleanupHistoryAccepted?: (roomId: string) => void | Promise<void>;
+  onRemoveEditSaved?: (roomId: string, assetId: string) => Promise<void>;
   children: ReactNode;
 }) {
   const roomRef = useRef(roomId);
@@ -184,6 +200,9 @@ export function RemoveAlignmentProvider({
     promise: Promise<Readonly<{ payload: unknown; elapsedMs: number }>>;
   }>(null);
   const ticketRef = useRef(0);
+  const saveLock = useRef(false);
+  const [removeSavePhase, setRemoveSavePhase] = useState<"idle" | "saving" | "error">("idle");
+  const [removeSaveError, setRemoveSaveError] = useState<string | null>(null);
   const [trackedRoomId, setTrackedRoomId] = useState(roomId);
   if (trackedRoomId !== roomId) {
     setTrackedRoomId(roomId);
@@ -225,7 +244,7 @@ export function RemoveAlignmentProvider({
   useEffect(() => {
     if (!inspection.active) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") dispatch({ type: "exit" });
+      if (event.key === "Escape" && !saveLock.current) dispatch({ type: "exit" });
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -500,6 +519,115 @@ export function RemoveAlignmentProvider({
     setMaskSummary(summary);
   }, []);
 
+  const saveRemoveEdits = useCallback(() => {
+    if (saveLock.current) return;
+    const report = lookup.access === "ready" ? lookup.report : null;
+    const hold = maskHoldRef.current;
+    if (
+      !roomId
+      || !report
+      || !hold
+      || hold.roomId !== roomId
+      || hold.generationId !== report.generationId
+      || hold.width !== report.original.decodedWidth
+      || hold.height !== report.original.decodedHeight
+    ) {
+      setRemoveSaveError(REMOVE_EDIT_ALIGNMENT_ERROR);
+      setRemoveSavePhase("error");
+      return;
+    }
+    const admission = removeEditExportAdmission(report);
+    if (!admission.allowed) {
+      setRemoveSaveError(admission.reason);
+      setRemoveSavePhase("error");
+      return;
+    }
+    const objects = objectUi.phase === "ready" ? objectUi.objects : [];
+    const selectedIds = objectUi.phase === "ready" ? objectUi.selectedIds : new Set<string>();
+    const coverage = buildRemoveEditCoverage({
+      brush: hold.pixels,
+      width: hold.width,
+      height: hold.height,
+      objects,
+      selectedIds,
+      expansionPx: inspection.objectExpansionPx,
+    });
+    if (!coverage) {
+      setRemoveSaveError(REMOVE_EDIT_ALIGNMENT_ERROR);
+      setRemoveSavePhase("error");
+      return;
+    }
+    if (!removeEditHasChanges(coverage)) {
+      dispatch({ type: "exit" });
+      return;
+    }
+    saveLock.current = true;
+    setRemoveSavePhase("saving");
+    setRemoveSaveError(null);
+    void (async () => {
+      try {
+        const response = await fetch("/api/vibode/admin/remove-edits", {
+          method: "POST",
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            roomId,
+            generationId: report.generationId,
+            parentAssetId: activeHistoryAssetId,
+            width: hold.width,
+            height: hold.height,
+            coverageBase64: bytesToBase64(coverage),
+          }),
+        });
+        const payload = await response.json().catch(() => null) as {
+          saved?: boolean;
+          assetId?: string;
+          error?: string;
+        } | null;
+        if (!response.ok || payload?.saved !== true || typeof payload.assetId !== "string") {
+          setRemoveSaveError(typeof payload?.error === "string" ? payload.error : REMOVE_EDIT_SAVE_ERROR);
+          setRemoveSavePhase("error");
+          return;
+        }
+        try {
+          await onRemoveEditSaved?.(roomId, payload.assetId);
+        } catch {
+          setRemoveSaveError(REMOVE_EDIT_ACTIVATE_ERROR);
+          setRemoveSavePhase("error");
+          return;
+        }
+        setRemoveSavePhase("idle");
+        dispatch({ type: "exit" });
+      } catch {
+        setRemoveSaveError(REMOVE_EDIT_SAVE_ERROR);
+        setRemoveSavePhase("error");
+      } finally {
+        saveLock.current = false;
+      }
+    })();
+  }, [
+    activeHistoryAssetId,
+    inspection.objectExpansionPx,
+    lookup,
+    objectUi,
+    onRemoveEditSaved,
+    roomId,
+  ]);
+
+  useEffect(() => {
+    const selected = objectUi.phase === "ready" ? objectUi.selectedIds.size : 0;
+    const dirty = (maskSummary?.coveragePercent ?? 0) > 0 || selected > 0;
+    if (!sessionActive || !dirty) return undefined;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (saveLock.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [maskSummary, objectUi, sessionActive]);
+
   const value = useMemo<RemoveAlignmentContextValue>(() => ({
     roomId,
     active: sessionActive,
@@ -558,6 +686,9 @@ export function RemoveAlignmentProvider({
     noteDisplayedSize,
     noteMaskSummary,
     onCleanupHistoryAccepted,
+    saveRemoveEdits,
+    removeSavePhase,
+    removeSaveError,
     originalDisagreement,
     emptyDisagreement,
   }), [
@@ -592,8 +723,11 @@ export function RemoveAlignmentProvider({
     onCleanupHistoryAccepted,
     openCleanupExport,
     originalDisagreement,
+    removeSaveError,
+    removeSavePhase,
     roomId,
     report,
+    saveRemoveEdits,
     sessionActive,
     setDiameter,
     setFeather,
@@ -735,11 +869,30 @@ export function RemoveAlignmentControl() {
         <button
           type="button"
           data-remove-objects="done"
-          onClick={session.exit}
-          className={`mt-2 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-200 hover:bg-neutral-800 ${FOCUS}`}
+          disabled={session.removeSavePhase === "saving"}
+          onClick={session.saveRemoveEdits}
+          className={`mt-2 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+            session.removeSavePhase === "saving"
+              ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+              : "border-neutral-200 bg-neutral-100 text-neutral-950 hover:bg-white"
+          }`}
         >
-          Done
+          {session.removeSavePhase === "saving" ? "Saving…" : "Done"}
         </button>
+        <button
+          type="button"
+          data-remove-edit="cancel"
+          disabled={session.removeSavePhase === "saving"}
+          onClick={session.exit}
+          className={`mt-2 ml-1 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:border-neutral-900 disabled:bg-neutral-950 disabled:text-neutral-600 ${FOCUS}`}
+        >
+          Cancel
+        </button>
+        {session.removeSaveError ? (
+          <p className="mt-2 text-[11px] leading-relaxed text-red-300" role="alert" data-remove-edit="error">
+            {session.removeSaveError}
+          </p>
+        ) : null}
         <AlignmentDetails session={session} />
         </div>
       ) : null}
