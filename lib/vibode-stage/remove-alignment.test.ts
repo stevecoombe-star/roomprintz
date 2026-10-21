@@ -378,6 +378,7 @@ test("Remove is wired into the 3D header, overlay, and inspection gates", () => 
   assert.match(header, /inspection\.undo/);
   assert.match(shell, /onCleanupHistoryAccepted=\{onCleanupHistoryAccepted\}/);
   assert.match(shell, /onRemoveEditSaved=\{onRemoveEditSaved\}/);
+  assert.match(shell, /activeHistoryImageUrl=\{activeHistoryImageUrl\}/);
   assert.match(integrated, /removeInspectionAllowsFurnitureManipulation\(removeActive\)/);
   assert.match(integrated, /removeFurnitureRenderingVisible/);
   assert.match(integrated, /<RemoveAlignmentOverlay \/>/);

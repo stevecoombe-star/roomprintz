@@ -6,9 +6,11 @@ import {
   REMOVE_EDIT_MAX_PIXELS,
   base64ToBytes,
   compositeRemoveEditRgba,
+  mapRemoveCoverageToKeepGrid,
   removeEditExportAdmission,
   removeEditFingerprintMaterial,
   removeEditHasChanges,
+  removeEditKeepAdmission,
   removeEditStoragePath,
 } from "@/lib/vibode-stage/remove-edit";
 import type { RemoveAlignmentReport } from "@/lib/vibode-stage/remove-alignment";
@@ -22,6 +24,7 @@ export type RemoveEditPublishCode =
   | "unchanged"
   | "invalid"
   | "incompatible"
+  | "stale"
   | "not_found"
   | "unavailable";
 
@@ -44,6 +47,9 @@ export type RemoveEditStorage = Readonly<{
     storagePath: string;
     originalSha256: string;
     emptySha256: string;
+    keepSha256: string;
+    coverageWidth: number;
+    coverageHeight: number;
   }>) => Promise<Readonly<{ ok: true; created: boolean; assetId: string }> | Readonly<{ ok: false; code: "not_found" | "invalid" | "unavailable" }>>;
 }>;
 
@@ -51,13 +57,16 @@ export type RemoveEditSubmission = Readonly<{
   userId: string;
   roomId: string;
   generationId: string;
-  parentAssetId: string | null;
-  width: number;
-  height: number;
+  parentAssetId: string;
+  coverageWidth: number;
+  coverageHeight: number;
   coverageBase64: string;
   report: RemoveAlignmentReport;
-  originalBytes: Uint8Array;
+  keepBytes: Uint8Array;
   emptyBytes: Uint8Array;
+  keepSha256: string;
+  keepWidth: number;
+  keepHeight: number;
   originalSha256: string;
   emptySha256: string;
 }>;
@@ -69,9 +78,7 @@ export async function publishPreparedRemoveEdit(
   if (!UUID.test(submission.userId) || !UUID.test(submission.roomId) || !UUID.test(submission.generationId)) {
     return { ok: false, code: "not_found" };
   }
-  if (submission.parentAssetId !== null && !UUID.test(submission.parentAssetId)) {
-    return { ok: false, code: "invalid" };
-  }
+  if (!UUID.test(submission.parentAssetId)) return { ok: false, code: "not_found" };
   if (submission.report.generationId !== submission.generationId) {
     return { ok: false, code: "not_found" };
   }
@@ -80,34 +87,54 @@ export async function publishPreparedRemoveEdit(
     || submission.report.empty.sha256.toLowerCase() !== submission.emptySha256.toLowerCase()
     || !HEX64.test(submission.originalSha256)
     || !HEX64.test(submission.emptySha256)
+    || !HEX64.test(submission.keepSha256)
   ) {
     return { ok: false, code: "invalid" };
+  }
+  if (sha256Hex(submission.keepBytes) !== submission.keepSha256.toLowerCase()) {
+    return { ok: false, code: "stale" };
   }
   const admission = removeEditExportAdmission(submission.report);
-  if (!admission.allowed) return { ok: false, code: "incompatible" };
+  const keepAdmission = removeEditKeepAdmission({
+    keepWidth: submission.keepWidth,
+    keepHeight: submission.keepHeight,
+    emptyWidth: submission.report.empty.decodedWidth,
+    emptyHeight: submission.report.empty.decodedHeight,
+  });
+  if (!admission.allowed || !keepAdmission.allowed) return { ok: false, code: "incompatible" };
   if (
-    submission.width !== submission.report.original.decodedWidth
-    || submission.height !== submission.report.original.decodedHeight
+    submission.coverageWidth !== submission.report.original.decodedWidth
+    || submission.coverageHeight !== submission.report.original.decodedHeight
   ) {
     return { ok: false, code: "invalid" };
   }
-  const pixels = submission.width * submission.height;
-  if (!Number.isInteger(pixels) || pixels < 1 || pixels > REMOVE_EDIT_MAX_PIXELS) {
+  const coveragePixels = submission.coverageWidth * submission.coverageHeight;
+  const keepPixels = submission.keepWidth * submission.keepHeight;
+  if (
+    !Number.isInteger(coveragePixels)
+    || coveragePixels < 1
+    || coveragePixels > REMOVE_EDIT_MAX_PIXELS
+    || !Number.isInteger(keepPixels)
+    || keepPixels < 1
+    || keepPixels > REMOVE_EDIT_MAX_PIXELS
+  ) {
     return { ok: false, code: "invalid" };
   }
   const coverage = base64ToBytes(submission.coverageBase64);
-  if (!coverage || coverage.length !== pixels || !removeEditHasChanges(coverage)) {
-    return { ok: false, code: coverage && coverage.length === pixels ? "unchanged" : "invalid" };
+  if (!coverage || coverage.length !== coveragePixels || !removeEditHasChanges(coverage)) {
+    return { ok: false, code: coverage && coverage.length === coveragePixels ? "unchanged" : "invalid" };
   }
 
   let raster: Uint8Array;
   try {
     raster = await renderRemoveEditPng({
-      originalBytes: submission.originalBytes,
+      keepBytes: submission.keepBytes,
       emptyBytes: submission.emptyBytes,
       coverage,
-      width: submission.width,
-      height: submission.height,
+      coverageWidth: submission.coverageWidth,
+      coverageHeight: submission.coverageHeight,
+      keepWidth: submission.keepWidth,
+      keepHeight: submission.keepHeight,
     });
   } catch {
     return { ok: false, code: "invalid" };
@@ -116,10 +143,14 @@ export async function publishPreparedRemoveEdit(
   const coverageSha256 = sha256Hex(coverage);
   const fingerprint = sha256Hex(new TextEncoder().encode(removeEditFingerprintMaterial({
     generationId: submission.generationId,
+    keepAssetId: submission.parentAssetId,
+    keepSha256: submission.keepSha256,
     originalSha256: submission.originalSha256,
     emptySha256: submission.emptySha256,
-    width: submission.width,
-    height: submission.height,
+    keepWidth: submission.keepWidth,
+    keepHeight: submission.keepHeight,
+    coverageWidth: submission.coverageWidth,
+    coverageHeight: submission.coverageHeight,
     coverageSha256,
   })));
   const storagePath = removeEditStoragePath(submission.roomId, fingerprint);
@@ -132,12 +163,15 @@ export async function publishPreparedRemoveEdit(
     afcGenerationId: submission.generationId,
     parentAssetId: submission.parentAssetId,
     selectedAssetId: submission.parentAssetId,
-    width: submission.width,
-    height: submission.height,
+    width: submission.keepWidth,
+    height: submission.keepHeight,
     outputSha256,
     storagePath,
     originalSha256: submission.originalSha256.toLowerCase(),
     emptySha256: submission.emptySha256.toLowerCase(),
+    keepSha256: submission.keepSha256.toLowerCase(),
+    coverageWidth: submission.coverageWidth,
+    coverageHeight: submission.coverageHeight,
   });
   if (!published.ok) return published;
   return {
@@ -149,24 +183,34 @@ export async function publishPreparedRemoveEdit(
 }
 
 export async function renderRemoveEditPng(input: Readonly<{
-  originalBytes: Uint8Array;
+  keepBytes: Uint8Array;
   emptyBytes: Uint8Array;
   coverage: Uint8Array;
-  width: number;
-  height: number;
+  coverageWidth: number;
+  coverageHeight: number;
+  keepWidth: number;
+  keepHeight: number;
 }>): Promise<Uint8Array> {
-  const original = await decodeRgba(input.originalBytes, input.width, input.height);
-  const empty = await decodeRgba(input.emptyBytes, input.width, input.height, true);
-  const blended = compositeRemoveEditRgba({
-    original,
-    empty,
+  const keep = await decodeRgba(input.keepBytes, input.keepWidth, input.keepHeight);
+  const empty = await decodeRgba(input.emptyBytes, input.keepWidth, input.keepHeight, true);
+  const mapped = mapRemoveCoverageToKeepGrid({
     coverage: input.coverage,
-    width: input.width,
-    height: input.height,
+    coverageWidth: input.coverageWidth,
+    coverageHeight: input.coverageHeight,
+    keepWidth: input.keepWidth,
+    keepHeight: input.keepHeight,
+  });
+  if (!mapped) throw new Error("invalid coverage");
+  const blended = compositeRemoveEditRgba({
+    keep,
+    empty,
+    coverage: mapped,
+    width: input.keepWidth,
+    height: input.keepHeight,
   });
   if (!blended) throw new Error("invalid composite");
   const png = await sharp(Buffer.from(blended), {
-    raw: { width: input.width, height: input.height, channels: 4 },
+    raw: { width: input.keepWidth, height: input.keepHeight, channels: 4 },
     limitInputPixels: REMOVE_EDIT_MAX_PIXELS,
   }).png({ compressionLevel: 9 }).toBuffer();
   return new Uint8Array(png);

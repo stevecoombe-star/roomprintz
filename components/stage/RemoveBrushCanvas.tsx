@@ -27,6 +27,10 @@ import {
 } from "@/lib/vibode-stage/remove-object-ui";
 import type { RemoveObjectRecord } from "@/lib/vibode-stage/remove-objects";
 import {
+  removeEditKeepAdmission,
+  type RemoveKeepIdentity,
+} from "@/lib/vibode-stage/remove-edit";
+import {
   removeAlignmentArtifactPath,
   type RemoveAlignmentReport,
 } from "@/lib/vibode-stage/remove-alignment";
@@ -44,6 +48,9 @@ export type RemoveMaskSummary = Readonly<{
 type BrushBitmaps = Readonly<{
   original: ImageBitmap;
   empty: ImageBitmap;
+  keep: ImageBitmap;
+  keepSha256: string;
+  keepAssetId: string;
   identity: RemoveArtifactIdentity;
 }>;
 
@@ -66,6 +73,27 @@ function closeBitmap(bitmap: ImageBitmap | null) {
   } catch {
     // The bitmap was already closed by an earlier cleanup.
   }
+}
+
+async function loadHashedBitmap(
+  url: string,
+  signal: AbortSignal,
+): Promise<Readonly<{ bitmap: ImageBitmap; sha256: string }>> {
+  const response = await fetch(url, {
+    method: "GET",
+    credentials: "same-origin",
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) throw new Error("unavailable");
+  const type = (response.headers.get("content-type") ?? "").split(";")[0]?.trim() ?? "";
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const sha256 = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+  return {
+    bitmap: await createImageBitmap(new Blob([bytes], { type: type || "image/png" })),
+    sha256,
+  };
 }
 
 async function loadRemoveArtifact(url: string, signal: AbortSignal): Promise<ImageBitmap> {
@@ -123,21 +151,21 @@ function compositeBrushRegion(input: Readonly<{
   displayCanvas: HTMLCanvasElement;
   scratch: HTMLCanvasElement;
   maskCanvas: HTMLCanvasElement;
-  original: ImageBitmap;
+  keep: ImageBitmap;
   empty: ImageBitmap;
   area: RemoveDirtyRect;
 }>) {
-  const { display, displayCanvas, scratch, maskCanvas, original, empty, area } = input;
+  const { display, displayCanvas, scratch, maskCanvas, keep, empty, area } = input;
   if (area.width <= 0 || area.height <= 0) return;
   const scaleX = (value: number, size: number) => (value / displayCanvas.width) * size;
   const scaleY = (value: number, size: number) => (value / displayCanvas.height) * size;
   display.imageSmoothingEnabled = true;
   display.drawImage(
-    original,
-    scaleX(area.x, original.width),
-    scaleY(area.y, original.height),
-    scaleX(area.width, original.width),
-    scaleY(area.height, original.height),
+    keep,
+    scaleX(area.x, keep.width),
+    scaleY(area.y, keep.height),
+    scaleX(area.width, keep.width),
+    scaleY(area.height, keep.height),
     area.x,
     area.y,
     area.width,
@@ -187,6 +215,9 @@ export function RemoveBrushCanvas({
   maskHoldRef,
   onMaskSummary,
   onDisplayedSize,
+  keepImageUrl,
+  keepAssetId,
+  onKeepIdentity,
   interaction = "brush",
   backdrop = true,
   objects = EMPTY_OBJECTS,
@@ -207,6 +238,9 @@ export function RemoveBrushCanvas({
   maskHoldRef: { current: RemoveMaskHold | null };
   onMaskSummary: (summary: RemoveMaskSummary | null) => void;
   onDisplayedSize: (artifact: "original" | "empty", size: { width: number; height: number }) => void;
+  keepImageUrl: string | null;
+  keepAssetId: string | null;
+  onKeepIdentity: (identity: RemoveKeepIdentity) => void;
   interaction?: "brush" | "objects";
   backdrop?: boolean;
   objects?: readonly RemoveObjectRecord[];
@@ -226,6 +260,7 @@ export function RemoveBrushCanvas({
   const featherRef = useRef(featherPx);
   const summaryRef = useRef(onMaskSummary);
   const displayedSizeRef = useRef(onDisplayedSize);
+  const keepIdentityRef = useRef(onKeepIdentity);
   const interactionRef = useRef(interaction);
   const objectsRef = useRef(objects);
   const selectedRef = useRef(selectedIds);
@@ -256,6 +291,7 @@ export function RemoveBrushCanvas({
     featherRef.current = featherPx;
     summaryRef.current = onMaskSummary;
     displayedSizeRef.current = onDisplayedSize;
+    keepIdentityRef.current = onKeepIdentity;
     liveRef.current = {
       active,
       sessionSerial,
@@ -272,6 +308,7 @@ export function RemoveBrushCanvas({
     featherPx,
     maskEpoch,
     onDisplayedSize,
+    onKeepIdentity,
     onMaskSummary,
     report.generationId,
     roomId,
@@ -303,6 +340,7 @@ export function RemoveBrushCanvas({
     if (!pair) return;
     closeBitmap(pair.original);
     closeBitmap(pair.empty);
+    closeBitmap(pair.keep);
   }, []);
 
   useEffect(() => {
@@ -310,7 +348,11 @@ export function RemoveBrushCanvas({
     loadTokenRef.current = token;
     let cancelled = false;
     let handedOff = false;
-    const owned = { original: null as ImageBitmap | null, empty: null as ImageBitmap | null };
+    const owned = {
+      original: null as ImageBitmap | null,
+      empty: null as ImageBitmap | null,
+      keep: null as ImageBitmap | null,
+    };
     const controller = new AbortController();
     const displayed = bitmapsRef.current;
     if (
@@ -319,11 +361,13 @@ export function RemoveBrushCanvas({
         displayed.identity.sessionSerial !== sessionSerial
         || displayed.identity.roomId !== roomId
         || displayed.identity.generationId !== report.generationId
+        || displayed.keepAssetId !== keepAssetId
       )
     ) {
       bitmapsRef.current = null;
       closeBitmap(displayed.original);
       closeBitmap(displayed.empty);
+      closeBitmap(displayed.keep);
     }
     const requested: RemoveArtifactIdentity = {
       sessionSerial,
@@ -333,12 +377,20 @@ export function RemoveBrushCanvas({
     const closeOwned = () => {
       closeBitmap(owned.original);
       closeBitmap(owned.empty);
+      closeBitmap(owned.keep);
       owned.original = null;
       owned.empty = null;
+      owned.keep = null;
     };
+    if (!keepImageUrl || !keepAssetId) {
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    }
     void (async () => {
       try {
-        const [original, empty] = await Promise.all([
+        const [original, empty, keep] = await Promise.all([
           loadRemoveArtifact(
             removeAlignmentArtifactPath(roomId, "original", report.generationId),
             controller.signal,
@@ -347,9 +399,11 @@ export function RemoveBrushCanvas({
             removeAlignmentArtifactPath(roomId, "empty", report.generationId),
             controller.signal,
           ),
+          loadHashedBitmap(keepImageUrl, controller.signal),
         ]);
         owned.original = original;
         owned.empty = empty;
+        owned.keep = keep.bitmap;
         if (cancelled || token !== loadTokenRef.current) {
           closeOwned();
           return;
@@ -412,13 +466,29 @@ export function RemoveBrushCanvas({
         }
         displayedSizeRef.current("original", { width: original.width, height: original.height });
         displayedSizeRef.current("empty", { width: empty.width, height: empty.height });
+        keepIdentityRef.current({
+          assetId: keepAssetId,
+          sha256: keep.sha256,
+          width: keep.bitmap.width,
+          height: keep.bitmap.height,
+        });
         const previous = bitmapsRef.current;
         handedOff = true;
-        bitmapsRef.current = { original, empty, identity: requested };
+        bitmapsRef.current = {
+          original,
+          empty,
+          keep: keep.bitmap,
+          keepSha256: keep.sha256,
+          keepAssetId,
+          identity: requested,
+        };
         owned.original = null;
         owned.empty = null;
+        owned.keep = null;
         closeBitmap(previous?.original ?? null);
         closeBitmap(previous?.empty ?? null);
+        closeBitmap(previous?.keep ?? null);
+        setLoadError(null);
         setBitmapVersion((value) => value + 1);
       } catch {
         closeOwned();
@@ -430,7 +500,7 @@ export function RemoveBrushCanvas({
           && live.roomId === requested.roomId
           && live.generationId === requested.generationId
         ) {
-          setLoadError("Authoritative ORIGINAL and EMPTY images are unavailable.");
+          setLoadError("The room image could not be prepared for Remove.");
         }
       }
     })();
@@ -439,7 +509,7 @@ export function RemoveBrushCanvas({
       controller.abort();
       if (!handedOff) closeOwned();
     };
-  }, [maskHoldRef, report, roomId, sessionSerial]);
+  }, [keepAssetId, keepImageUrl, maskHoldRef, report, roomId, sessionSerial]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -546,12 +616,23 @@ export function RemoveBrushCanvas({
       if (backing === "resized" || dirty === FULL_IMAGE) {
         writeMask({ x: 0, y: 0, width: hold.width, height: hold.height });
       }
+      const keepAdmission = removeEditKeepAdmission({
+        keepWidth: pair.keep.width,
+        keepHeight: pair.keep.height,
+        emptyWidth: pair.empty.width,
+        emptyHeight: pair.empty.height,
+      });
+      if (!keepAdmission.allowed) {
+        display.imageSmoothingEnabled = true;
+        display.drawImage(pair.keep, 0, 0, canvas.width, canvas.height);
+        return;
+      }
       compositeBrushRegion({
         display,
         displayCanvas: canvas,
         scratch,
         maskCanvas,
-        original: pair.original,
+        keep: pair.keep,
         empty: pair.empty,
         area,
       });

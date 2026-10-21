@@ -46,7 +46,10 @@ create or replace function public.publish_vibode_remove_edit(
   p_output_sha256 text,
   p_storage_path text,
   p_original_sha256 text,
-  p_empty_sha256 text
+  p_empty_sha256 text,
+  p_keep_sha256 text,
+  p_coverage_width integer,
+  p_coverage_height integer
 ) returns jsonb
 language plpgsql
 security definer
@@ -67,6 +70,21 @@ begin
   end if;
   if p_output_sha256 is null or p_output_sha256 !~ '^[0-9a-f]{64}$' then
     return jsonb_build_object('ok', false, 'code', 'invalid');
+  end if;
+  if p_keep_sha256 is null or p_keep_sha256 !~ '^[0-9a-f]{64}$' then
+    return jsonb_build_object('ok', false, 'code', 'invalid');
+  end if;
+  if p_original_sha256 is null or p_original_sha256 !~ '^[0-9a-f]{64}$'
+     or p_empty_sha256 is null or p_empty_sha256 !~ '^[0-9a-f]{64}$' then
+    return jsonb_build_object('ok', false, 'code', 'invalid');
+  end if;
+  if p_coverage_width is null or p_coverage_height is null
+     or p_coverage_width < 1 or p_coverage_height < 1
+     or p_coverage_width::bigint * p_coverage_height::bigint > 8000000 then
+    return jsonb_build_object('ok', false, 'code', 'invalid');
+  end if;
+  if p_parent_asset_id is null then
+    return jsonb_build_object('ok', false, 'code', 'not_found');
   end if;
   if p_width is null or p_height is null or p_width < 1 or p_height < 1
      or p_width::bigint * p_height::bigint > 8000000 then
@@ -106,6 +124,9 @@ begin
       and room_id = p_room_id
       and user_id = p_user_id;
   end if;
+  if v_parent is null then
+    return jsonb_build_object('ok', false, 'code', 'not_found');
+  end if;
 
   begin
     insert into public.vibode_room_assets (
@@ -132,7 +153,7 @@ begin
       '',
       p_width,
       p_height,
-      'vibode-remove-edit/v1',
+      'vibode-remove-edit/v2',
       false,
       false,
       jsonb_strip_nulls(jsonb_build_object(
@@ -144,8 +165,14 @@ begin
         'sourceRoomId', p_room_id,
         'originalSha256', p_original_sha256,
         'emptySha256', p_empty_sha256,
+        'keepAssetId', v_parent,
+        'keepSha256', p_keep_sha256,
+        'keepWidth', p_width,
+        'keepHeight', p_height,
+        'coverageWidth', p_coverage_width,
+        'coverageHeight', p_coverage_height,
         'selectedAssetId', p_selected_asset_id,
-        'compositor', 'vibode-remove-edit/v1',
+        'compositor', 'vibode-remove-edit/v2',
         'candidateWidth', p_width,
         'candidateHeight', p_height,
         'stageRegistration', 'not-assessed'
@@ -172,13 +199,17 @@ begin
       3,
       v_parent,
       v_asset_id,
-      'vibode-remove-edit/v1',
+      'vibode-remove-edit/v2',
       'completed',
       jsonb_build_object(
         'removeEditFingerprint', p_fingerprint,
         'sourceAfcGenerationId', p_afc_generation_id,
         'originalSha256', p_original_sha256,
-        'emptySha256', p_empty_sha256
+        'emptySha256', p_empty_sha256,
+        'keepAssetId', v_parent,
+        'keepSha256', p_keep_sha256,
+        'coverageWidth', p_coverage_width,
+        'coverageHeight', p_coverage_height
       ),
       jsonb_build_object(
         'bucket', 'vibode-generations',
@@ -241,11 +272,11 @@ end;
 $$;
 
 revoke all on function public.publish_vibode_remove_edit(
-  uuid, uuid, text, uuid, uuid, uuid, integer, integer, text, text, text, text
+  uuid, uuid, text, uuid, uuid, uuid, integer, integer, text, text, text, text, text, integer, integer
 ) from public, anon, authenticated;
 
 grant execute on function public.publish_vibode_remove_edit(
-  uuid, uuid, text, uuid, uuid, uuid, integer, integer, text, text, text, text
+  uuid, uuid, text, uuid, uuid, uuid, integer, integer, text, text, text, text, text, integer, integer
 ) to service_role;
 
 commit;

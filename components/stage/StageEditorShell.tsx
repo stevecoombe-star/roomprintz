@@ -13,6 +13,7 @@ export function StageEditorShell({
   active,
   roomId,
   activeHistoryAssetId = null,
+  activeHistoryImageUrl = null,
   onCleanupHistoryAccepted,
   onRemoveEditSaved,
   children,
@@ -20,6 +21,7 @@ export function StageEditorShell({
   active: boolean;
   roomId: string | null;
   activeHistoryAssetId?: string | null;
+  activeHistoryImageUrl?: string | null;
   onCleanupHistoryAccepted?: (roomId: string) => void | Promise<void>;
   onRemoveEditSaved?: (roomId: string, assetId: string) => Promise<void>;
   children: ReactNode;
@@ -32,6 +34,7 @@ export function StageEditorShell({
       <RemoveAlignmentProvider
         roomId={roomId}
         activeHistoryAssetId={activeHistoryAssetId}
+        activeHistoryImageUrl={activeHistoryImageUrl}
         onCleanupHistoryAccepted={onCleanupHistoryAccepted}
         onRemoveEditSaved={onRemoveEditSaved}
       >

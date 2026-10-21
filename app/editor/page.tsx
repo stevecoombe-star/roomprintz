@@ -12231,6 +12231,7 @@ function EditorPageInner() {
             active={viewportMode === "3d"}
             roomId={editorRoomId}
             activeHistoryAssetId={activeAssetId}
+            activeHistoryImageUrl={versions.find((asset) => asset.id === activeAssetId)?.image_url ?? null}
             onCleanupHistoryAccepted={refreshCleanupHistory}
             onRemoveEditSaved={activateSavedRemoveEdit}
           >

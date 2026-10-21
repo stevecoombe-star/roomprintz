@@ -1,25 +1,38 @@
 /**
  * Instant REMOVE export.
  *
- * The preview mask is `max(brush, dilated selected-object union)`. Brush
- * reveal raises coverage, restore lowers it, and Protect Objects blocks
- * reveal on identity-mask pixels. This module rebuilds that coverage for the
- * full ORIGINAL grid and blends EMPTY under ORIGINAL by that coverage.
- * Furniture, outlines, and the brush cursor are not inputs.
+ * Coverage stays on the AFC ORIGINAL grid: `max(brush, dilated selected-object
+ * union)`. The keep-layer is the frozen active History image. EMPTY is
+ * stretched onto that image's grid, and coverage is sampled by the same
+ * frame UV the preview uses. Furniture, outlines, and the brush cursor are
+ * not inputs.
  */
 
+import { classifyAfcR3cImagePairCompatibility } from "@/app/admin/3d-room-lab/research/afc-r3c-image-pair-compatibility";
 import { syncRemoveInspectionCoverage } from "@/lib/vibode-stage/remove-object-ui";
-import { removeBrushAdmission, type RemoveBrushAdmission } from "@/lib/vibode-stage/remove-mask";
+import {
+  removeBrushAdmission,
+  resampleCoverageToOriginal,
+  type RemoveBrushAdmission,
+} from "@/lib/vibode-stage/remove-mask";
 import type { RemoveObjectRecord } from "@/lib/vibode-stage/remove-objects";
 import type { RemoveAlignmentReport } from "@/lib/vibode-stage/remove-alignment";
 
-export const REMOVE_EDIT_CONTRACT = "vibode-remove-edit/v1";
+export const REMOVE_EDIT_CONTRACT = "vibode-remove-edit/v2";
 export const REMOVE_EDIT_LABEL = "Remove";
 export const REMOVE_EDIT_MAX_PIXELS = 8_000_000;
 
 export const REMOVE_EDIT_SAVE_ERROR = "Remove edits could not be saved. Your edits are still here.";
 export const REMOVE_EDIT_ACTIVATE_ERROR = "The image was saved. History could not switch to it. Try Done again.";
 export const REMOVE_EDIT_ALIGNMENT_ERROR = "This room image cannot be saved from Remove.";
+export const REMOVE_EDIT_STALE_ERROR = "This room image changed. Your edits are still here.";
+
+export type RemoveKeepIdentity = Readonly<{
+  assetId: string;
+  sha256: string;
+  width: number;
+  height: number;
+}>;
 
 export function buildRemoveEditCoverage(input: Readonly<{
   brush: Uint8Array;
@@ -56,12 +69,12 @@ export function removeEditHasChanges(coverage: Uint8Array): boolean {
 }
 
 /**
- * Blend EMPTY under ORIGINAL. Coverage 0 keeps ORIGINAL. Coverage 255 uses
- * EMPTY. Both buffers are RGBA at the ORIGINAL grid. EMPTY must already be
- * stretched onto that grid.
+ * Blend EMPTY under the keep image. Coverage 0 copies the keep pixel.
+ * Coverage 255 uses EMPTY. Both buffers are RGBA at the keep-image grid.
+ * EMPTY must already be stretched onto that grid.
  */
 export function compositeRemoveEditRgba(input: Readonly<{
-  original: Uint8Array;
+  keep: Uint8Array;
   empty: Uint8Array;
   coverage: Uint8Array;
   width: number;
@@ -70,7 +83,7 @@ export function compositeRemoveEditRgba(input: Readonly<{
   const pixels = input.width * input.height;
   if (!positiveGrid(input.width, input.height) || pixels > REMOVE_EDIT_MAX_PIXELS) return null;
   if (
-    input.original.length !== pixels * 4
+    input.keep.length !== pixels * 4
     || input.empty.length !== pixels * 4
     || input.coverage.length !== pixels
   ) {
@@ -79,14 +92,72 @@ export function compositeRemoveEditRgba(input: Readonly<{
   const output = new Uint8Array(pixels * 4);
   for (let index = 0; index < pixels; index += 1) {
     const alpha = (input.coverage[index] ?? 0) / 255;
-    const keep = 1 - alpha;
+    const retain = 1 - alpha;
     const offset = index * 4;
-    output[offset] = blendByte(input.original[offset] ?? 0, input.empty[offset] ?? 0, keep, alpha);
-    output[offset + 1] = blendByte(input.original[offset + 1] ?? 0, input.empty[offset + 1] ?? 0, keep, alpha);
-    output[offset + 2] = blendByte(input.original[offset + 2] ?? 0, input.empty[offset + 2] ?? 0, keep, alpha);
+    output[offset] = blendByte(input.keep[offset] ?? 0, input.empty[offset] ?? 0, retain, alpha);
+    output[offset + 1] = blendByte(input.keep[offset + 1] ?? 0, input.empty[offset + 1] ?? 0, retain, alpha);
+    output[offset + 2] = blendByte(input.keep[offset + 2] ?? 0, input.empty[offset + 2] ?? 0, retain, alpha);
     output[offset + 3] = 255;
   }
   return output;
+}
+
+/**
+ * Sample ORIGINAL-grid coverage onto the keep-image grid.
+ *
+ * Pixel centers use the same UV as the preview `drawImage` of the mask:
+ * `((x + 0.5) / keepWidth) * coverageWidth - 0.5`.
+ */
+export function mapRemoveCoverageToKeepGrid(input: Readonly<{
+  coverage: Uint8Array;
+  coverageWidth: number;
+  coverageHeight: number;
+  keepWidth: number;
+  keepHeight: number;
+}>): Uint8Array | null {
+  const sourcePixels = input.coverageWidth * input.coverageHeight;
+  const keepPixels = input.keepWidth * input.keepHeight;
+  if (sourcePixels > REMOVE_EDIT_MAX_PIXELS || keepPixels > REMOVE_EDIT_MAX_PIXELS) return null;
+  return resampleCoverageToOriginal({
+    source: input.coverage,
+    sourceWidth: input.coverageWidth,
+    sourceHeight: input.coverageHeight,
+    originalWidth: input.keepWidth,
+    originalHeight: input.keepHeight,
+    filter: "bilinear",
+  });
+}
+
+export function removeEditKeepAdmission(input: Readonly<{
+  keepWidth: number;
+  keepHeight: number;
+  emptyWidth: number;
+  emptyHeight: number;
+}>): RemoveBrushAdmission {
+  const compatibility = classifyAfcR3cImagePairCompatibility(
+    {
+      fingerprint: "keep",
+      decodedWidth: input.keepWidth,
+      decodedHeight: input.keepHeight,
+      orientation: 1,
+    },
+    {
+      fingerprint: "empty",
+      decodedWidth: input.emptyWidth,
+      decodedHeight: input.emptyHeight,
+      orientation: 1,
+    },
+  );
+  if (compatibility.tier === "incompatible") {
+    return {
+      allowed: false,
+      reason: compatibility.reason ?? REMOVE_EDIT_ALIGNMENT_ERROR,
+    };
+  }
+  return {
+    allowed: true,
+    aspectRescaling: compatibility.tier === "aspect_compatible_rescaled",
+  };
 }
 
 export function removeEditExportAdmission(report: RemoveAlignmentReport): RemoveBrushAdmission {
@@ -99,19 +170,27 @@ export function removeEditExportAdmission(report: RemoveAlignmentReport): Remove
 
 export function removeEditFingerprintMaterial(input: Readonly<{
   generationId: string;
+  keepAssetId: string;
+  keepSha256: string;
   originalSha256: string;
   emptySha256: string;
-  width: number;
-  height: number;
+  keepWidth: number;
+  keepHeight: number;
+  coverageWidth: number;
+  coverageHeight: number;
   coverageSha256: string;
 }>): string {
   return [
     REMOVE_EDIT_CONTRACT,
     input.generationId,
+    input.keepAssetId,
+    input.keepSha256.toLowerCase(),
     input.originalSha256.toLowerCase(),
     input.emptySha256.toLowerCase(),
-    String(input.width),
-    String(input.height),
+    String(input.keepWidth),
+    String(input.keepHeight),
+    String(input.coverageWidth),
+    String(input.coverageHeight),
     input.coverageSha256.toLowerCase(),
   ].join("\n");
 }

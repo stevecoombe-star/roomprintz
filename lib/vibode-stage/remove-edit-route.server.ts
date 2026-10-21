@@ -1,19 +1,26 @@
-import { sha256Hex } from "@/lib/afc-v2-production/production-artifact-integrity";
 import { getAuthenticatedAdminUser, getServiceRoleSupabaseClient } from "@/lib/adminServer";
 import { isAfcV2ArtifactLineageRecorded } from "@/lib/afc-v2-production/artifact-lineage-diagnostic";
-import { durableArtifactBytesMatch } from "@/lib/afc-v2-production/production-artifact-integrity";
+import {
+  durableArtifactBytesMatch,
+  sha256Hex,
+} from "@/lib/afc-v2-production/production-artifact-integrity";
 import {
   createProductionAfcStoreFromEnv,
   loadOwnedOriginalForProductionAnalysis,
 } from "@/lib/afc-v2-production/production-persistence.server";
-import type { AfcGenerationRecord } from "@/lib/afc-v2-production/production-store";
+import {
+  AFC_V2_ORIGINAL_STORAGE_BUCKET,
+  type AfcGenerationRecord,
+} from "@/lib/afc-v2-production/production-store";
 import { selectHarmonizeEmptyBytes } from "@/lib/vibode-stage/harmonize-empty";
 import type { HarmonizeExportAuthority } from "@/lib/vibode-stage/harmonize-export";
+import { VIBODE_HISTORY_BUCKET } from "@/lib/vibode-stage/harmonize-jobs/policy";
 import {
   assessRemoveAlignment,
   type RemoveAlignmentFacts,
   type RemoveImageDescriptor,
 } from "@/lib/vibode-stage/remove-alignment";
+import { REMOVE_EDIT_ALIGNMENT_ERROR, REMOVE_EDIT_STALE_ERROR } from "@/lib/vibode-stage/remove-edit";
 import type { RemoveEditHttpDeps } from "@/lib/vibode-stage/remove-edit-http";
 import type { RemoveEditStorage } from "@/lib/vibode-stage/remove-edit-publish.server";
 import { createCleanupServiceClient } from "@/lib/vibode-stage/remove-cleanup-jobs/service-client";
@@ -50,6 +57,9 @@ export function createRemoveEditRouteDeps(): RemoveEditHttpDeps | null {
         p_storage_path: input.storagePath,
         p_original_sha256: input.originalSha256,
         p_empty_sha256: input.emptySha256,
+        p_keep_sha256: input.keepSha256,
+        p_coverage_width: input.coverageWidth,
+        p_coverage_height: input.coverageHeight,
       });
       if (error || !data || typeof data !== "object") return { ok: false, code: "unavailable" };
       const body = data as { ok?: unknown; code?: unknown; assetId?: unknown };
@@ -72,15 +82,32 @@ export function createRemoveEditRouteDeps(): RemoveEditHttpDeps | null {
       if (!room.currentAfcGenerationId || room.currentAfcGenerationId !== body.generationId) {
         return { ok: false, status: 409, error: "This Remove session is out of date. Close it and open Remove again." };
       }
-      if (body.parentAssetId) {
-        const { data: parent, error } = await client
-          .from("vibode_room_assets")
-          .select("id,room_id,user_id")
-          .eq("id", body.parentAssetId)
-          .maybeSingle();
-        if (error || !parent || parent.room_id !== body.roomId || parent.user_id !== adminId) {
-          return { ok: false, status: 404, error: "Not found." };
-        }
+      if (!body.parentAssetId) return { ok: false, status: 404, error: "Not found." };
+      const { data: parent, error } = await client
+        .from("vibode_room_assets")
+        .select("id,room_id,user_id,storage_bucket,storage_path")
+        .eq("id", body.parentAssetId)
+        .maybeSingle();
+      if (error || !parent || parent.room_id !== body.roomId || parent.user_id !== adminId) {
+        return { ok: false, status: 404, error: "Not found." };
+      }
+      const bucket = typeof parent.storage_bucket === "string" ? parent.storage_bucket : "";
+      const storagePath = typeof parent.storage_path === "string" ? parent.storage_path : "";
+      if (
+        (bucket !== VIBODE_HISTORY_BUCKET && bucket !== AFC_V2_ORIGINAL_STORAGE_BUCKET)
+        || storagePath.length === 0
+        || storagePath.includes("..")
+        || storagePath.startsWith("/")
+      ) {
+        return { ok: false, status: 404, error: "Not found." };
+      }
+      const downloaded = await client.storage.from(bucket).download(storagePath);
+      if (downloaded.error || !downloaded.data) {
+        return { ok: false, status: 409, error: REMOVE_EDIT_ALIGNMENT_ERROR };
+      }
+      const keepBytes = new Uint8Array(await downloaded.data.arrayBuffer());
+      if (sha256Hex(keepBytes) !== body.keepSha256) {
+        return { ok: false, status: 409, error: REMOVE_EDIT_STALE_ERROR };
       }
       const generation = await store.getGeneration(body.generationId);
       if (!generation || generation.userId !== adminId || generation.roomId !== body.roomId) {
@@ -139,19 +166,22 @@ export function createRemoveEditRouteDeps(): RemoveEditHttpDeps | null {
       };
       const assessment = assessRemoveAlignment(facts);
       if (!assessment.usable || !originalBytes || !selected.ok || !original) {
-        return { ok: false, status: 409, error: "This room image cannot be saved from Remove." };
+        return { ok: false, status: 409, error: REMOVE_EDIT_ALIGNMENT_ERROR };
       }
       return {
         userId: adminId,
         roomId: body.roomId,
         generationId: body.generationId,
         parentAssetId: body.parentAssetId,
-        width: body.width,
-        height: body.height,
+        coverageWidth: body.width,
+        coverageHeight: body.height,
         coverageBase64: body.coverageBase64,
         report: assessment.report,
-        originalBytes,
+        keepBytes,
         emptyBytes: selected.bytes,
+        keepSha256: body.keepSha256,
+        keepWidth: body.keepWidth,
+        keepHeight: body.keepHeight,
         originalSha256: original.sha256,
         emptySha256: assessment.report.empty.sha256,
       };

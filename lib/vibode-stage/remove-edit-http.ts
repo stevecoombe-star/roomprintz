@@ -1,4 +1,9 @@
 import {
+  REMOVE_EDIT_ALIGNMENT_ERROR,
+  REMOVE_EDIT_SAVE_ERROR,
+  REMOVE_EDIT_STALE_ERROR,
+} from "@/lib/vibode-stage/remove-edit";
+import {
   publishPreparedRemoveEdit,
   type RemoveEditStorage,
   type RemoveEditSubmission,
@@ -13,7 +18,10 @@ export type RemoveEditHttpDeps = Readonly<{
     body: Readonly<{
       roomId: string;
       generationId: string;
-      parentAssetId: string | null;
+      parentAssetId: string;
+      keepSha256: string;
+      keepWidth: number;
+      keepHeight: number;
       width: number;
       height: number;
       coverageBase64: string;
@@ -43,6 +51,8 @@ export async function handleRemoveEditPost(request: Request, deps: RemoveEditHtt
       : published.code === "incompatible"
         ? 409
         : published.code === "unchanged"
+        ? 409
+        : published.code === "stale"
           ? 409
           : published.code === "invalid"
             ? 400
@@ -60,7 +70,10 @@ export async function handleRemoveEditPost(request: Request, deps: RemoveEditHtt
 function readBody(value: unknown): {
   roomId: string;
   generationId: string;
-  parentAssetId: string | null;
+  parentAssetId: string;
+  keepSha256: string;
+  keepWidth: number;
+  keepHeight: number;
   width: number;
   height: number;
   coverageBase64: string;
@@ -69,14 +82,18 @@ function readBody(value: unknown): {
   const body = value as Record<string, unknown>;
   if (typeof body.roomId !== "string" || !UUID.test(body.roomId)) return null;
   if (typeof body.generationId !== "string" || !UUID.test(body.generationId)) return null;
-  const parent = body.parentAssetId;
-  if (parent !== null && (typeof parent !== "string" || !UUID.test(parent))) return null;
+  if (typeof body.parentAssetId !== "string" || !UUID.test(body.parentAssetId)) return null;
+  if (typeof body.keepSha256 !== "string" || !/^[0-9a-f]{64}$/i.test(body.keepSha256)) return null;
+  if (!Number.isInteger(body.keepWidth) || !Number.isInteger(body.keepHeight)) return null;
   if (!Number.isInteger(body.width) || !Number.isInteger(body.height)) return null;
   if (typeof body.coverageBase64 !== "string" || body.coverageBase64.length === 0) return null;
   return {
     roomId: body.roomId,
     generationId: body.generationId,
-    parentAssetId: typeof parent === "string" ? parent : null,
+    parentAssetId: body.parentAssetId,
+    keepSha256: body.keepSha256.toLowerCase(),
+    keepWidth: body.keepWidth as number,
+    keepHeight: body.keepHeight as number,
     width: body.width as number,
     height: body.height as number,
     coverageBase64: body.coverageBase64,
@@ -84,11 +101,12 @@ function readBody(value: unknown): {
 }
 
 function errorCopy(code: string): string {
-  if (code === "incompatible") return "This room image cannot be saved from Remove.";
+  if (code === "incompatible") return REMOVE_EDIT_ALIGNMENT_ERROR;
   if (code === "unchanged") return "There are no Remove edits to save.";
   if (code === "not_found") return "Not found.";
   if (code === "invalid") return "The Remove image could not be read.";
-  return "Remove edits could not be saved. Your edits are still here.";
+  if (code === "stale") return REMOVE_EDIT_STALE_ERROR;
+  return REMOVE_EDIT_SAVE_ERROR;
 }
 
 function json(body: unknown, status: number): Response {

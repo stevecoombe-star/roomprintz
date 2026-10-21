@@ -204,6 +204,7 @@ test("PI-5B STAGE shell extends certified editor chrome instead of replacing it"
   assert.match(editor, /<StageEditorShell/);
   assert.match(editor, /onCleanupHistoryAccepted=\{refreshCleanupHistory\}/);
   assert.match(editor, /onRemoveEditSaved=\{activateSavedRemoveEdit\}/);
+  assert.match(editor, /activeHistoryImageUrl=/);
   assert.match(editor, /data-stage-canvas="true"/);
 
   assert.match(header, /Catalog/);

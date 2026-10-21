@@ -11,8 +11,11 @@ import {
   bytesToBase64,
   compositeRemoveEditRgba,
   isRemoveHistoryAsset,
+  mapRemoveCoverageToKeepGrid,
   removeEditExportAdmission,
+  removeEditFingerprintMaterial,
   removeEditHasChanges,
+  removeEditKeepAdmission,
   removeHistoryFallbackVersions,
 } from "@/lib/vibode-stage/remove-edit";
 import { handleRemoveEditPost } from "@/lib/vibode-stage/remove-edit-http";
@@ -245,7 +248,7 @@ test("objects, brush, protection, expansion, and feather share one effective mas
   const original = rgba(width, height, [10, 0, 0]);
   const empty = rgba(width, height, [0, 0, 200]);
   const blended = compositeRemoveEditRgba({
-    original,
+    keep: original,
     empty,
     coverage: feathered,
     width,
@@ -261,8 +264,8 @@ test("objects, brush, protection, expansion, and feather share one effective mas
   assert.ok((blended[partial * 4 + 2] ?? 255) < 200);
 });
 
-test("full-resolution export stretches EMPTY onto the ORIGINAL grid", async () => {
-  const original = await sharp({
+test("full-resolution export keeps unedited pixels and stretches EMPTY across the active image", async () => {
+  const keep = await sharp({
     create: { width: 2, height: 2, channels: 3, background: { r: 20, g: 0, b: 0 } },
   }).png().toBuffer();
   const empty = await sharp({
@@ -270,11 +273,13 @@ test("full-resolution export stretches EMPTY onto the ORIGINAL grid", async () =
   }).png().toBuffer();
   const coverage = Uint8Array.from([255, 0, 128, 0]);
   const png = await renderRemoveEditPng({
-    originalBytes: new Uint8Array(original),
+    keepBytes: new Uint8Array(keep),
     emptyBytes: new Uint8Array(empty),
     coverage,
-    width: 2,
-    height: 2,
+    coverageWidth: 2,
+    coverageHeight: 2,
+    keepWidth: 2,
+    keepHeight: 2,
   });
   const decoded = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   assert.equal(decoded.info.width, 2);
@@ -288,21 +293,25 @@ test("full-resolution export stretches EMPTY onto the ORIGINAL grid", async () =
 test("an edited Done publishes once and a repeated fingerprint does not create another asset", async () => {
   const storage = memoryStorage();
   const coverage = Uint8Array.from([255, 0, 0, 0]);
+  const keepBytes = new Uint8Array(await sharp({
+    create: { width: 2, height: 2, channels: 3, background: { r: 1, g: 2, b: 3 } },
+  }).png().toBuffer());
   const submission = {
     userId: ADMIN,
     roomId: ROOM,
     generationId: GENERATION,
     parentAssetId: PARENT,
-    width: 2,
-    height: 2,
+    coverageWidth: 2,
+    coverageHeight: 2,
     coverageBase64: bytesToBase64(coverage),
     report: report(),
-    originalBytes: new Uint8Array(await sharp({
-      create: { width: 2, height: 2, channels: 3, background: { r: 1, g: 2, b: 3 } },
-    }).png().toBuffer()),
+    keepBytes,
     emptyBytes: new Uint8Array(await sharp({
       create: { width: 2, height: 2, channels: 3, background: { r: 9, g: 8, b: 7 } },
     }).png().toBuffer()),
+    keepSha256: sha256Hex(keepBytes),
+    keepWidth: 2,
+    keepHeight: 2,
     originalSha256: ORIGINAL_SHA,
     emptySha256: EMPTY_SHA,
   };
@@ -318,20 +327,24 @@ test("an edited Done publishes once and a repeated fingerprint does not create a
 
 test("unchanged coverage, incompatible pairs, and failed storage do not publish", async () => {
   const storage = memoryStorage();
+  const keepBytes = new Uint8Array(await sharp({
+    create: { width: 2, height: 2, channels: 3, background: { r: 1, g: 2, b: 3 } },
+  }).png().toBuffer());
   const base = {
     userId: ADMIN,
     roomId: ROOM,
     generationId: GENERATION,
     parentAssetId: PARENT,
-    width: 2,
-    height: 2,
+    coverageWidth: 2,
+    coverageHeight: 2,
     report: report(),
-    originalBytes: new Uint8Array(await sharp({
-      create: { width: 2, height: 2, channels: 3, background: { r: 1, g: 2, b: 3 } },
-    }).png().toBuffer()),
+    keepBytes,
     emptyBytes: new Uint8Array(await sharp({
       create: { width: 2, height: 2, channels: 3, background: { r: 4, g: 5, b: 6 } },
     }).png().toBuffer()),
+    keepSha256: sha256Hex(keepBytes),
+    keepWidth: 2,
+    keepHeight: 2,
     originalSha256: ORIGINAL_SHA,
     emptySha256: EMPTY_SHA,
   };
@@ -357,10 +370,17 @@ test("unchanged coverage, incompatible pairs, and failed storage do not publish"
   assert.deepEqual(failed, { ok: false, code: "unavailable" });
   const unreadable = await publishPreparedRemoveEdit(storage, {
     ...base,
-    originalBytes: Uint8Array.from([1, 2, 3, 4]),
+    keepBytes: Uint8Array.from([1, 2, 3, 4]),
+    keepSha256: sha256Hex(Uint8Array.from([1, 2, 3, 4])),
     coverageBase64: bytesToBase64(Uint8Array.from([255, 0, 0, 0])),
   });
   assert.deepEqual(unreadable, { ok: false, code: "invalid" });
+  const stale = await publishPreparedRemoveEdit(storage, {
+    ...base,
+    keepSha256: "d".repeat(64),
+    coverageBase64: bytesToBase64(Uint8Array.from([255, 0, 0, 0])),
+  });
+  assert.deepEqual(stale, { ok: false, code: "stale" });
   const forged = await publishPreparedRemoveEdit(storage, {
     ...base,
     originalSha256: "c".repeat(64),
@@ -390,6 +410,9 @@ test("non-admin, foreign parent, and stale generation requests are rejected", as
       roomId: ROOM,
       generationId: GENERATION,
       parentAssetId: PARENT,
+      keepSha256: "a".repeat(64),
+      keepWidth: 2,
+      keepHeight: 2,
       width: 2,
       height: 2,
       coverageBase64: bytesToBase64(Uint8Array.from([255, 0, 0, 0])),
@@ -401,6 +424,83 @@ test("non-admin, foreign parent, and stale generation requests are rejected", as
   });
   assert.equal(foreign.status, 404);
   assert.equal(storage.publishes, 0);
+});
+
+test("Clean Up, Remove, and Harmonize keep-layers retain unedited pixels", async () => {
+  const empty = new Uint8Array(await sharp({
+    create: { width: 2, height: 1, channels: 3, background: { r: 0, g: 0, b: 255 } },
+  }).png().toBuffer());
+  const sources = [
+    ["ORIGINAL", 9, 0, 0],
+    ["Clean Up Room", 40, 10, 0],
+    ["Remove", 0, 70, 20],
+    ["Harmonize", 80, 0, 90],
+  ] as const;
+  const fingerprints = new Set<string>();
+  for (const [label, red, green, blue] of sources) {
+    const keep = new Uint8Array(await sharp({
+      create: { width: 4, height: 2, channels: 3, background: { r: red, g: green, b: blue } },
+    }).png().toBuffer());
+    const coverage = new Uint8Array(2);
+    coverage[0] = 255;
+    const png = await renderRemoveEditPng({
+      keepBytes: keep,
+      emptyBytes: empty,
+      coverage,
+      coverageWidth: 2,
+      coverageHeight: 1,
+      keepWidth: 4,
+      keepHeight: 2,
+    });
+    const decoded = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    assert.equal(decoded.info.width, 4, label);
+    assert.equal(decoded.info.height, 2, label);
+    assert.equal(decoded.data[2], 255, label);
+    const untouched = 3 * 4;
+    assert.equal(decoded.data[untouched], red, label);
+    assert.equal(decoded.data[untouched + 1], green, label);
+    assert.equal(decoded.data[untouched + 2], blue, label);
+    assert.equal(decoded.data[untouched + 3], 255, label);
+    fingerprints.add(removeEditFingerprintMaterial({
+      generationId: GENERATION,
+      keepAssetId: PARENT,
+      keepSha256: sha256Hex(keep),
+      originalSha256: ORIGINAL_SHA,
+      emptySha256: EMPTY_SHA,
+      keepWidth: 4,
+      keepHeight: 2,
+      coverageWidth: 2,
+      coverageHeight: 1,
+      coverageSha256: sha256Hex(coverage),
+    }));
+  }
+  assert.equal(fingerprints.size, sources.length);
+  const sameGrid = mapRemoveCoverageToKeepGrid({
+    coverage: Uint8Array.from([0, 255, 0, 0]),
+    coverageWidth: 2,
+    coverageHeight: 2,
+    keepWidth: 2,
+    keepHeight: 2,
+  });
+  assert.deepEqual(Array.from(sameGrid ?? []), [0, 255, 0, 0]);
+});
+
+test("the 960 by 640 and 2528 by 1696 pair is compatible and a square pair is refused", () => {
+  const cleanup = removeEditKeepAdmission({
+    keepWidth: 2528,
+    keepHeight: 1696,
+    emptyWidth: 960,
+    emptyHeight: 640,
+  });
+  assert.equal(cleanup.allowed, true);
+  assert.equal(cleanup.allowed && cleanup.aspectRescaling, true);
+  const square = removeEditKeepAdmission({
+    keepWidth: 1000,
+    keepHeight: 1000,
+    emptyWidth: 960,
+    emptyHeight: 640,
+  });
+  assert.equal(square.allowed, false);
 });
 
 test("a Remove card is labeled once and the publication stays off the camera and Clean Up path", () => {
@@ -428,7 +528,13 @@ test("a Remove card is labeled once and the publication stays off the camera and
   const save = session.slice(session.indexOf("const saveRemoveEdits"), session.indexOf("const value = useMemo"));
   assert.ok(save.indexOf("removeEditHasChanges") < save.indexOf("fetch("));
   assert.ok(save.indexOf("setRemoveSavePhase(\"error\")") < save.indexOf("dispatch({ type: \"exit\" })"));
+  assert.ok(save.indexOf("REMOVE_EDIT_STALE_ERROR") < save.indexOf("fetch("));
+  assert.match(save, /keepSha256/);
   assert.doesNotMatch(save, /requestRemoveObjects\(|generativelanguage|roboflow|accept_vibode_cleanup_history/);
+  const canvas = source("components/stage/RemoveBrushCanvas.tsx");
+  assert.match(canvas, /keep: pair\.keep/);
+  assert.match(sql, /keepSha256/);
+  assert.match(sql, /keepAssetId/);
   assert.match(editor, /await setActiveVersionForRoom/);
   assert.doesNotMatch(editor.slice(editor.indexOf("const activateSavedRemoveEdit"), editor.indexOf("const handleSetVersionAsBaseImage")), /room_scale_multiplier|current_afc_generation_id/);
   assert.equal(REMOVE_EDIT_LABEL, "Remove");

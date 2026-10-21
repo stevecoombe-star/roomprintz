@@ -23,10 +23,13 @@ import {
   REMOVE_EDIT_ACTIVATE_ERROR,
   REMOVE_EDIT_ALIGNMENT_ERROR,
   REMOVE_EDIT_SAVE_ERROR,
+  REMOVE_EDIT_STALE_ERROR,
   buildRemoveEditCoverage,
   bytesToBase64,
   removeEditExportAdmission,
   removeEditHasChanges,
+  removeEditKeepAdmission,
+  type RemoveKeepIdentity,
 } from "@/lib/vibode-stage/remove-edit";
 import {
   REMOVE_ALIGNMENT_NOTE,
@@ -147,6 +150,10 @@ type RemoveAlignmentContextValue = Readonly<{
   saveRemoveEdits: () => void;
   removeSavePhase: "idle" | "saving" | "error";
   removeSaveError: string | null;
+  keepImageUrl: string | null;
+  keepAssetId: string | null;
+  keepNotice: string | null;
+  noteKeepIdentity: (identity: RemoveKeepIdentity) => void;
   originalDisagreement: string | null;
   emptyDisagreement: string | null;
 }>;
@@ -165,12 +172,14 @@ async function loadRemoveAlignment(roomId: string): Promise<RemoveAlignmentLooku
 export function RemoveAlignmentProvider({
   roomId,
   activeHistoryAssetId = null,
+  activeHistoryImageUrl = null,
   onCleanupHistoryAccepted,
   onRemoveEditSaved,
   children,
 }: {
   roomId: string | null;
   activeHistoryAssetId?: string | null;
+  activeHistoryImageUrl?: string | null;
   onCleanupHistoryAccepted?: (roomId: string) => void | Promise<void>;
   onRemoveEditSaved?: (roomId: string, assetId: string) => Promise<void>;
   children: ReactNode;
@@ -201,6 +210,10 @@ export function RemoveAlignmentProvider({
   }>(null);
   const ticketRef = useRef(0);
   const saveLock = useRef(false);
+  const frozenKeepIdRef = useRef<string | null>(null);
+  const [frozenKeep, setFrozenKeep] = useState<Readonly<{ assetId: string; imageUrl: string }> | null>(null);
+  const [keepIdentity, setKeepIdentity] = useState<RemoveKeepIdentity | null>(null);
+  const [keepShaConflict, setKeepShaConflict] = useState(false);
   const [removeSavePhase, setRemoveSavePhase] = useState<"idle" | "saving" | "error">("idle");
   const [removeSaveError, setRemoveSaveError] = useState<string | null>(null);
   const [trackedRoomId, setTrackedRoomId] = useState(roomId);
@@ -519,6 +532,53 @@ export function RemoveAlignmentProvider({
     setMaskSummary(summary);
   }, []);
 
+  useEffect(() => {
+    if (!sessionActive) {
+      frozenKeepIdRef.current = null;
+      setFrozenKeep(null);
+      setKeepIdentity(null);
+      setKeepShaConflict(false);
+      return;
+    }
+    if (frozenKeepIdRef.current) return;
+    if (!activeHistoryAssetId || !activeHistoryImageUrl) return;
+    frozenKeepIdRef.current = activeHistoryAssetId;
+    setFrozenKeep({ assetId: activeHistoryAssetId, imageUrl: activeHistoryImageUrl });
+  }, [activeHistoryAssetId, activeHistoryImageUrl, sessionActive]);
+
+  const keepStale = Boolean(
+    frozenKeep && (activeHistoryAssetId !== frozenKeep.assetId || keepShaConflict),
+  );
+  const keepImageUrl = frozenKeep
+    ? (activeHistoryAssetId === frozenKeep.assetId && activeHistoryImageUrl
+      ? activeHistoryImageUrl
+      : frozenKeep.imageUrl)
+    : null;
+  const keepAdmission = keepIdentity && report
+    ? removeEditKeepAdmission({
+      keepWidth: keepIdentity.width,
+      keepHeight: keepIdentity.height,
+      emptyWidth: report.empty.decodedWidth,
+      emptyHeight: report.empty.decodedHeight,
+    })
+    : null;
+  const keepNotice = keepStale
+    ? REMOVE_EDIT_STALE_ERROR
+    : keepAdmission && !keepAdmission.allowed
+      ? keepAdmission.reason
+      : null;
+  const noteKeepIdentity = useCallback((identity: RemoveKeepIdentity) => {
+    const frozenId = frozenKeepIdRef.current;
+    if (!frozenId || identity.assetId !== frozenId) return;
+    setKeepIdentity((current) => {
+      if (current && current.sha256 !== identity.sha256) {
+        setKeepShaConflict(true);
+        return current;
+      }
+      return identity;
+    });
+  }, []);
+
   const saveRemoveEdits = useCallback(() => {
     if (saveLock.current) return;
     const report = lookup.access === "ready" ? lookup.report : null;
@@ -561,6 +621,32 @@ export function RemoveAlignmentProvider({
       dispatch({ type: "exit" });
       return;
     }
+    if (
+      !frozenKeep
+      || !keepIdentity
+      || keepIdentity.assetId !== frozenKeep.assetId
+      || activeHistoryAssetId !== frozenKeep.assetId
+      || keepShaConflict
+    ) {
+      setRemoveSaveError(
+        frozenKeep && (activeHistoryAssetId !== frozenKeep.assetId || keepShaConflict)
+          ? REMOVE_EDIT_STALE_ERROR
+          : REMOVE_EDIT_ALIGNMENT_ERROR,
+      );
+      setRemoveSavePhase("error");
+      return;
+    }
+    const activeKeepAdmission = removeEditKeepAdmission({
+      keepWidth: keepIdentity.width,
+      keepHeight: keepIdentity.height,
+      emptyWidth: report.empty.decodedWidth,
+      emptyHeight: report.empty.decodedHeight,
+    });
+    if (!activeKeepAdmission.allowed) {
+      setRemoveSaveError(activeKeepAdmission.reason);
+      setRemoveSavePhase("error");
+      return;
+    }
     saveLock.current = true;
     setRemoveSavePhase("saving");
     setRemoveSaveError(null);
@@ -574,7 +660,10 @@ export function RemoveAlignmentProvider({
           body: JSON.stringify({
             roomId,
             generationId: report.generationId,
-            parentAssetId: activeHistoryAssetId,
+            parentAssetId: frozenKeep.assetId,
+            keepSha256: keepIdentity.sha256,
+            keepWidth: keepIdentity.width,
+            keepHeight: keepIdentity.height,
             width: hold.width,
             height: hold.height,
             coverageBase64: bytesToBase64(coverage),
@@ -608,7 +697,10 @@ export function RemoveAlignmentProvider({
     })();
   }, [
     activeHistoryAssetId,
+    frozenKeep,
     inspection.objectExpansionPx,
+    keepIdentity,
+    keepShaConflict,
     lookup,
     objectUi,
     onRemoveEditSaved,
@@ -689,6 +781,10 @@ export function RemoveAlignmentProvider({
     saveRemoveEdits,
     removeSavePhase,
     removeSaveError,
+    keepImageUrl,
+    keepAssetId: frozenKeep?.assetId ?? null,
+    keepNotice,
+    noteKeepIdentity,
     originalDisagreement,
     emptyDisagreement,
   }), [
@@ -704,7 +800,11 @@ export function RemoveAlignmentProvider({
     exit,
     hiddenCleanupObjects,
     hideAllObjects,
+    frozenKeep,
     inspection.diameterPx,
+    keepImageUrl,
+    keepNotice,
+    noteKeepIdentity,
     inspection.featherPx,
     inspection.furnitureHidden,
     inspection.maskEpoch,
@@ -891,6 +991,10 @@ export function RemoveAlignmentControl() {
         {session.removeSaveError ? (
           <p className="mt-2 text-[11px] leading-relaxed text-red-300" role="alert" data-remove-edit="error">
             {session.removeSaveError}
+          </p>
+        ) : session.keepNotice ? (
+          <p className="mt-2 text-[11px] leading-relaxed text-amber-200" role="status" data-remove-edit="keep-notice">
+            {session.keepNotice}
           </p>
         ) : null}
         <AlignmentDetails session={session} />
@@ -1306,8 +1410,9 @@ export function RemoveAlignmentOverlay() {
   const report = session?.active ? session.report : null;
   if (!session || !report || !session.roomId) return null;
   const compositing = session.brushAdmission?.allowed === true
+    && Boolean(session.keepImageUrl)
     && (session.mode === "brush" || session.mode === "objects");
-  if (compositing) {
+  if (session.mode === "objects" || session.mode === "brush") {
     const objectsMode = session.mode === "objects";
     return (
       <div
@@ -1315,59 +1420,49 @@ export function RemoveAlignmentOverlay() {
         data-remove-alignment-overlay="true"
         data-remove-view={session.mode}
         data-remove-mode={session.mode}
+        data-remove-keep={session.keepAssetId ?? "missing"}
       >
-        {objectsMode ? (
-          <OriginalInspectionImage
+        {compositing && session.keepImageUrl && session.keepAssetId ? (
+          <RemoveBrushCanvas
+            active={session.active}
             roomId={session.roomId}
-            generationId={report.generationId}
+            report={report}
+            sessionSerial={session.sessionSerial}
+            maskEpoch={session.maskEpoch}
+            tool={session.tool}
+            diameterPx={session.diameterPx}
+            featherPx={session.featherPx}
+            maskHoldRef={session.maskHoldRef}
+            onMaskSummary={session.noteMaskSummary}
             onDisplayedSize={session.noteDisplayedSize}
+            keepImageUrl={session.keepImageUrl}
+            keepAssetId={session.keepAssetId}
+            onKeepIdentity={session.noteKeepIdentity}
+            interaction={objectsMode ? "objects" : "brush"}
+            backdrop={false}
+            objects={session.objectUi.objects}
+            selectedIds={session.objectUi.selectedIds}
+            expansionPx={session.objectExpansionPx}
+            protectObjects={removeObjectProtectionEngaged({
+              enabled: session.objectProtectionEnabled,
+              state: session.objectUi,
+            })}
+            onObjectClick={(point) => session.clickObject(point.x, point.y)}
+            onObjectHover={(point) => {
+              const next = point ? highlightRemoveObject(session.objectUi, point.x, point.y) : null;
+              setHoveredId((current) => current === next ? current : next);
+            }}
+          />
+        ) : session.keepImageUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- signed History image is the frozen keep-layer
+          <img
+            src={session.keepImageUrl}
+            alt=""
+            draggable={false}
+            className="pointer-events-none absolute inset-0 h-full w-full"
           />
         ) : null}
-        <RemoveBrushCanvas
-          active={session.active}
-          roomId={session.roomId}
-          report={report}
-          sessionSerial={session.sessionSerial}
-          maskEpoch={session.maskEpoch}
-          tool={session.tool}
-          diameterPx={session.diameterPx}
-          featherPx={session.featherPx}
-          maskHoldRef={session.maskHoldRef}
-          onMaskSummary={session.noteMaskSummary}
-          onDisplayedSize={session.noteDisplayedSize}
-          interaction={objectsMode ? "objects" : "brush"}
-          backdrop={!objectsMode}
-          objects={session.objectUi.objects}
-          selectedIds={session.objectUi.selectedIds}
-          expansionPx={session.objectExpansionPx}
-          protectObjects={removeObjectProtectionEngaged({
-            enabled: session.objectProtectionEnabled,
-            state: session.objectUi,
-          })}
-          onObjectClick={(point) => session.clickObject(point.x, point.y)}
-          onObjectHover={(point) => {
-            const next = point ? highlightRemoveObject(session.objectUi, point.x, point.y) : null;
-            setHoveredId((current) => current === next ? current : next);
-          }}
-        />
         {objectsMode ? <ObjectLayer session={session} hoveredId={hoveredId} /> : null}
-      </div>
-    );
-  }
-  if (session.mode === "objects") {
-    return (
-      <div
-        className="pointer-events-none absolute inset-0 z-[1]"
-        data-remove-alignment-overlay="true"
-        data-remove-view="objects"
-        data-remove-mode="objects"
-      >
-        <OriginalInspectionImage
-          roomId={session.roomId}
-          generationId={report.generationId}
-          onDisplayedSize={session.noteDisplayedSize}
-        />
-        <ObjectLayer session={session} hoveredId={null} />
       </div>
     );
   }
