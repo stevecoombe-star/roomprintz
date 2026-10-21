@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { acceptSupabaseCleanupHistory } from "./accept.server";
 import { safeCleanupObjectPath } from "./artifacts";
 import type { CleanupArtifactStore } from "./artifacts";
 import { VIBODE_CLEANUP_BUCKET } from "./policy";
@@ -44,6 +45,11 @@ export function createSupabaseCleanupControl(
     complete: (jobId, claimNonce, output) => completeRpc(client, "complete_vibode_cleanup_generation", jobId, claimNonce, output),
     settle: (jobId, output) => completeRpc(client, "settle_vibode_cleanup_candidate", jobId, null, output),
     recoverable: () => recoverableRpc(client),
+    accept: async (userId, jobId) => {
+      const job = await readOne(client, { id: jobId, user_id: userId });
+      if (!job) return { ok: false, code: "not_found" };
+      return acceptSupabaseCleanupHistory(client, job);
+    },
   };
 }
 
@@ -274,6 +280,8 @@ function jobFromRecord(row: Row | null): CleanupJobRow | null {
     discardedAtMs: millis(row.discarded_at),
     retryOfJobId: text(row.retry_of_job_id),
     retryOrdinal: numberValue(row.retry_ordinal) ?? 0,
+    historyAssetId: text(row.history_asset_id),
+    acceptedAtMs: millis(row.accepted_at),
     notBeforeMs: millis(row.not_before) ?? 0,
     createdAtMs: millis(row.created_at) ?? 0,
     updatedAtMs: millis(row.updated_at) ?? 0,

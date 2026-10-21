@@ -99,6 +99,8 @@ export type CleanupJobRow = {
   completedAtMs: number | null;
   retryOfJobId: string | null;
   retryOrdinal: number;
+  historyAssetId: string | null;
+  acceptedAtMs: number | null;
 };
 
 export type CleanupJobDatabase = {
@@ -200,4 +202,6 @@ export type CleanupStatusView = Readonly<{
   outputWidth: number | null;
   outputHeight: number | null;
   stageRegistration: "not-assessed";
+  historyAssetId: string | null;
+  accepted: boolean;
 }>;

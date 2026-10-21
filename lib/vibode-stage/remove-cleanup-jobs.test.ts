@@ -177,7 +177,7 @@ test("migration, routes, and worker stay private and isolated", () => {
   const worker = source("cleanup-worker/src/index.ts");
   const route = source("app/api/vibode/admin/remove-cleanup-jobs/route.ts");
   const session = source("components/stage/RemoveAlignmentSession.tsx");
-  const component = source("components/stage/RemoveCleanupGeneration.tsx");
+  const component = `${source("components/stage/RemoveCleanupGeneration.tsx")}\n${source("components/stage/RemoveCleanupReviewViewer.tsx")}`;
   assert.match(sql, /vibode_cleanup_user_daily_provider_limit\(\)[\s\S]*select 5;/);
   assert.match(sql, /vibode_cleanup_global_daily_provider_limit\(\)[\s\S]*select 5;/);
   assert.match(sql, /vibode_cleanup_precontact_attempt_limit\(\)[\s\S]*select 3;/);
@@ -198,7 +198,8 @@ test("migration, routes, and worker stay private and isolated", () => {
     REMOVE_CLEANUP_EXCLUSION_COPY,
     "Only objects hidden in Objects mode are included. Brush edits are not included.",
   );
-  assert.doesNotMatch(component, /Accept|Image History|publishHarmonize/);
+  assert.match(component, /Accept into History/);
+  assert.doesNotMatch(component, /publishHarmonize|setActiveVersion|active_asset_id/);
   assert.equal(REMOVE_CLEANUP_DAILY_PROVIDER_LIMIT, 5);
   assert.equal(REMOVE_CLEANUP_GLOBAL_DAILY_PROVIDER_LIMIT, 5);
   assert.equal(REMOVE_CLEANUP_JOB_MAX_PRECONTACT_ATTEMPTS, 3);

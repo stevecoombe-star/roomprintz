@@ -424,6 +424,8 @@ function rowFrom(insert: CleanupJobInsert, nowMs: number): CleanupJobRow {
     completedAtMs: null,
     retryOfJobId: null,
     retryOrdinal: 0,
+    historyAssetId: null,
+    acceptedAtMs: null,
   };
 }
 
@@ -464,6 +466,8 @@ function cloneQueuedRetry(
     completedAtMs: null,
     retryOfJobId: source.id,
     retryOrdinal: input.retryOrdinal,
+    historyAssetId: null,
+    acceptedAtMs: null,
   };
 }
 

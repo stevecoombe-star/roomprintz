@@ -22,6 +22,8 @@ export function cleanupJobStatusView(
     outputWidth: job.outputWidth,
     outputHeight: job.outputHeight,
     stageRegistration: "not-assessed",
+    historyAssetId: job.historyAssetId,
+    accepted: job.historyAssetId != null && job.acceptedAtMs != null,
   };
 }
 

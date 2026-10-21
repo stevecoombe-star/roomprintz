@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { CleanupReviewMode } from "@/lib/vibode-stage/remove-cleanup-generation-ui";
+import { CLEANUP_HISTORY_LABEL, CLEANUP_HISTORY_NOTE } from "@/lib/vibode-stage/remove-cleanup-history-ui";
 import {
   cleanupReviewSources,
   type CleanupCandidatePhase,
@@ -24,6 +25,12 @@ export function RemoveCleanupReviewViewer({
   onMode,
   onReload,
   onClose,
+  accepted,
+  confirming,
+  accepting,
+  onBeginAccept,
+  onConfirmAccept,
+  onCancelAccept,
 }: {
   open: boolean;
   mode: CleanupReviewMode;
@@ -34,6 +41,12 @@ export function RemoveCleanupReviewViewer({
   onMode: (mode: CleanupReviewMode) => void;
   onReload: () => void;
   onClose: () => void;
+  accepted: boolean;
+  confirming: boolean;
+  accepting: boolean;
+  onBeginAccept: () => void;
+  onConfirmAccept: () => void;
+  onCancelAccept: () => void;
 }) {
   useEffect(() => {
     if (!open) return undefined;
@@ -92,11 +105,59 @@ export function RemoveCleanupReviewViewer({
             );
           })}
         </div>
-        <p className="border-t border-neutral-800 px-4 py-2 text-[11px] text-neutral-400">
-          This review leaves the room view unchanged.
-        </p>
+        <div className="border-t border-neutral-800 px-4 py-3">
+          <AcceptHistoryControls
+            accepted={accepted}
+            confirming={confirming}
+            accepting={accepting}
+            onBeginAccept={onBeginAccept}
+            onConfirmAccept={onConfirmAccept}
+            onCancelAccept={onCancelAccept}
+          />
+          <p className="mt-2 text-[11px] text-neutral-400">This review leaves the room view unchanged.</p>
+        </div>
     </div>,
     document.body,
+  );
+}
+
+export function AcceptHistoryControls({
+  accepted,
+  confirming,
+  accepting,
+  onBeginAccept,
+  onConfirmAccept,
+  onCancelAccept,
+}: {
+  accepted: boolean;
+  confirming: boolean;
+  accepting: boolean;
+  onBeginAccept: () => void;
+  onConfirmAccept: () => void;
+  onCancelAccept: () => void;
+}) {
+  if (accepted) {
+    return <p className="text-[11px] text-neutral-300">Saved to Image History as {CLEANUP_HISTORY_LABEL}.</p>;
+  }
+  if (confirming) {
+    return (
+      <div data-remove-cleanup-generation="accept-confirm">
+        <p className="text-[11px] leading-relaxed text-neutral-300">{CLEANUP_HISTORY_NOTE}</p>
+        <div className="mt-2 flex gap-1">
+          <button type="button" data-remove-cleanup-generation="accept-submit" disabled={accepting} onClick={onConfirmAccept} className={`${BUTTON} border-neutral-500 text-neutral-100`}>
+            Save to History
+          </button>
+          <button type="button" disabled={accepting} onClick={onCancelAccept} className={`${BUTTON} border-neutral-700 text-neutral-300`}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <button type="button" data-remove-cleanup-generation="accept" disabled={accepting} onClick={onBeginAccept} className={`${BUTTON} border-neutral-500 text-neutral-100`}>
+      Accept into History
+    </button>
   );
 }
 

@@ -32,6 +32,8 @@ function view(jobId: string, status: CleanupStatusView["status"], candidateAvail
     outputWidth: candidateAvailable ? 2528 : null,
     outputHeight: candidateAvailable ? 1696 : null,
     stageRegistration: "not-assessed",
+    historyAssetId: null,
+    accepted: false,
   };
 }
 

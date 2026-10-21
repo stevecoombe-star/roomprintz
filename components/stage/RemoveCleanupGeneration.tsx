@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { RemoveCleanupReviewViewer } from "@/components/stage/RemoveCleanupReviewViewer";
+import { AcceptHistoryControls, RemoveCleanupReviewViewer } from "@/components/stage/RemoveCleanupReviewViewer";
 import { removeAlignmentArtifactPath } from "@/lib/vibode-stage/remove-alignment";
 import { REMOVE_CLEANUP_EXCLUSION_COPY } from "@/lib/vibode-stage/remove-cleanup-contract";
 import {
@@ -53,6 +53,9 @@ export function RemoveCleanupGeneration({ objectUi }: { objectUi: RemoveObjectUi
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const retryLock = useRef(false);
+  const [confirmingAccept, setConfirmingAccept] = useState(false);
+  const [accepting, setAccepting] = useState(false);
+  const acceptLock = useRef(false);
   const [review, setReview] = useState<CleanupReviewMode>("compare");
   const [viewerOpen, setViewerOpen] = useState(false);
   const [loadedCandidate, setLoadedCandidate] = useState<{ jobId: string; attempt: number; url: string } | null>(null);
@@ -226,6 +229,30 @@ export function RemoveCleanupGeneration({ objectUi }: { objectUi: RemoveObjectUi
     }
   }
 
+  async function acceptIntoHistory() {
+    if (!job || job.accepted || acceptLock.current) return;
+    acceptLock.current = true;
+    setAccepting(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/vibode/admin/remove-cleanup-jobs/${job.jobId}/accept`, {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => null) as { job?: CleanupStatusView; error?: string; activated?: boolean } | null;
+      if (!response.ok || !payload?.job || payload.activated === true) {
+        setError(typeof payload?.error === "string" ? payload.error : "Clean Up could not be saved to History.");
+        return;
+      }
+      setConfirmingAccept(false);
+      publishCleanupJob(payload.job, setJob, setPhase);
+    } finally {
+      acceptLock.current = false;
+      setAccepting(false);
+    }
+  }
+
   async function discard() {
     if (!job) return;
     const response = await fetch(`/api/vibode/admin/remove-cleanup-jobs/${job.jobId}/discard`, {
@@ -329,9 +356,21 @@ export function RemoveCleanupGeneration({ objectUi }: { objectUi: RemoveObjectUi
                 {mode === "original" ? "Original" : mode === "candidate" ? "Candidate" : "Compare"}
               </button>
             ))}
-            <button type="button" data-remove-cleanup-generation="discard" onClick={() => void discard()} className={`${BUTTON} border-neutral-700 text-neutral-300`}>
-              Discard
-            </button>
+            {job.accepted ? null : (
+              <button type="button" data-remove-cleanup-generation="discard" onClick={() => void discard()} className={`${BUTTON} border-neutral-700 text-neutral-300`}>
+                Discard
+              </button>
+            )}
+          </div>
+          <div className="mt-2">
+            <AcceptHistoryControls
+              accepted={job.accepted === true}
+              confirming={confirmingAccept}
+              accepting={accepting}
+              onBeginAccept={() => setConfirmingAccept(true)}
+              onConfirmAccept={() => void acceptIntoHistory()}
+              onCancelAccept={() => setConfirmingAccept(false)}
+            />
           </div>
           <p className="mt-1 text-[11px] leading-relaxed text-neutral-400">
             Review opens in a larger viewer. The room view stays unchanged.
@@ -349,6 +388,12 @@ export function RemoveCleanupGeneration({ objectUi }: { objectUi: RemoveObjectUi
           onMode={setReview}
           onReload={() => setCandidateAttempt((attempt) => attempt + 1)}
           onClose={() => setViewerOpen(false)}
+          accepted={job.accepted === true}
+          confirming={confirmingAccept}
+          accepting={accepting}
+          onBeginAccept={() => setConfirmingAccept(true)}
+          onConfirmAccept={() => void acceptIntoHistory()}
+          onCancelAccept={() => setConfirmingAccept(false)}
         />
       ) : null}
       {job && (phase === "queued" || phase === "generating") ? (

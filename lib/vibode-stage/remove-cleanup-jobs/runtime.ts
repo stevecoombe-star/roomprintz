@@ -1,3 +1,10 @@
+import {
+  acceptCleanupHistory,
+  createCleanupHistoryLedger,
+  type CleanupHistoryAcceptResult,
+  type CleanupHistoryLedger,
+} from "@/lib/vibode-stage/remove-cleanup-history";
+
 import type { CleanupArtifactStore } from "./artifacts";
 import {
   claimNextCleanupJob,
@@ -44,17 +51,23 @@ export type CleanupControl = {
   complete(jobId: string, claimNonce: string, output: CleanupCompleteInput): Promise<CleanupCompleteResult>;
   settle(jobId: string, output: CleanupCompleteInput): Promise<CleanupCompleteResult>;
   recoverable(): Promise<CleanupJobRow[]>;
+  accept(userId: string, jobId: string): Promise<CleanupHistoryAcceptResult>;
 };
 
 export function createMemoryCleanupControl(input: Readonly<{
   artifacts: CleanupArtifactStore;
   now?: () => number;
   database?: CleanupJobDatabase;
-}>): CleanupControl & { database: CleanupJobDatabase } {
+  ledger?: CleanupHistoryLedger;
+  decode?: (bytes: Uint8Array) => Promise<Readonly<{ width: number; height: number; orientation: number }> | null>;
+}>): CleanupControl & { database: CleanupJobDatabase; ledger: CleanupHistoryLedger } {
   const database = input.database ?? createCleanupJobDatabase();
+  const ledger = input.ledger ?? createCleanupHistoryLedger();
   const now = input.now ?? (() => Date.now());
+  const decode = input.decode ?? (async () => null);
   return {
     database,
+    ledger,
     artifacts: input.artifacts,
     now,
     async enqueue(insert) {
@@ -92,6 +105,11 @@ export function createMemoryCleanupControl(input: Readonly<{
     },
     async recoverable() {
       return recoverableCleanupJobs(database);
+    },
+    async accept(userId, jobId) {
+      const job = readCleanupJob(database, userId, jobId);
+      const bytes = job?.outputPath ? (await input.artifacts.get(job.outputPath)) ?? null : null;
+      return acceptCleanupHistory({ job, bytes, nowMs: now(), ledger, decode });
     },
   };
 }

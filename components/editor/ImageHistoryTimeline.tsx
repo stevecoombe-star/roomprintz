@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import { HARMONIZE_AI_DISCLOSURE_TEXT, HARMONIZE_AI_LABEL, isHarmonizedHistoryAsset } from "@/lib/vibode-stage/harmonize-experience";
+import { CLEANUP_HISTORY_LABEL, cleanupHistoryFallbackVersions, isCleanupHistoryAsset } from "@/lib/vibode-stage/remove-cleanup-history-ui";
 import { removeInspectionAllowsHistorySelection } from "@/lib/vibode-stage/remove-alignment";
 import { getImageHistoryWorkflowGroups, type ImageHistoryTimelineKind } from "@/lib/vibode/image-history-timeline";
 import { getVibodeVersionKind, getWorkflowStepDisplayLabel } from "@/lib/vibode/version-kind";
@@ -29,6 +30,7 @@ function getVersionKind(version: VibodeRoomAsset): ImageHistoryTimelineKind {
 }
 
 function getVersionLabel(version: VibodeRoomAsset): string {
+  if (isCleanupHistoryAsset(version)) return CLEANUP_HISTORY_LABEL;
   if (version.asset_type === "base") return "ORIGINAL";
   const kind = getVersionKind(version);
   return getWorkflowStepDisplayLabel(kind);
@@ -89,6 +91,11 @@ function TimelineVersionCard(props: {
           <div className="flex h-full w-full items-center justify-center text-[10px] text-neutral-500">IMG</div>
         )}
       </div>
+      {isCleanupHistoryAsset(props.version) ? (
+        <div className="inline-flex rounded-full border border-emerald-400/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-100">
+          {CLEANUP_HISTORY_LABEL}
+        </div>
+      ) : null}
       {isHarmonizedHistoryAsset(props.version) ? (
         <div
           className="inline-flex rounded-full border border-amber-400/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-100"
@@ -138,6 +145,11 @@ export function ImageHistoryTimeline({
   const selectVersion = historySelectionOpen ? onSelectVersion : undefined;
 
   if (!timeline) return null;
+  const visibleIds = new Set<string>([
+    ...timeline.groups.flatMap((group) => group.items.map((item) => item.id)),
+    ...timeline.childSummary.groupedChildren.flatMap((entry) => entry.items.map((item) => item.id)),
+  ]);
+  const cleanupVersions = cleanupHistoryFallbackVersions(versions, visibleIds);
   const activeKind = getVersionKind(timeline.active);
   const primaryChildSummary = timeline.childSummary.displayKind
     ? timeline.childSummary.groupedChildren.find((entry) => entry.kind === timeline.childSummary.displayKind) ?? null
@@ -204,6 +216,21 @@ export function ImageHistoryTimeline({
               </div>
             ))}
 
+            {cleanupVersions.length > 0 ? (
+              <div className="rounded-md border border-neutral-800 bg-neutral-950/55 px-1.5 py-1" data-history-cleanup="saved">
+                <div className="mb-1 px-0.5 text-[10px] font-semibold tracking-[0.08em] text-neutral-400">{CLEANUP_HISTORY_LABEL}</div>
+                <div className="flex items-center gap-1.5">
+                  {cleanupVersions.map((version) => (
+                    <TimelineVersionCard
+                      key={`cleanup-${version.id}`}
+                      version={version}
+                      isActive={version.id === timeline.active.id}
+                      onSelectVersion={selectVersion}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
             {shouldShowChildSummary ? (
               <div className="rounded-md border border-neutral-800 bg-neutral-950/60 px-2.5 py-1.5">
                 <div className="flex items-center gap-1.5">
