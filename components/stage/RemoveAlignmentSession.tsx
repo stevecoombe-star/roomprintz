@@ -17,6 +17,7 @@ import {
   type RemoveMaskHold,
   type RemoveMaskSummary,
 } from "@/components/stage/RemoveBrushCanvas";
+import { RemoveCleanupGeneration } from "@/components/stage/RemoveCleanupGeneration";
 import { RemoveObjectOutlines } from "@/components/stage/RemoveObjectOutlines";
 import {
   REMOVE_ALIGNMENT_NOTE,
@@ -982,6 +983,7 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
             {session.cleanupError}
           </p>
         ) : null}
+        <RemoveCleanupGeneration objectUi={session.objectUi} />
       </div>
       <div data-remove-objects="expansion">
         <BrushSlider

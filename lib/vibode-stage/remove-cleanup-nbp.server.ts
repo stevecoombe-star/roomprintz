@@ -279,7 +279,7 @@ export async function requestRemoveCleanupNbpCandidate(input: Readonly<{
         getCount,
       });
     }
-    const image = await extractSingleJpeg(current, fetchImpl, controller.signal);
+    const image = await extractSingleJpeg(current);
     const assessed = await assessCleanupJpeg(image, authorized.request.response_format);
     if (!assessed.ok) {
       return failure("provider_rejected", assessed.code, assessed.message, {
@@ -438,6 +438,22 @@ async function assessCleanupJpeg(
   };
 }
 
+export async function assessRemoveCleanupCandidateBytes(
+  bytes: Uint8Array,
+  requested: RemoveCleanupNbpRequest["response_format"],
+): Promise<
+  | Readonly<{
+      ok: true;
+      width: number;
+      height: number;
+      sha256: string;
+      assessment: RemoveCleanupNbpCandidate["dimensionAssessment"];
+    }>
+  | Readonly<{ ok: false; code: string; message: string }>
+> {
+  return assessCleanupJpeg(bytes, requested);
+}
+
 async function decodeJpeg(
   bytes: Uint8Array,
 ): Promise<Readonly<{ width: number; height: number; orientation: number }>> {
@@ -456,23 +472,24 @@ async function decodeJpeg(
   return { width: decoded.info.width, height: decoded.info.height, orientation };
 }
 
-async function extractSingleJpeg(
-  payload: unknown,
-  fetchImpl: FetchLike,
-  signal: AbortSignal,
-): Promise<Uint8Array> {
+async function extractSingleJpeg(payload: unknown): Promise<Uint8Array> {
   const refs = collectImages(payload);
   if (refs.length === 0) {
     throw new CleanupFlowError("provider_rejected", "unexpected_output", "The provider returned no image.");
   }
   const unique = new Map<string, Uint8Array>();
   for (const image of refs) {
+    if (image.uri && !image.data) {
+      throw new CleanupFlowError(
+        "provider_rejected",
+        "unexpected_output",
+        "The provider image must be inline JPEG data.",
+      );
+    }
     if (image.mime != null && image.mime !== "image/jpeg") {
       throw new CleanupFlowError("provider_rejected", "unexpected_output", "The provider image MIME is not JPEG.");
     }
-    const bytes = image.data != null
-      ? decodeBase64(image.data)
-      : await readImageUri(image.uri, fetchImpl, signal);
+    const bytes = image.data != null ? decodeBase64(image.data) : null;
     if (!bytes) {
       throw new CleanupFlowError("provider_rejected", "unexpected_output", "The provider image data is not base64.");
     }
@@ -540,41 +557,6 @@ async function requestInteraction(
       response.status,
     );
   }
-}
-
-async function readImageUri(
-  uri: string | null,
-  fetchImpl: FetchLike,
-  signal: AbortSignal,
-): Promise<Uint8Array> {
-  let url: URL;
-  try {
-    url = new URL(uri ?? "");
-  } catch {
-    throw new CleanupFlowError("provider_rejected", "unexpected_output", "The provider image URI is invalid.");
-  }
-  if (url.protocol !== "https:") {
-    throw new CleanupFlowError("provider_rejected", "unexpected_output", "The provider image URI is not HTTPS.");
-  }
-  let response: Response;
-  try {
-    response = await fetchImpl(url.toString(), { method: "GET", signal });
-  } catch {
-    if (signal.aborted) {
-      throw new CleanupFlowError("provider_uncertain", "timeout", "Provider contact ended before a response.");
-    }
-    throw new CleanupFlowError("provider_uncertain", "transport", "Provider contact failed before a response.");
-  }
-  const body = await readBoundedBody(response);
-  if (body === "too-large" || !response.ok) {
-    throw new CleanupFlowError(
-      "provider_rejected",
-      "unexpected_output",
-      "The provider image could not be read.",
-      response.status,
-    );
-  }
-  return body;
 }
 
 async function readBoundedBody(response: Response): Promise<Uint8Array | "too-large"> {

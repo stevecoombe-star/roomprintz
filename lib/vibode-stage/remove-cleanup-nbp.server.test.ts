@@ -800,46 +800,32 @@ test("credentials are resolved without a new environment variable and are not re
   assert.equal(google.calls[0]?.apiKey, "google-env-key");
 });
 
-test("an HTTPS image URI is read once and an HTTP URI is refused", async () => {
+test("provider image URIs are rejected and never fetched", async () => {
   const snapshot = await snapshotFor(30, 20);
-  const image = await jpeg(1800, 1200);
-  const transport = scripted((call) => {
-    if (call.method === "POST") {
-      return jsonResponse({
-        id: "interaction-1",
-        status: "completed",
-        output_image: { type: "image", mime_type: "image/jpeg", uri: "https://images.example.test/candidate.jpg" },
-      });
-    }
-    assert.equal(call.apiKey, null);
-    assert.equal(call.url, "https://images.example.test/candidate.jpg");
-    return new Response(Buffer.from(image), { status: 200, headers: { "content-type": "image/jpeg" } });
-  });
-  const result = await requestRemoveCleanupNbpCandidate({
-    snapshot,
-    output: outputFor(snapshot),
-    apiKey: API_KEY,
-    fetchImpl: transport.fetchImpl,
-  });
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.equal(posts(transport.calls).length, 1);
-    assert.equal(result.outputSha256, sha256Hex(image));
-  }
-
-  const insecure = await requestRemoveCleanupNbpCandidate({
-    snapshot,
-    output: outputFor(snapshot),
-    apiKey: API_KEY,
-    fetchImpl: async () => jsonResponse({
+  for (const uri of [
+    "https://images.example.test/candidate.jpg",
+    "http://images.example.test/candidate.jpg",
+    "http://169.254.169.254/latest/meta-data",
+  ]) {
+    const transport = scripted(() => jsonResponse({
       id: "interaction-1",
       status: "completed",
-      output_image: { type: "image", mime_type: "image/jpeg", uri: "http://images.example.test/candidate.jpg" },
-    }),
-  });
-  assert.equal(insecure.ok, false);
-  if (!insecure.ok) {
-    assert.equal(insecure.code, "unexpected_output");
-    assert.equal(insecure.message.includes("http://"), false);
+      output_image: { type: "image", mime_type: "image/jpeg", uri },
+    }));
+    const result = await requestRemoveCleanupNbpCandidate({
+      snapshot,
+      output: outputFor(snapshot),
+      apiKey: API_KEY,
+      fetchImpl: transport.fetchImpl,
+    });
+    assert.equal(result.ok, false, uri);
+    if (!result.ok) {
+      assert.equal(result.code, "unexpected_output");
+      assert.equal(result.phase, "provider_rejected");
+      assert.equal(result.retryable, false);
+      assert.equal(result.message.includes(uri), false);
+    }
+    assert.equal(posts(transport.calls).length, 1, uri);
+    assert.equal(transport.calls.length, 1, uri);
   }
 });
