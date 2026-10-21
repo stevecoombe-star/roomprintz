@@ -203,15 +203,21 @@ async function png(width: number, height: number, red = 10, green = 20, blue = 3
 test("cleanup route loads ORIGINAL itself and does not call a provider", () => {
   const route = source("app/api/vibode/admin/remove-cleanup-export/route.ts");
   const handler = source("lib/vibode-stage/remove-cleanup-export.server.ts");
+  const prepare = source("lib/vibode-stage/remove-cleanup-snapshot.server.ts");
   assert.match(route, /export const runtime = "nodejs"/);
   assert.match(route, /export const dynamic = "force-dynamic"/);
   assert.match(route, /loadOwnedOriginalForProductionAnalysis/);
   assert.match(route, /getAuthenticatedAdminUser/);
   assert.doesNotMatch(route, /export async function GET|createRoboflowRemoveSegmentationProvider/);
-  assert.match(handler, /room\.userId !== admin\.id/);
+  assert.match(handler, /prepareAuthorizedRemoveCleanupInput/);
   assert.match(handler, /Cache-Control": "no-store"/);
-  assert.doesNotMatch(handler, /serverless\.roboflow\.com|generativelanguage|api\.openai\.com|concept_segment|publishHarmonize|vibode_harmonize|getArtifact\(|selectHarmonizeEmpty|assessRemoveAlignment/);
-  assert.match(handler, /REMOVE_CLEANUP_MASK_PROVENANCE_LIMITATION/);
+  assert.match(prepare, /room\.userId !== admin\.id/);
+  assert.match(prepare, /REMOVE_CLEANUP_MASK_PROVENANCE_LIMITATION/);
+  assert.equal(prepare.match(/export async function/g)?.length, 1);
+  const forbidden = /serverless\.roboflow\.com|generativelanguage|api\.openai\.com|concept_segment|publishHarmonize|vibode_harmonize|getArtifact\(|selectHarmonizeEmpty|assessRemoveAlignment/;
+  assert.doesNotMatch(handler, forbidden);
+  assert.doesNotMatch(prepare, forbidden);
+  assert.doesNotMatch(prepare, /supabase|process\.env|storage\.from/);
   assert.match(
     source("lib/vibode-stage/remove-cleanup-contract.ts"),
     /not cryptographically authenticated as Roboflow outputs/,
