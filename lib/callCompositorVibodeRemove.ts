@@ -3,6 +3,7 @@
 // Compositor owns overlay rendering + canonical grounding + model call.
 
 import type { RemoveMarkV2 } from "./freezePayloadV2Types";
+import { mergeVibodeCompositorAuth } from "./vibodeCompositorAuth";
 
 export type VibodeRemoveResponse = {
   imageUrl: string;
@@ -40,12 +41,10 @@ export async function callCompositorVibodeRemove(args: {
     marks: args.marks.length,
   });
 
-  const headers: Record<string, string> = {
+  const headers = mergeVibodeCompositorAuth({
     "Content-Type": "application/json",
-  };
-  if (apiKey) {
-    headers["Authorization"] = `Bearer ${apiKey}`;
-  }
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  });
 
   const res = await fetch(endpoint, {
     method: "POST",

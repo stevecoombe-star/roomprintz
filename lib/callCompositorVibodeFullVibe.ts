@@ -1,3 +1,5 @@
+import { mergeVibodeCompositorAuth } from "./vibodeCompositorAuth";
+
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -44,12 +46,10 @@ export async function callCompositorVibodeFullVibe(args: {
   const endpoint = `${endpointBaseNormalized}/vibode/full_vibe`;
   const apiKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY;
 
-  const headers: Record<string, string> = {
+  const headers = mergeVibodeCompositorAuth({
     "Content-Type": "application/json",
-  };
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
-  }
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  });
 
   const res = await fetch(endpoint, {
     method: "POST",

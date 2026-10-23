@@ -16,6 +16,7 @@ import {
   resolveVibodeOperationIdFromHeaders,
   resolveVibodeRequestIdFromHeaders,
 } from "@/lib/vibodeCompositorContextHeaders";
+import { mergeVibodeCompositorAuth } from "@/lib/vibodeCompositorAuth";
 import { convertHeicBufferToJpeg, HeicConversionError } from "@/lib/heicServerConversion";
 import {
   isHeicLikeExtension,
@@ -444,7 +445,7 @@ export async function POST(req: NextRequest) {
 
     const upstreamRes = await fetch(upstream, {
       method: "POST",
-      headers: {
+      headers: mergeVibodeCompositorAuth({
         "Content-Type": "application/json",
         "X-Request-Id": requestId,
         [NORMALIZED_PREVIEW_BG_HEADER]: NORMALIZED_PREVIEW_BG_RGB.join(","),
@@ -460,7 +461,7 @@ export async function POST(req: NextRequest) {
           actionType: "user-sku-ingest",
           sourceTrigger: "user-sku-upload",
         }),
-      },
+      }),
       body: JSON.stringify({
         imageUrl: body.imageUrl,
         imageBase64: normalizedImageBase64,

@@ -1,3 +1,5 @@
+import { mergeVibodeCompositorAuth } from "./vibodeCompositorAuth";
+
 type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
 
 export type VibodeEligibleSku = {
@@ -31,7 +33,7 @@ export async function callCompositorVibodeVibe(args: {
 
   const res = await fetch(`${compositorBaseUrl}/vibode/vibe`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: mergeVibodeCompositorAuth({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       roomImageBase64: args.roomImageBase64,
       collectionId: args.collectionId ?? undefined,

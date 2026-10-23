@@ -10,9 +10,11 @@ import { CompositorTransportError } from "./compositorTransportError";
 function withEnvironment(callback: () => Promise<void>): Promise<void> {
   const originalUrl = process.env.ROOMPRINTZ_COMPOSITOR_URL;
   const originalKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY;
+  const originalAuth = process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
   const originalFetch = globalThis.fetch;
   process.env.ROOMPRINTZ_COMPOSITOR_URL = "https://compositor.example/stage-room";
   process.env.ROOMPRINTZ_COMPOSITOR_API_KEY = "secret";
+  delete process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
   return callback().finally(() => {
     if (originalUrl === undefined) {
       delete process.env.ROOMPRINTZ_COMPOSITOR_URL;
@@ -25,6 +27,8 @@ function withEnvironment(callback: () => Promise<void>): Promise<void> {
       process.env.ROOMPRINTZ_COMPOSITOR_API_KEY = originalKey;
     }
     globalThis.fetch = originalFetch;
+    if (originalAuth === undefined) delete process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
+    else process.env.VIBODE_COMPOSITOR_AUTH_SECRET = originalAuth;
   });
 }
 

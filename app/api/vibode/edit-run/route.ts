@@ -7,6 +7,7 @@ import {
   resolveVibodeOperationIdFromHeaders,
   resolveVibodeRequestIdFromHeaders,
 } from "@/lib/vibodeCompositorContextHeaders";
+import { mergeVibodeCompositorAuth } from "@/lib/vibodeCompositorAuth";
 import {
   finalizeVibodeOutputAsset,
   resolveVibodeOutputDimensions,
@@ -569,7 +570,8 @@ export async function POST(req: NextRequest) {
         workflowType,
         actionType,
         sourceTrigger,
-      })
+      }),
+      mergeVibodeCompositorAuth({})
     );
 
     const preCompositorCancellation = cancelledResponse();

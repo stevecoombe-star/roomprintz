@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { markPasteToPlaceJobCancelled } from "@/lib/pasteToPlaceJobRegistry";
+import { mergeVibodeCompositorAuth } from "@/lib/vibodeCompositorAuth";
 
 export const runtime = "nodejs";
 
@@ -68,8 +69,10 @@ export async function POST(req: NextRequest) {
         .replace(/\/$/, "");
       const compositorCancelEndpoint = `${endpointBaseNormalized}/api/vibode/paste-to-place/cancel`;
       const apiKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY;
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const headers = mergeVibodeCompositorAuth({
+        "Content-Type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      });
       void fetch(compositorCancelEndpoint, {
         method: "POST",
         headers,
