@@ -1,3 +1,5 @@
+import { mergeVibodeCompositorAuth } from "./vibodeCompositorAuth";
+
 type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
 
 export type VibodeComposePlacement = {
@@ -98,10 +100,10 @@ export async function callCompositorVibodeCompose(args: {
 
   const res = await fetch(endpoint, {
     method: "POST",
-    headers: {
+    headers: mergeVibodeCompositorAuth({
       "Content-Type": "application/json",
       ...(args.headers ?? {}),
-    },
+    }),
     body: JSON.stringify(payload),
     signal,
   });

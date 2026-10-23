@@ -8,6 +8,7 @@ import { callCompositorVibodeCompose } from "@/lib/callCompositorVibodeCompose";
 import { callCompositorVibodeRemove } from "@/lib/callCompositorVibodeRemove";
 import { callCompositorVibodeRotate } from "@/lib/callCompositorVibodeRotate";
 import { callCompositorVibodeVibe } from "@/lib/callCompositorVibodeVibe";
+import { mergeVibodeCompositorAuth } from "@/lib/vibodeCompositorAuth";
 import {
   chargeVibodeTokensForOperation,
   canAffordTokens,
@@ -1408,12 +1409,10 @@ async function callCompositorVibodeSwap(args: {
     replacementAssets: args.replacementAssets.length,
   });
 
-  const headers: Record<string, string> = {
+  const headers = mergeVibodeCompositorAuth({
     "Content-Type": "application/json",
-  };
-  if (apiKey) {
-    headers["Authorization"] = `Bearer ${apiKey}`;
-  }
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  });
 
   const res = await fetch(endpoint, {
     method: "POST",

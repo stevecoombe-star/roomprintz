@@ -1,4 +1,5 @@
 import type { FreezePayloadV2 } from "./freezePayloadV2Types";
+import { mergeVibodeCompositorAuth } from "./vibodeCompositorAuth";
 
 type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
 
@@ -40,12 +41,10 @@ export async function callCompositorVibodeRotate(
     marks: args.freezePayload?.vibodeIntent?.rotate?.marks?.length ?? 0,
   });
 
-  const headers: Record<string, string> = {
+  const headers = mergeVibodeCompositorAuth({
     "Content-Type": "application/json",
-  };
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
-  }
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  });
 
   const res = await fetch(endpoint, {
     method: "POST",

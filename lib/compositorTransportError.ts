@@ -1,5 +1,7 @@
 import "server-only";
 
+import { mergeVibodeCompositorAuth } from "./vibodeCompositorAuth";
+
 export type CompositorTransportSeam =
   | "tile-floor-reader"
   | "tiled-perspective-reader"
@@ -194,10 +196,12 @@ export async function callCompositorJson(args: {
     });
   }
 
-  const headers: Record<string, string> = { ...(args.headers ?? {}) };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
   const apiKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY?.trim();
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const headers = mergeVibodeCompositorAuth({
+    ...(args.headers ?? {}),
+    ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  });
 
   let response: Response;
   try {

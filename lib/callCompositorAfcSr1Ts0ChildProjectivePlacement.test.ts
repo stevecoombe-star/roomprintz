@@ -44,10 +44,12 @@ function withEnvironment(
 ): Promise<void> {
   const originalUrl = process.env.ROOMPRINTZ_COMPOSITOR_URL;
   const originalKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY;
+  const originalAuth = process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
   const originalFetch = globalThis.fetch;
   process.env.ROOMPRINTZ_COMPOSITOR_URL =
     "https://compositor.example/vibode/compose";
   process.env.ROOMPRINTZ_COMPOSITOR_API_KEY = "secret";
+  delete process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
   return callback().finally(() => {
     if (originalUrl === undefined) {
       delete process.env.ROOMPRINTZ_COMPOSITOR_URL;
@@ -60,6 +62,8 @@ function withEnvironment(
       process.env.ROOMPRINTZ_COMPOSITOR_API_KEY = originalKey;
     }
     globalThis.fetch = originalFetch;
+    if (originalAuth === undefined) delete process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
+    else process.env.VIBODE_COMPOSITOR_AUTH_SECRET = originalAuth;
   });
 }
 

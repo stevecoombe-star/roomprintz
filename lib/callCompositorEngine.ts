@@ -1,5 +1,7 @@
 // lib/callCompositorEngine.ts
 
+import { mergeVibodeCompositorAuth } from "./vibodeCompositorAuth";
+
 type ModelVersion = "gemini-3" | "gemini-2.5";
 type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
 
@@ -103,15 +105,11 @@ export async function callCompositorEngine({
     isContinuation,
   });
 
-  const headers: Record<string, string> = {
+  const headers = mergeVibodeCompositorAuth({
     "Content-Type": "application/json",
     ...extraHeaders,
-  };
-
-  // Optional shared secret for Railway / FastAPI
-  if (apiKey) {
-    headers["Authorization"] = `Bearer ${apiKey}`;
-  }
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  });
 
   const res = await fetch(endpoint, {
     method: "POST",
