@@ -223,7 +223,7 @@ test("Gemini API key environment variables still return not found", async () => 
   });
 });
 
-test("room-read drops Gemini references while the helper and existing callers stay unchanged", async () => {
+test("room-read stays an immediate 404 while the paid objects path may add a bytes entry point", async () => {
   const route = source(ROUTE_PATH);
   assert.equal(
     route,
@@ -238,9 +238,11 @@ test("room-read drops Gemini references while the helper and existing callers st
       "",
     ].join("\n"),
   );
+  assertUnchanged(ROUTE_PATH);
   assert.match(route, /export async function POST\(\)/);
   assert.match(route, /NextResponse\.json\(\{ error: "Not found\." \}, \{ status: 404 \}\)/);
   assert.doesNotMatch(route, /runGeminiRoomReadFromImageUrl/);
+  assert.doesNotMatch(route, /runGeminiRoomReadFromImageBytes/);
   assert.doesNotMatch(route, /vibodeGeminiRoomRead/);
   assert.doesNotMatch(route, /generativelanguage\.googleapis\.com/);
   assert.doesNotMatch(route, /generateContent/);
@@ -256,27 +258,29 @@ test("room-read drops Gemini references while the helper and existing callers st
   assert.equal(POST.toString().includes("fetch"), false);
 
   const helper = source(HELPER_PATH);
-  assertUnchanged(HELPER_PATH);
   assert.match(helper, /export async function runGeminiRoomReadFromImageUrl/);
+  assert.match(helper, /export async function runGeminiRoomReadFromImageBytes/);
   assert.match(helper, /generativelanguage\.googleapis\.com/);
 
   const objectsRoute = source(OBJECTS_ROUTE_PATH);
-  assertUnchanged(OBJECTS_ROUTE_PATH);
-  assert.match(
-    objectsRoute,
-    /import \{ runGeminiRoomReadFromImageUrl \} from "@\/lib\/vibodeGeminiRoomRead"/,
-  );
-  assert.match(objectsRoute, /await runGeminiRoomReadFromImageUrl\(/);
+  assert.match(objectsRoute, /runGeminiRoomReadFromImageBytes/);
+  assert.doesNotMatch(objectsRoute, /runGeminiRoomReadFromImageUrl/);
 
+  const allowedToChange = new Set([
+    HELPER_PATH,
+    OBJECTS_ROUTE_PATH,
+    ROUTE_TEST_PATH,
+    "lib/vibodeGeminiRoomRead.test.ts",
+    "app/api/vibode/room-image-objects/route.test.ts",
+  ]);
   const references: string[] = [];
   collectHelperReferences(ROOT, references);
   references.sort();
   assert.equal(references.includes(ROUTE_PATH), false);
   assert.equal(references.includes(HELPER_PATH), true);
-  assert.equal(references.includes(OBJECTS_ROUTE_PATH), true);
   assert.equal(references.includes(ROUTE_TEST_PATH), true);
   for (const reference of references) {
-    if (reference === ROUTE_TEST_PATH) continue;
+    if (allowedToChange.has(reference)) continue;
     assertUnchanged(reference);
   }
 });
