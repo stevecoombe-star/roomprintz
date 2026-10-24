@@ -2,17 +2,80 @@ import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { runGeminiRoomReadFromImageUrl } from "@/lib/vibodeGeminiRoomRead";
+import { runGeminiRoomReadFromImageBytes } from "@/lib/vibodeGeminiRoomRead";
 import { getRequestIdFromHeaders } from "@/lib/vibodeGeminiUsageAccounting";
-import { resolveRoomReadModelVersion } from "@/lib/vibodeRoomReadModelVersion";
 import type { DetectedRoomObjectLabel } from "@/lib/vibodeRoomObjectLabels";
+import {
+  detectRoomImage,
+  downloadSupabaseStorageObject,
+  isUuid,
+  parseRoomImageReadCompletion,
+  parseRoomImageReadReservation,
+  resolveOwnedRoomImageLocation,
+  sameUuid,
+  type CompletionDecision,
+  type ReservationDecision,
+  type StorageDownloadResult,
+} from "@/lib/vibodeRoomImageObjectSecurity";
 
 export const runtime = "nodejs";
 
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-
 type AnySupabaseClient = SupabaseClient;
+
+const ROOM_IMAGE_READ_OPERATION = "room_image_read";
+
+type OwnedAssetLoad =
+  | {
+      ok: true;
+      storageBucket: string | null;
+      storagePath: string | null;
+      imageUrl: string | null;
+    }
+  | { ok: false; reason: "not_found" | "unavailable" };
+
+export type RoomImageObjectsDependencies = {
+  authenticate(req: NextRequest): Promise<{ userId: string } | null>;
+  fetchCachedObjects(args: {
+    userId: string;
+    roomId: string | null;
+    assetId: string | null;
+    versionId: string | null;
+    imageHash: string | null;
+    source: string;
+  }): Promise<{ ok: true; rows: RoomImageObjectRow[] } | { ok: false }>;
+  loadOwnedAsset(args: { userId: string; roomId: string; assetId: string }): Promise<OwnedAssetLoad>;
+  reserve(args: {
+    userId: string;
+    roomId: string;
+    assetId: string;
+    mode: RoomReadMode;
+  }): Promise<ReservationDecision>;
+  complete(args: {
+    userId: string;
+    attemptId: string;
+    outcome: "succeeded" | "failed";
+  }): Promise<CompletionDecision>;
+  downloadOwnedImage(args: {
+    userId: string;
+    roomId: string;
+    bucket: string;
+    objectPath: string;
+  }): Promise<StorageDownloadResult>;
+  readRoom(args: {
+    imageBytes: Uint8Array;
+    mimeType: "image/jpeg" | "image/png" | "image/webp";
+    mode: RoomReadMode;
+    purpose: RoomImageObjectsPurpose;
+    userId: string;
+    roomId: string;
+    assetId: string;
+    versionId: string;
+    attemptId: string;
+    requestId: string;
+    sourceTrigger: string;
+  }): Promise<DetectedRoomObjectLabel[]>;
+  storeObjects(rows: RoomImageObjectUpsertRow[]): Promise<void>;
+};
 
 type RoomImageObjectRow = {
   label: string;
@@ -315,20 +378,47 @@ function resolveSourceTrigger(args: {
   return "unknown";
 }
 
+function supabaseBrowserEnv(): { url: string; anonKey: string } {
+  return {
+    url: process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+    anonKey: process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "",
+  };
+}
+
+function supabaseServiceEnv(): { url: string; serviceRoleKey: string } {
+  return {
+    url: process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "",
+  };
+}
+
 function getUserSupabaseClient(
   req: NextRequest
 ): { supabase: AnySupabaseClient | null; token: string | null } {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return { supabase: null, token: null };
+  const { url, anonKey } = supabaseBrowserEnv();
+  if (!url || !anonKey) return { supabase: null, token: null };
   const authHeader = req.headers.get("authorization") || "";
   const token = authHeader.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
     : null;
   if (!token) return { supabase: null, token: null };
-  const supabase: AnySupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const supabase: AnySupabaseClient = createClient(url, anonKey, {
     global: { headers: { Authorization: `Bearer ${token}` } },
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
   return { supabase, token };
+}
+
+function createServiceRoleClient(): AnySupabaseClient | null {
+  const { url, serviceRoleKey } = supabaseServiceEnv();
+  if (!url || !serviceRoleKey) return null;
+  return createClient(url, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+}
+
+function logProviderDiagnostic(event: string, fields: Record<string, string | number | boolean | null>): void {
+  console.warn("[room-image-objects]", { event, ...fields });
 }
 
 function hashImageIdentity(value: string | null): string | null {
@@ -337,28 +427,40 @@ function hashImageIdentity(value: string | null): string | null {
 }
 
 export async function POST(req: NextRequest) {
-  try {
-    const { supabase, token } = getUserSupabaseClient(req);
-    if (!supabase || !token) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const { data: userData, error: userErr } = await supabase.auth.getUser();
-    if (userErr || !userData?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const userId = userData.user.id;
+  return handleRoomImageObjectsRequest(req, createProductionRoomImageObjectsDependencies());
+}
 
-    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+export async function handleRoomImageObjectsRequest(
+  req: NextRequest,
+  deps: RoomImageObjectsDependencies,
+) {
+  try {
+    const auth = await deps.authenticate(req);
+    if (!auth) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const userId = auth.userId;
+
+    let body: Record<string, unknown>;
+    try {
+      const parsed: unknown = await req.json();
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return NextResponse.json({ error: "Invalid request." }, { status: 400 });
+      }
+      body = parsed as Record<string, unknown>;
+    } catch {
+      return NextResponse.json({ error: "Invalid request." }, { status: 400 });
+    }
     const roomId = safeStr(body.roomId) ?? safeStr(body.vibodeRoomId);
     const assetId = safeStr(body.assetId);
-    const versionId = safeStr(body.versionId) ?? assetId;
+    const suppliedVersionId = safeStr(body.versionId);
+    const versionId = suppliedVersionId ?? assetId;
     const imageUrl = safeStr(body.imageUrl);
     const imageHash = safeStr(body.imageHash) ?? hashImageIdentity(imageUrl);
     const hasVersionIdentity = Boolean(roomId || assetId || versionId);
     const effectiveImageHash = hasVersionIdentity
       ? hashImageIdentity(`${roomId ?? ""}|${assetId ?? ""}|${versionId ?? ""}`)
       : imageHash;
-    const modelVersion = resolveRoomReadModelVersion(body.modelVersion);
     const allowRoomReadOnMiss = body.allowRoomReadOnMiss === true;
     const mode = parseRoomReadMode(body.mode);
     const requestId = getRequestIdFromHeaders(req.headers, "room-image-objects");
@@ -398,24 +500,20 @@ export async function POST(req: NextRequest) {
       identityHash: effectiveImageHash?.slice(0, 12) ?? null,
     });
 
-    let query = supabase
-      .from("room_image_objects")
-      .select("label, confidence, center_x, center_y, bbox")
-      .eq("user_id", userId)
-      .eq("source", source);
-
-    if (roomId) query = query.eq("room_id", roomId);
-    if (assetId) query = query.eq("asset_id", assetId);
-    if (versionId) query = query.eq("version_id", versionId);
-    if (effectiveImageHash) query = query.eq("image_hash", effectiveImageHash);
-
-    const { data: existingRows, error: fetchError } = await query;
-    if (fetchError) {
-      console.warn("[room-image-objects] fetch failed", { message: fetchError.message });
+    const cached = await deps.fetchCachedObjects({
+      userId,
+      roomId,
+      assetId,
+      versionId,
+      imageHash: effectiveImageHash,
+      source,
+    });
+    if (!cached.ok) {
+      console.warn("[room-image-objects] fetch failed", { reason: "cache_read" });
       return NextResponse.json({ error: "Failed to fetch room image objects." }, { status: 500 });
     }
 
-    const storedObjects = normalizeStoredObjects((existingRows ?? []) as RoomImageObjectRow[]);
+    const storedObjects = normalizeStoredObjects(cached.rows);
     const normalizedExisting = normalizeObjects(storedObjects);
     let geometryLookupDecision:
       | "reused persisted geometry"
@@ -526,51 +624,124 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ objects: [] as DetectedRoomObjectLabel[] });
     }
 
-    if (!imageUrl) {
-      console.log("[room-image-objects] cache miss and no image URL", {
-        roomId,
-        assetId,
-        versionId,
+    const authorized = resolveProviderIdentity({ roomId, assetId, suppliedVersionId });
+    if (!authorized) {
+      logProviderDiagnostic("provider_denied", { reason: "identity", purpose, mode });
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const owned = await deps.loadOwnedAsset({
+      userId,
+      roomId: authorized.roomId,
+      assetId: authorized.assetId,
+    });
+    if (!owned.ok) {
+      if (owned.reason === "unavailable") {
+        logProviderDiagnostic("provider_denied", { reason: "ownership_unavailable", purpose, mode });
+        return NextResponse.json({ error: "Room image object retrieval failed." }, { status: 503 });
+      }
+      logProviderDiagnostic("provider_denied", { reason: "ownership", purpose, mode });
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const location = resolveOwnedRoomImageLocation({
+      userId,
+      roomId: authorized.roomId,
+      storageBucket: owned.storageBucket,
+      storagePath: owned.storagePath,
+      imageUrl: owned.imageUrl,
+      supabaseUrl: supabaseBrowserEnv().url,
+    });
+    if (!location) {
+      console.log("[room-image-objects] cache miss and no authorized image", {
+        roomId: authorized.roomId,
+        assetId: authorized.assetId,
+        versionId: authorized.versionId,
         purpose,
       });
       return NextResponse.json({ objects: [] as DetectedRoomObjectLabel[] });
     }
 
+    const downloaded = await deps.downloadOwnedImage({
+      userId,
+      roomId: authorized.roomId,
+      bucket: location.bucket,
+      objectPath: location.objectPath,
+    });
+    if (!downloaded.ok) {
+      logProviderDiagnostic("image_rejected", { reason: downloaded.reason, purpose, mode });
+      if (downloaded.reason === "not_found") {
+        return NextResponse.json({ objects: [] as DetectedRoomObjectLabel[] });
+      }
+      if (downloaded.reason === "unavailable") {
+        return NextResponse.json({ error: "Room image object retrieval failed." }, { status: 503 });
+      }
+      return NextResponse.json({ error: "Invalid image." }, { status: 400 });
+    }
+    const detected = detectRoomImage(downloaded.bytes, downloaded.contentType);
+    if (!detected.ok) {
+      logProviderDiagnostic("image_rejected", { reason: detected.reason, purpose, mode });
+      return NextResponse.json({ error: "Invalid image." }, { status: 400 });
+    }
+
+    const reservation = await deps.reserve({
+      userId,
+      roomId: authorized.roomId,
+      assetId: authorized.assetId,
+      mode,
+    });
+    if (reservation.status === "busy" || reservation.status === "quota") {
+      logProviderDiagnostic("reservation_rejected", { reason: reservation.status, purpose, mode });
+      return NextResponse.json({ error: "Too many requests." }, { status: 429 });
+    }
+    if (reservation.status === "forbidden") {
+      logProviderDiagnostic("reservation_rejected", { reason: "forbidden", purpose, mode });
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+    if (reservation.status !== "reserved") {
+      logProviderDiagnostic("reservation_rejected", { reason: reservation.status, purpose, mode });
+      return NextResponse.json({ error: "Room image object retrieval failed." }, { status: 503 });
+    }
+
     console.log("[room-image-objects] cache miss / running room-read", {
-      roomId,
-      assetId,
-      versionId,
-      modelVersion,
+      roomId: authorized.roomId,
+      assetId: authorized.assetId,
+      versionId: authorized.versionId,
       purpose,
+      mode,
+      bucket: location.bucket,
     });
 
-    const roomReadObjects = await runGeminiRoomReadFromImageUrl({
-      imageUrl,
-      modelVersion,
+    let providerOutcome: "succeeded" | "failed" = "failed";
+    try {
+    const roomReadObjects = await deps.readRoom({
+      imageBytes: downloaded.bytes,
+      mimeType: detected.mime,
       mode,
       purpose,
-      accounting: {
-        requestId,
-        route: "/api/vibode/room-image-objects",
-        sourceTrigger,
-        workflowType: "room-read",
-        actionType: "room-image-objects",
-        userId,
-        roomId: roomId ?? null,
-        versionId: versionId ?? null,
-        assetId: assetId ?? null,
-      },
+      userId,
+      roomId: authorized.roomId,
+      assetId: authorized.assetId,
+      versionId: authorized.versionId,
+      attemptId: reservation.attemptId,
+      requestId,
+      sourceTrigger,
     });
+    providerOutcome = "succeeded";
     const normalizedRoomReadObjects = normalizeFreshRoomReadObjects(mode, roomReadObjects);
     const normalizedGeometryCount = countGeometryObjects(normalizedRoomReadObjects);
+    const authorizedImageHash = hashImageIdentity(
+      `${authorized.roomId}|${authorized.assetId}|${authorized.versionId}`,
+    );
     if (normalizedRoomReadObjects.length > 0) {
       const rowsToInsertRaw: RoomImageObjectUpsertRow[] = normalizedRoomReadObjects.map((item) => ({
         user_id: userId,
-        room_id: roomId ?? null,
-        asset_id: assetId ?? null,
-        version_id: versionId ?? null,
-        image_url: imageUrl ?? null,
-        image_hash: effectiveImageHash,
+        room_id: authorized.roomId,
+        asset_id: authorized.assetId,
+        version_id: authorized.versionId,
+        // image_url is nullable and is not part of the conflict key. Never store a signed URL.
+        image_url: null,
+        image_hash: authorizedImageHash,
         label: item.label,
         confidence: item.confidence,
         center_x: typeof item.centerX === "number" && Number.isFinite(item.centerX) ? item.centerX : null,
@@ -603,12 +774,14 @@ export async function POST(req: NextRequest) {
           geometryCountAfter: deduped.geometryCountAfter,
         });
       }
-      const { error: insertError } = await supabase.from("room_image_objects").upsert(rowsToInsert, {
-        onConflict: "user_id,room_id,asset_id,version_id,image_hash,label,source",
-      });
-      if (insertError) {
-        console.warn("[room-image-objects] store failed", { message: insertError.message });
-      } else {
+      let stored = false;
+      try {
+        await deps.storeObjects(rowsToInsert);
+        stored = true;
+      } catch {
+        console.warn("[room-image-objects] store failed", { reason: "upsert" });
+      }
+      if (stored) {
         console.log("[room-image-objects] stored labels", {
           count: rowsToInsert.length,
           geometryCount: normalizedGeometryCount,
@@ -642,9 +815,214 @@ export async function POST(req: NextRequest) {
       labels: normalizedRoomReadObjects.map((item) => item.label),
     });
     return NextResponse.json({ objects: normalizedRoomReadObjects });
+    } finally {
+      try {
+        const completed = await deps.complete({
+          userId,
+          attemptId: reservation.attemptId,
+          outcome: providerOutcome,
+        });
+        if (completed.status !== "completed" && completed.status !== "already_terminal") {
+          logProviderDiagnostic("completion_failed", { reason: completed.status, purpose, mode });
+        }
+      } catch {
+        logProviderDiagnostic("completion_failed", { reason: "exception", purpose, mode });
+      }
+    }
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn("[room-image-objects] failed", { message });
-    return NextResponse.json({ error: "Room image object retrieval failed.", message }, { status: 500 });
+    console.warn("[room-image-objects] failed", { reason: safeErrorCode(err) });
+    return NextResponse.json({ error: "Room image object retrieval failed." }, { status: 500 });
   }
+}
+
+function safeErrorCode(err: unknown): string {
+  if (err && typeof err === "object") {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === "string" && /^[A-Za-z0-9_]{1,40}$/.test(code)) return code;
+  }
+  if (err instanceof Error && /^[A-Za-z][A-Za-z0-9_]*$/.test(err.name)) return err.name;
+  return "unknown";
+}
+
+function resolveProviderIdentity(args: {
+  roomId: string | null;
+  assetId: string | null;
+  suppliedVersionId: string | null;
+}): { roomId: string; assetId: string; versionId: string } | null {
+  if (!args.roomId || !args.assetId) return null;
+  if (!isUuid(args.roomId) || !isUuid(args.assetId)) return null;
+  if (args.suppliedVersionId !== null && args.suppliedVersionId !== args.assetId) return null;
+  return { roomId: args.roomId, assetId: args.assetId, versionId: args.assetId };
+}
+
+export async function readAuthorizedRoomImage(args: {
+  imageBytes: Uint8Array;
+  mimeType: "image/jpeg" | "image/png" | "image/webp";
+  mode: RoomReadMode;
+  purpose: RoomImageObjectsPurpose;
+  userId: string;
+  roomId: string;
+  assetId: string;
+  versionId: string;
+  attemptId: string;
+  requestId: string;
+  sourceTrigger: string;
+}): Promise<DetectedRoomObjectLabel[]> {
+  return runGeminiRoomReadFromImageBytes({
+    imageBytes: args.imageBytes,
+    mimeType: args.mimeType,
+    mode: args.mode,
+    purpose: args.purpose,
+    accounting: {
+      requestId: args.requestId,
+      attemptId: args.attemptId,
+      route: "/api/vibode/room-image-objects",
+      sourceTrigger: args.sourceTrigger,
+      workflowType: "room-read",
+      actionType: "room-image-objects",
+      userId: args.userId,
+      roomId: args.roomId,
+      versionId: args.versionId,
+      assetId: args.assetId,
+    },
+  });
+}
+
+function createProductionRoomImageObjectsDependencies(): RoomImageObjectsDependencies {
+  let userClient: AnySupabaseClient | null = null;
+  return {
+    async authenticate(req) {
+      try {
+        const { supabase, token } = getUserSupabaseClient(req);
+        if (!supabase || !token) return null;
+        userClient = supabase;
+        const { data, error } = await supabase.auth.getUser();
+        if (error || !data.user?.id || !isUuid(data.user.id)) return null;
+        return { userId: data.user.id };
+      } catch {
+        logProviderDiagnostic("auth_failed", { reason: "exception" });
+        return null;
+      }
+    },
+    async fetchCachedObjects(args) {
+      if (!userClient) return { ok: false };
+      let query = userClient
+        .from("room_image_objects")
+        .select("label, confidence, center_x, center_y, bbox")
+        .eq("user_id", args.userId)
+        .eq("source", args.source);
+      if (args.roomId) query = query.eq("room_id", args.roomId);
+      if (args.assetId) query = query.eq("asset_id", args.assetId);
+      if (args.versionId) query = query.eq("version_id", args.versionId);
+      if (args.imageHash) query = query.eq("image_hash", args.imageHash);
+      const { data, error } = await query;
+      if (error) return { ok: false };
+      return { ok: true, rows: (data ?? []) as RoomImageObjectRow[] };
+    },
+    async loadOwnedAsset(args) {
+      const admin = createServiceRoleClient();
+      if (!admin) return { ok: false, reason: "unavailable" };
+      try {
+        const room = await admin
+          .from("vibode_rooms")
+          .select("id,user_id")
+          .eq("id", args.roomId)
+          .eq("user_id", args.userId)
+          .maybeSingle();
+        if (room.error) return { ok: false, reason: "unavailable" };
+        if (
+          !room.data ||
+          !sameUuid(String(room.data.id), args.roomId) ||
+          !sameUuid(String(room.data.user_id), args.userId)
+        ) {
+          return { ok: false, reason: "not_found" };
+        }
+        const asset = await admin
+          .from("vibode_room_assets")
+          .select("id,room_id,user_id,storage_bucket,storage_path,image_url")
+          .eq("id", args.assetId)
+          .eq("room_id", args.roomId)
+          .eq("user_id", args.userId)
+          .maybeSingle();
+        if (asset.error) return { ok: false, reason: "unavailable" };
+        if (
+          !asset.data ||
+          !sameUuid(String(asset.data.id), args.assetId) ||
+          !sameUuid(String(asset.data.room_id), args.roomId) ||
+          !sameUuid(String(asset.data.user_id), args.userId)
+        ) {
+          return { ok: false, reason: "not_found" };
+        }
+        return {
+          ok: true,
+          storageBucket: typeof asset.data.storage_bucket === "string" ? asset.data.storage_bucket : null,
+          storagePath: typeof asset.data.storage_path === "string" ? asset.data.storage_path : null,
+          imageUrl: typeof asset.data.image_url === "string" ? asset.data.image_url : null,
+        };
+      } catch {
+        return { ok: false, reason: "unavailable" };
+      }
+    },
+    async reserve(args) {
+      const admin = createServiceRoleClient();
+      if (!admin) return { status: "unavailable" };
+      try {
+        const { data, error } = await admin.rpc("reserve_vibode_room_image_read", {
+          p_user_id: args.userId,
+          p_room_id: args.roomId,
+          p_asset_id: args.assetId,
+          p_mode: args.mode,
+          p_operation: ROOM_IMAGE_READ_OPERATION,
+        });
+        if (error) {
+          const code =
+            typeof error.code === "string" && /^[A-Za-z0-9_]{1,40}$/.test(error.code) ? error.code : "rpc_error";
+          logProviderDiagnostic("reservation_failed", { reason: code });
+          return { status: "unavailable" };
+        }
+        const parsed = parseRoomImageReadReservation(data);
+        if (parsed.status === "unavailable") {
+          logProviderDiagnostic("reservation_failed", { reason: "invalid_result" });
+        }
+        return parsed;
+      } catch {
+        logProviderDiagnostic("reservation_failed", { reason: "exception" });
+        return { status: "unavailable" };
+      }
+    },
+    async complete(args) {
+      const admin = createServiceRoleClient();
+      if (!admin) return { status: "unavailable" };
+      try {
+        const { data, error } = await admin.rpc("complete_vibode_room_image_read", {
+          p_user_id: args.userId,
+          p_attempt_id: args.attemptId,
+          p_outcome: args.outcome,
+        });
+        if (error) return { status: "unavailable" };
+        return parseRoomImageReadCompletion(data);
+      } catch {
+        return { status: "unavailable" };
+      }
+    },
+    async downloadOwnedImage(args) {
+      const { url, serviceRoleKey } = supabaseServiceEnv();
+      return downloadSupabaseStorageObject({
+        supabaseUrl: url,
+        serviceRoleKey,
+        bucket: args.bucket,
+        objectPath: args.objectPath,
+        userId: args.userId,
+        roomId: args.roomId,
+      });
+    },
+    readRoom: readAuthorizedRoomImage,
+    async storeObjects(rows) {
+      if (!userClient) throw new Error("store_unavailable");
+      const { error } = await userClient.from("room_image_objects").upsert(rows, {
+        onConflict: "user_id,room_id,asset_id,version_id,image_hash,label,source",
+      });
+      if (error) throw new Error("store_failed");
+    },
+  };
 }

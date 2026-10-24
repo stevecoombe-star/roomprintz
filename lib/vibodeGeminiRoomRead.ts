@@ -1,5 +1,8 @@
 import { normalizeDetectedRoomObjectLabels } from "@/lib/vibodeRoomObjectLabels";
 import { withGeminiUsageAccounting } from "@/lib/vibodeGeminiUsageAccounting";
+import { detectRoomImage } from "@/lib/vibodeRoomImageObjectSecurity";
+
+const APPROVED_ROOM_IMAGE_READ_MODEL = "gemini-3-flash-preview";
 
 const ROOM_READ_LABELS_ONLY_PROMPT = `Analyze this room photo for visible furniture and decor items.
 
@@ -165,33 +168,42 @@ async function callGeminiRoomRead(args: {
       },
     },
     async () => {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [
-                { text: args.prompt },
-                {
-                  inlineData: {
-                    mimeType: args.mime,
-                    data: args.imageBase64,
+      let res: Response;
+      try {
+        res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  { text: args.prompt },
+                  {
+                    inlineData: {
+                      mimeType: args.mime,
+                      data: args.imageBase64,
+                    },
                   },
-                },
-              ],
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: "application/json",
             },
-          ],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: "application/json",
-          },
-        }),
-      });
+          }),
+        });
+      } catch {
+        const error = new Error("Gemini room-read request failed.") as Error & {
+          code?: string;
+        };
+        error.code = "GEMINI_REQUEST_FAILED";
+        throw error;
+      }
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        const error = new Error(`Gemini room-read failed (${res.status}): ${text}`) as Error & {
+        await res.body?.cancel().catch(() => undefined);
+        const error = new Error("Gemini room-read failed.") as Error & {
           code?: string;
           status?: number;
         };
@@ -233,6 +245,51 @@ export async function runGeminiRoomReadFromImageUrl(args: {
     imageBase64: base64,
     prompt: mode === "geometry" ? ROOM_READ_GEOMETRY_PROMPT : ROOM_READ_LABELS_ONLY_PROMPT,
     modelVersion,
+    promptKind: mode === "geometry" ? "room_read_geometry" : "room_read_labels_only",
+    mode,
+    purpose: args.purpose ?? null,
+    accounting: args.accounting,
+  });
+  const text = extractResponseText(rawPayload);
+  const parsed = text ? parseJsonFromText(text) : rawPayload;
+  return normalizeDetectedRoomObjectLabels(parsed, mode);
+}
+
+type RoomReadAccounting = {
+  requestId?: string | null;
+  operationId?: string | null;
+  attemptId?: string | null;
+  retryOfAttemptId?: string | null;
+  isRetry?: boolean;
+  route?: string | null;
+  sourceTrigger?: string | null;
+  workflowType?: string | null;
+  actionType?: string | null;
+  userId?: string | null;
+  roomId?: string | null;
+  versionId?: string | null;
+  assetId?: string | null;
+};
+
+export async function runGeminiRoomReadFromImageBytes(args: {
+  imageBytes: Uint8Array;
+  mimeType: string;
+  mode?: "labels_only" | "geometry";
+  purpose?: string | null;
+  accounting?: RoomReadAccounting;
+}) {
+  const detected = detectRoomImage(args.imageBytes, args.mimeType);
+  if (!detected.ok) {
+    const error = new Error("Room image rejected.") as Error & { code?: string };
+    error.code = "INVALID_ROOM_IMAGE";
+    throw error;
+  }
+  const mode = args.mode === "geometry" ? "geometry" : "labels_only";
+  const rawPayload = await callGeminiRoomRead({
+    mime: detected.mime,
+    imageBase64: Buffer.from(args.imageBytes).toString("base64"),
+    prompt: mode === "geometry" ? ROOM_READ_GEOMETRY_PROMPT : ROOM_READ_LABELS_ONLY_PROMPT,
+    modelVersion: APPROVED_ROOM_IMAGE_READ_MODEL,
     promptKind: mode === "geometry" ? "room_read_geometry" : "room_read_labels_only",
     mode,
     purpose: args.purpose ?? null,
