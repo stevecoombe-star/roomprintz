@@ -17,6 +17,7 @@ import {
   type RemoveMaskHold,
   type RemoveMaskSummary,
 } from "@/components/stage/RemoveBrushCanvas";
+import { RemoveCleanupAdminGate } from "@/components/stage/RemoveCleanupAdminGate";
 import { RemoveCleanupGeneration } from "@/components/stage/RemoveCleanupGeneration";
 import { RemoveObjectOutlines } from "@/components/stage/RemoveObjectOutlines";
 import {
@@ -54,6 +55,7 @@ import {
   type RemoveBrushTool,
   type RemoveSessionMode,
 } from "@/lib/vibode-stage/remove-mask";
+import { readCleanupAdminAccess } from "@/lib/vibode-stage/remove-cleanup-admin-access";
 import {
   REMOVE_CLEANUP_EXCLUSION_COPY,
   beginRemoveCleanupDownload,
@@ -136,6 +138,7 @@ type RemoveAlignmentContextValue = Readonly<{
   setObjectOutlinesVisible: (visible: boolean) => void;
   setObjectProtection: (enabled: boolean) => void;
   objectUi: RemoveObjectUiState;
+  cleanupAdmin: boolean;
   cleanupPhase: RemoveCleanupUiState["phase"];
   cleanupError: string | null;
   cleanupAvailable: boolean;
@@ -198,10 +201,20 @@ export function RemoveAlignmentProvider({
   const maskHoldRef = useRef<RemoveMaskHold | null>(null);
   const [objectUi, setObjectUi] = useState<RemoveObjectUiState>(initialRemoveObjectUiState());
   const objectUiRef = useRef(objectUi);
+  const [cleanupAdmin, setCleanupAdmin] = useState(false);
   const [cleanupUi, setCleanupUi] = useState<RemoveCleanupUiState>(initialRemoveCleanupUiState());
   const [cleanupSnapshot, setCleanupSnapshot] = useState<RemoveCleanupSnapshotObject[]>([]);
   const [cleanupController, setCleanupController] = useState<AbortController | null>(null);
   const cleanupClaimRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    void readCleanupAdminAccess().then((confirmed) => {
+      if (!cancelled) setCleanupAdmin(confirmed === true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const loadRef = useRef<null | {
     key: string;
     serial: number;
@@ -761,6 +774,7 @@ export function RemoveAlignmentProvider({
     setObjectOutlinesVisible,
     setObjectProtection,
     objectUi,
+    cleanupAdmin,
     cleanupPhase: cleanupUi.phase,
     cleanupError: cleanupUi.error,
     cleanupAvailable: removeCleanupExportAvailability({
@@ -790,6 +804,7 @@ export function RemoveAlignmentProvider({
   }), [
     brushAdmission,
     cancelCleanupExport,
+    cleanupAdmin,
     cleanupSnapshot,
     cleanupUi,
     clearMask,
@@ -1190,6 +1205,7 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
           Show All
         </ModeButton>
       </div>
+      <RemoveCleanupAdminGate confirmed={session.cleanupAdmin}>
       <div className="mt-3" data-remove-cleanup="panel">
         {session.cleanupPhase === "idle" ? (
           <button
@@ -1250,6 +1266,7 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
           onHistoryAccepted={session.onCleanupHistoryAccepted}
         />
       </div>
+      </RemoveCleanupAdminGate>
       <div data-remove-objects="expansion">
         <BrushSlider
           label="Mask Expansion"

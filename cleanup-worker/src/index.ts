@@ -1,4 +1,5 @@
 import { executeCleanupClaim, type CleanupGenerate } from "@/lib/vibode-stage/remove-cleanup-jobs/execute";
+import { authorizeCleanupWorkerClaim } from "@/lib/vibode-stage/remove-cleanup-jobs/worker-auth";
 import {
   removeCleanupNbpOutputConfig,
   requestRemoveCleanupNbpCandidate,
@@ -67,7 +68,14 @@ async function main(): Promise<void> {
   });
   log("worker_started", { provider: mode });
   await runCleanupWorker({
-    once: () => executeCleanupClaim({ control, generate }),
+    once: () => executeCleanupClaim({
+      control,
+      generate,
+      authorizeClaim: (claimed) => authorizeCleanupWorkerClaim(
+        (userId) => client.auth.admin.getUserById(userId),
+        claimed.userId,
+      ),
+    }),
     pollIntervalMs: 2000,
     shouldStop: () => stop,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

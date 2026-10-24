@@ -283,6 +283,7 @@ test("non-admin, wrong owner, stale generation, and foreign candidate access are
   });
   const image = await jpeg(1800, 1200);
   const ran = await executeCleanupClaim({
+    authorizeClaim: async () => true,
     control: live.runtime,
     heartbeatIntervalMs: 60_000,
     generate: async ({ snapshot: frozen, signal }) => requestRemoveCleanupNbpCandidate({
@@ -365,6 +366,7 @@ test("hash mismatch fails before contact and a pre-contact interruption can run 
   await box.artifacts.put(job.originalPath, Uint8Array.of(1, 2, 3, 4), "image/png");
   let posts = 0;
   const failed = await executeCleanupClaim({
+    authorizeClaim: async () => true,
     control: box.runtime,
     heartbeatIntervalMs: 60_000,
     generate: async () => {
@@ -387,6 +389,7 @@ test("hash mismatch fails before contact and a pre-contact interruption can run 
   assert.ok(stored);
   await retry.artifacts.remove([stored.originalPath]);
   const interrupted = await executeCleanupClaim({
+    authorizeClaim: async () => true,
     control: retry.runtime,
     heartbeatIntervalMs: 60_000,
     generate: async () => {
@@ -400,6 +403,7 @@ test("hash mismatch fails before contact and a pre-contact interruption can run 
   retry.advance(20_000);
   const image = await jpeg(1800, 1200);
   const finished = await executeCleanupClaim({
+    authorizeClaim: async () => true,
     control: retry.runtime,
     heartbeatIntervalMs: 60_000,
     generate: ({ snapshot: frozen, signal }) => requestRemoveCleanupNbpCandidate({
@@ -431,6 +435,7 @@ test("one contacted job never receives a second POST, and a stored candidate can
   });
   let calls = 0;
   const uncertain = await executeCleanupClaim({
+    authorizeClaim: async () => true,
     control: box.runtime,
     heartbeatIntervalMs: 60_000,
     generate: async () => {
@@ -457,6 +462,7 @@ test("one contacted job never receives a second POST, and a stored candidate can
   assert.ok(job);
   await box.artifacts.put(`rooms/${job.roomId}/jobs/${job.id}/candidate.jpg`, image, "image/jpeg");
   const recovered = await executeCleanupClaim({
+    authorizeClaim: async () => true,
     control: box.runtime,
     heartbeatIntervalMs: 60_000,
     generate: async () => {
@@ -483,6 +489,7 @@ test("daily ceilings, one running job, and discard do not create another provide
     assert.equal(queued.status, 200, String(index));
     const image = await jpeg(1800, 1200);
     const done = await executeCleanupClaim({
+      authorizeClaim: async () => true,
       control: box.runtime,
       heartbeatIntervalMs: 60_000,
       generate: ({ snapshot: frozen, signal }) => requestRemoveCleanupNbpCandidate({
@@ -571,6 +578,7 @@ test("daily ceilings, one running job, and discard do not create another provide
   assert.equal(discardedBody.job.status, "discarded");
   let posts = 0;
   const idle = await executeCleanupClaim({
+    authorizeClaim: async () => true,
     control: discardBox.runtime,
     heartbeatIntervalMs: 60_000,
     generate: async () => {
@@ -612,6 +620,7 @@ test("a provider refusal is terminal and is not posted again", async () => {
   });
   let posts = 0;
   const refused = await executeCleanupClaim({
+    authorizeClaim: async () => true,
     control: box.runtime,
     heartbeatIntervalMs: 60_000,
     generate: ({ snapshot: frozen, signal }) => {
@@ -639,6 +648,7 @@ test("a provider refusal is terminal and is not posted again", async () => {
   assert.equal(posts, 1);
   assert.equal(box.runtime.database.jobs[0]?.failureCode, "provider_rejected");
   const again = await executeCleanupClaim({
+    authorizeClaim: async () => true,
     control: box.runtime,
     heartbeatIntervalMs: 60_000,
     generate: async () => {

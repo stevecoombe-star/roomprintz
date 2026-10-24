@@ -36,6 +36,8 @@ export type CleanupGenerate = (input: Readonly<{
 export async function executeCleanupClaim(input: Readonly<{
   control: CleanupControl;
   generate: CleanupGenerate;
+  /** Required worker gate. Denial fails the claim before provider contact. */
+  authorizeClaim: (claim: CleanupClaim) => Promise<boolean>;
   heartbeatIntervalMs?: number;
 }>): Promise<CleanupExecuteResult> {
   const recovered = await recoverStoredCandidate(input.control);
@@ -57,6 +59,14 @@ export async function executeCleanupClaim(input: Readonly<{
   try {
     if (!(await input.control.heartbeat(claim.jobId, claim.claimNonce))) {
       return { outcome: "stale", code: "stale_claim", jobId: claim.jobId, posts };
+    }
+    if (!(await cleanupClaimAuthorized(input.authorizeClaim, claim))) {
+      await input.control.fail(claim.jobId, claim.claimNonce, {
+        code: "unauthorized",
+        message: "Clean Up is not authorized.",
+        retryable: false,
+      });
+      return { outcome: "failed", code: "unauthorized", jobId: claim.jobId, posts };
     }
     const ready = await readFrozenInputs(input.control, claim);
     if (!ready.ok) {
@@ -171,6 +181,17 @@ export async function recoverStoredCandidate(control: CleanupControl): Promise<C
     if (settled.ok) return { outcome: "recovered", code: settled.code, jobId: job.id, posts: 0 };
   }
   return null;
+}
+
+async function cleanupClaimAuthorized(
+  authorize: (claim: CleanupClaim) => Promise<boolean>,
+  claim: CleanupClaim,
+): Promise<boolean> {
+  try {
+    return await authorize(claim) === true;
+  } catch {
+    return false;
+  }
 }
 
 async function readFrozenInputs(
