@@ -14,10 +14,12 @@ const TEST_PATH = "/api/research/afc-sr1/tile-floor-vanishing-line";
 function withEnvironment(callback: () => Promise<void>): Promise<void> {
   const originalUrl = process.env.ROOMPRINTZ_COMPOSITOR_URL;
   const originalKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY;
+  const originalAuth = process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
   const originalFetch = globalThis.fetch;
   process.env.ROOMPRINTZ_COMPOSITOR_URL =
     "http://127.0.0.1:8123/vibode/compose";
   process.env.ROOMPRINTZ_COMPOSITOR_API_KEY = "super-secret-token";
+  process.env.VIBODE_COMPOSITOR_AUTH_SECRET = "offline-transport-auth";
   return callback().finally(() => {
     if (originalUrl === undefined) {
       delete process.env.ROOMPRINTZ_COMPOSITOR_URL;
@@ -29,6 +31,8 @@ function withEnvironment(callback: () => Promise<void>): Promise<void> {
     } else {
       process.env.ROOMPRINTZ_COMPOSITOR_API_KEY = originalKey;
     }
+    if (originalAuth === undefined) delete process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
+    else process.env.VIBODE_COMPOSITOR_AUTH_SECRET = originalAuth;
     globalThis.fetch = originalFetch;
   });
 }
@@ -78,7 +82,10 @@ test("HTTP statuses map to closed transport classes without response leakage", a
         status
       );
       const serialized = JSON.stringify(toCompositorTransportDiagnostic(error));
-      assert.doesNotMatch(serialized, /super-secret-token|imageBase64|provider-payload/);
+      assert.doesNotMatch(
+        serialized,
+        /super-secret-token|offline-transport-auth|imageBase64|provider-payload/
+      );
       assert.deepEqual(error.endpoint, {
         host: "127.0.0.1",
         port: "8123",

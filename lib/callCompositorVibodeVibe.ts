@@ -22,18 +22,28 @@ export async function callCompositorVibodeVibe(args: {
   modelVersion?: string | null;
   aspectRatio?: AspectRatio | string | null;
 }) {
-  const compositorBaseUrl =
-    process.env.COMPOSITOR_URL ||
-    process.env.NEXT_PUBLIC_COMPOSITOR_URL ||
-    (process.env.NODE_ENV !== "production" ? "http://localhost:8000" : "");
-
-  if (!compositorBaseUrl) {
-    throw new Error("Missing COMPOSITOR_URL (or NEXT_PUBLIC_COMPOSITOR_URL) for Vibode compositor.");
+  const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
+  if (!endpointBase) {
+    throw new Error(
+      "ROOMPRINTZ_COMPOSITOR_URL is not set in env (RoomPrintz compositor endpoint)."
+    );
   }
 
-  const res = await fetch(`${compositorBaseUrl}/vibode/vibe`, {
+  const endpointBaseNormalized = endpointBase
+    .replace(/\/stage-room\/?$/, "")
+    .replace(/\/vibode\/compose\/?$/, "")
+    .replace(/\/vibode\/remove\/?$/, "")
+    .replace(/\/vibode\/swap\/?$/, "")
+    .replace(/\/vibode\/vibe\/?$/, "")
+    .replace(/\/vibode\/rotate\/?$/, "")
+    .replace(/\/vibode\/full_vibe\/?$/, "")
+    .replace(/\/$/, "");
+  const endpoint = `${endpointBaseNormalized}/vibode/vibe`;
+  const headers = mergeVibodeCompositorAuth({ "Content-Type": "application/json" });
+
+  const res = await fetch(endpoint, {
     method: "POST",
-    headers: mergeVibodeCompositorAuth({ "Content-Type": "application/json" }),
+    headers,
     body: JSON.stringify({
       roomImageBase64: args.roomImageBase64,
       collectionId: args.collectionId ?? undefined,

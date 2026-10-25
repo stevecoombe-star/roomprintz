@@ -443,25 +443,27 @@ export async function POST(req: NextRequest) {
       ingest_image_model: ingestImageModel,
     });
 
+    const headers = mergeVibodeCompositorAuth({
+      "Content-Type": "application/json",
+      "X-Request-Id": requestId,
+      [NORMALIZED_PREVIEW_BG_HEADER]: NORMALIZED_PREVIEW_BG_RGB.join(","),
+      [NORMALIZED_PREVIEW_BG_MODE_HEADER]: "fixed",
+      [INGEST_IMAGE_MODEL_HEADER]: ingestImageModel,
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...buildVibodeCompositorContextHeaders({
+        requestId,
+        operationId,
+        userId: authenticatedUserId,
+        userEmail: authenticatedUserEmail,
+        workflowType: "set",
+        actionType: "user-sku-ingest",
+        sourceTrigger: "user-sku-upload",
+      }),
+    });
+
     const upstreamRes = await fetch(upstream, {
       method: "POST",
-      headers: mergeVibodeCompositorAuth({
-        "Content-Type": "application/json",
-        "X-Request-Id": requestId,
-        [NORMALIZED_PREVIEW_BG_HEADER]: NORMALIZED_PREVIEW_BG_RGB.join(","),
-        [NORMALIZED_PREVIEW_BG_MODE_HEADER]: "fixed",
-        [INGEST_IMAGE_MODEL_HEADER]: ingestImageModel,
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        ...buildVibodeCompositorContextHeaders({
-          requestId,
-          operationId,
-          userId: authenticatedUserId,
-          userEmail: authenticatedUserEmail,
-          workflowType: "set",
-          actionType: "user-sku-ingest",
-          sourceTrigger: "user-sku-upload",
-        }),
-      }),
+      headers,
       body: JSON.stringify({
         imageUrl: body.imageUrl,
         imageBase64: normalizedImageBase64,
