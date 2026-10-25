@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import sharp from "sharp";
+import sharp, { type Metadata } from "sharp";
 
 import { resolveAfcUi2aFixedInputsRoot } from "./afc-ui2a-fixed-input-root";
 import {
@@ -141,7 +141,7 @@ export async function loadP2S2BHoldoutOracleEmptyImage(
     return { ok: false, code: "image_unavailable" };
   }
   const digest = createHash("sha256").update(bytes).digest("hex");
-  let metadata: sharp.Metadata;
+  let metadata: Metadata;
   try {
     metadata = await sharp(bytes).metadata();
   } catch {
