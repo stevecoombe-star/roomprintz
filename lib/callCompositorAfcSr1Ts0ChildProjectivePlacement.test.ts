@@ -7,6 +7,7 @@ import {
   type CallCompositorAfcSr1Ts0ChildProjectivePlacementArgs,
 } from "./callCompositorAfcSr1Ts0ChildProjectivePlacement";
 import { CompositorTransportError } from "./compositorTransportError";
+import { isVibodeCompositorAuthConfigError } from "./vibodeCompositorAuth";
 
 const parentBytes = Uint8Array.from([1, 2, 3]);
 const childBytes = Uint8Array.from([4, 5, 6]);
@@ -49,7 +50,7 @@ function withEnvironment(
   process.env.ROOMPRINTZ_COMPOSITOR_URL =
     "https://compositor.example/vibode/compose";
   process.env.ROOMPRINTZ_COMPOSITOR_API_KEY = "secret";
-  delete process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
+  process.env.VIBODE_COMPOSITOR_AUTH_SECRET = "offline-dedicated-auth";
   return callback().finally(() => {
     if (originalUrl === undefined) {
       delete process.env.ROOMPRINTZ_COMPOSITOR_URL;
@@ -90,6 +91,7 @@ test("placement client sends only the frozen endpoint payload and auth conventio
     assert.deepEqual(capturedInit?.headers, {
       "Content-Type": "application/json",
       Authorization: "Bearer secret",
+      "X-Vibode-Compositor-Auth": "offline-dedicated-auth",
     });
     const payload = JSON.parse(String(capturedInit?.body));
     assert.deepEqual(Object.keys(payload).sort(), [
@@ -139,14 +141,17 @@ test("placement client rejects non-OK and malformed JSON responses", async () =>
   });
 });
 
-test("placement client forwards AbortSignal and omits auth when unconfigured", async () => {
+test("placement client forwards AbortSignal and omits the legacy bearer when the API key is unset", async () => {
   await withEnvironment(async () => {
     delete process.env.ROOMPRINTZ_COMPOSITOR_API_KEY;
     const controller = new AbortController();
     controller.abort();
     globalThis.fetch = async (_input, init) => {
       assert.equal(init?.signal, controller.signal);
-      assert.deepEqual(init?.headers, { "Content-Type": "application/json" });
+      assert.deepEqual(init?.headers, {
+        "Content-Type": "application/json",
+        "X-Vibode-Compositor-Auth": "offline-dedicated-auth",
+      });
       throw new DOMException("aborted", "AbortError");
     };
     await assert.rejects(
@@ -158,5 +163,30 @@ test("placement client forwards AbortSignal and omits auth when unconfigured", a
         error instanceof CompositorTransportError &&
         error.classification === "timeout"
     );
+  });
+});
+
+test("placement client fails before fetch when compositor auth is blank", async () => {
+  await withEnvironment(async () => {
+    for (const secret of [undefined, "", " \n\t "]) {
+      if (secret === undefined) delete process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
+      else process.env.VIBODE_COMPOSITOR_AUTH_SECRET = secret;
+      let called = false;
+      globalThis.fetch = async () => {
+        called = true;
+        return Response.json({ status: "ok" });
+      };
+      await assert.rejects(
+        callCompositorAfcSr1Ts0ChildProjectivePlacement(args),
+        (error: unknown) => {
+          assert.equal(isVibodeCompositorAuthConfigError(error), true);
+          if (!isVibodeCompositorAuthConfigError(error)) return false;
+          assert.equal(error.message, "VIBODE_COMPOSITOR_AUTH_SECRET is not configured.");
+          assert.equal(error.message.includes("offline-dedicated-auth"), false);
+          return true;
+        }
+      );
+      assert.equal(called, false);
+    }
   });
 });

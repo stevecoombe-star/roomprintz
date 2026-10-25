@@ -6,6 +6,7 @@ import {
   callCompositorAfcSr1TileFloorReader,
 } from "./callCompositorAfcSr1TileFloorReader";
 import { CompositorTransportError } from "./compositorTransportError";
+import { isVibodeCompositorAuthConfigError } from "./vibodeCompositorAuth";
 
 function withEnvironment(callback: () => Promise<void>): Promise<void> {
   const originalUrl = process.env.ROOMPRINTZ_COMPOSITOR_URL;
@@ -14,7 +15,7 @@ function withEnvironment(callback: () => Promise<void>): Promise<void> {
   const originalFetch = globalThis.fetch;
   process.env.ROOMPRINTZ_COMPOSITOR_URL = "https://compositor.example/stage-room";
   process.env.ROOMPRINTZ_COMPOSITOR_API_KEY = "secret";
-  delete process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
+  process.env.VIBODE_COMPOSITOR_AUTH_SECRET = "offline-dedicated-auth";
   return callback().finally(() => {
     if (originalUrl === undefined) {
       delete process.env.ROOMPRINTZ_COMPOSITOR_URL;
@@ -57,6 +58,7 @@ test("Reader client preserves request payload and auth convention", async () => 
     assert.deepEqual(observedInit?.headers, {
       "Content-Type": "application/json",
       Authorization: "Bearer secret",
+      "X-Vibode-Compositor-Auth": "offline-dedicated-auth",
     });
     assert.deepEqual(JSON.parse(String(observedInit?.body)), payload);
   });
@@ -73,9 +75,35 @@ test("Reader gate-off response is typed and sanitized", async () => {
         assert.equal(error.classification, "http_404");
         assert.equal(error.httpStatus, 404);
         assert.equal(error.message, "Compositor returned HTTP 404.");
-        assert.doesNotMatch(error.message, /secret|imageBase64|control-only/);
+        assert.doesNotMatch(error.message, /secret|imageBase64|control-only|offline-dedicated-auth/);
         return true;
       }
     );
+  });
+});
+
+test("Reader client fails before fetch when compositor auth is blank", async () => {
+  await withEnvironment(async () => {
+    for (const secret of [undefined, "", " \n\t "]) {
+      if (secret === undefined) delete process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
+      else process.env.VIBODE_COMPOSITOR_AUTH_SECRET = secret;
+      let called = false;
+      globalThis.fetch = async () => {
+        called = true;
+        return Response.json({ status: "rejected" });
+      };
+      await assert.rejects(
+        callCompositorAfcSr1TileFloorReader({ payload: { imageBase64: "control-only" } }),
+        (error: unknown) => {
+          assert.equal(isVibodeCompositorAuthConfigError(error), true);
+          if (!isVibodeCompositorAuthConfigError(error)) return false;
+          assert.equal(error.message, "VIBODE_COMPOSITOR_AUTH_SECRET is not configured.");
+          assert.equal(error.message.includes("offline-dedicated-auth"), false);
+          assert.equal(error.message.includes("control-only"), false);
+          return true;
+        }
+      );
+      assert.equal(called, false);
+    }
   });
 });

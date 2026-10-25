@@ -9,8 +9,10 @@ import { CompositorTransportError } from "./compositorTransportError";
 
 test("readiness client requires the exact diagnostic-only response", async () => {
   const originalUrl = process.env.ROOMPRINTZ_COMPOSITOR_URL;
+  const originalAuth = process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
   const originalFetch = globalThis.fetch;
   process.env.ROOMPRINTZ_COMPOSITOR_URL = "http://127.0.0.1:8000";
+  process.env.VIBODE_COMPOSITOR_AUTH_SECRET = "offline-readiness-auth";
   try {
     let observedUrl = "";
     globalThis.fetch = async (input) => {
@@ -59,6 +61,8 @@ test("readiness client requires the exact diagnostic-only response", async () =>
     } else {
       process.env.ROOMPRINTZ_COMPOSITOR_URL = originalUrl;
     }
+    if (originalAuth === undefined) delete process.env.VIBODE_COMPOSITOR_AUTH_SECRET;
+    else process.env.VIBODE_COMPOSITOR_AUTH_SECRET = originalAuth;
     globalThis.fetch = originalFetch;
   }
 });

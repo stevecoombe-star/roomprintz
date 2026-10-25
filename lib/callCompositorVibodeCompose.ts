@@ -98,12 +98,14 @@ export async function callCompositorVibodeCompose(args: {
     aspectRatio,
   };
 
+  const headers = mergeVibodeCompositorAuth({
+    "Content-Type": "application/json",
+    ...(args.headers ?? {}),
+  });
+
   const res = await fetch(endpoint, {
     method: "POST",
-    headers: mergeVibodeCompositorAuth({
-      "Content-Type": "application/json",
-      ...(args.headers ?? {}),
-    }),
+    headers,
     body: JSON.stringify(payload),
     signal,
   });

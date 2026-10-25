@@ -570,8 +570,7 @@ export async function POST(req: NextRequest) {
         workflowType,
         actionType,
         sourceTrigger,
-      }),
-      mergeVibodeCompositorAuth({})
+      })
     );
 
     const preCompositorCancellation = cancelledResponse();
@@ -582,6 +581,8 @@ export async function POST(req: NextRequest) {
       });
       return preCompositorCancellation;
     }
+
+    Object.assign(headers, mergeVibodeCompositorAuth({}));
 
     const upstreamRes = await fetch(endpoint, {
       method: "POST",
