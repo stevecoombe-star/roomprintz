@@ -1,7 +1,8 @@
 -- Interim SAM 3 ceilings for public REMOVE, before Token billing.
 --
 -- These counters are not a payment ledger. They record one attempt per
--- reservation so a later Token checkpoint can attach to the same operation.
+-- reservation. Rows from earlier UTC days are removed inside the reservation
+-- lock. Room deletion does not remove rows. Account deletion does.
 -- Clean Up Room NBP limits are unchanged.
 --
 -- Review this file before applying it. Do not apply it as part of app
@@ -12,7 +13,7 @@ begin;
 create table public.vibode_remove_segmentation_calls (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  room_id uuid not null references public.vibode_rooms(id) on delete cascade,
+  room_id uuid not null,
   generation_id uuid not null,
   original_sha256 text not null,
   created_at timestamptz not null default now(),
@@ -27,8 +28,10 @@ create index vibode_remove_segmentation_calls_created_idx
 
 alter table public.vibode_remove_segmentation_calls enable row level security;
 
-revoke all on table public.vibode_remove_segmentation_calls from public, anon, authenticated;
-grant select, insert, update, delete on table public.vibode_remove_segmentation_calls to service_role;
+revoke all on table public.vibode_remove_segmentation_calls from public, anon, authenticated, service_role;
+
+comment on table public.vibode_remove_segmentation_calls is
+  'SAM 3 reservation ledger. Current UTC day counts toward the ceilings. service_role has no table privileges. The security-definer reservation function inserts rows.';
 
 create or replace function public.vibode_remove_segmentation_user_daily_limit()
 returns integer
@@ -88,6 +91,9 @@ begin
 
   v_day := (date_trunc('day', (now() at time zone 'utc')) at time zone 'utc');
 
+  delete from public.vibode_remove_segmentation_calls
+  where created_at < v_day;
+
   select count(*) into v_user_count
   from public.vibode_remove_segmentation_calls
   where user_id = p_user_id
@@ -118,6 +124,9 @@ begin
   return jsonb_build_object('ok', true, 'code', 'reserved');
 end;
 $$;
+
+comment on function public.reserve_vibode_remove_segmentation(uuid, uuid, uuid, text) is
+  'Atomic SAM 3 reservation. Owner is the migration role. EXECUTE is service_role only. Per-user UTC cap 24, global UTC cap 200.';
 
 revoke all on function public.vibode_remove_segmentation_user_daily_limit() from public, anon, authenticated;
 revoke all on function public.vibode_remove_segmentation_global_daily_limit() from public, anon, authenticated;

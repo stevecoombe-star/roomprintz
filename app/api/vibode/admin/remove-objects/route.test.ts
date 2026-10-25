@@ -245,6 +245,56 @@ test("REMOVE object route is an admin POST with no browser image and no writes",
   assert.match(sql, /vibode_remove_segmentation_global_daily_limit\(\)[\s\S]*select 200;/);
   assert.match(sql, /grant execute on function public\.reserve_vibode_remove_segmentation/);
   assert.doesNotMatch(sql, /update public\.vibode_rooms|room_scale_multiplier|generativelanguage|roboflow/);
+  assert.match(sql, /room_id uuid not null,/);
+  assert.doesNotMatch(sql, /references public\.vibode_rooms/);
+  assert.match(sql, /user_id uuid not null references auth\.users\(id\) on delete cascade/);
+  assert.match(sql, /generation_id uuid not null,/);
+  assert.doesNotMatch(sql, /generation_id uuid not null references/);
+  assert.match(
+    sql,
+    /revoke all on table public\.vibode_remove_segmentation_calls from public, anon, authenticated, service_role/,
+  );
+  assert.doesNotMatch(sql, /grant\s[\s\S]*on table public\.vibode_remove_segmentation_calls/i);
+  assert.match(sql, /grant execute on function public\.vibode_remove_segmentation_user_daily_limit\(\) to service_role/);
+  assert.match(sql, /grant execute on function public\.vibode_remove_segmentation_global_daily_limit\(\) to service_role/);
+  assert.match(sql, /revoke all on function public\.reserve_vibode_remove_segmentation\(uuid, uuid, uuid, text\)\s*from public, anon, authenticated/);
+  assert.match(
+    sql,
+    /create or replace function public\.reserve_vibode_remove_segmentation\(\s*p_user_id uuid,\s*p_room_id uuid,\s*p_generation_id uuid,\s*p_original_sha256 text\s*\) returns jsonb/,
+  );
+  assert.match(sql, /security definer/);
+  assert.match(sql, /set search_path = pg_catalog, public, pg_temp/);
+  assert.equal(
+    sql.includes("constraint vibode_remove_segmentation_calls_sha_hex check (original_sha256 ~ '^[0-9a-f]{64}$')"),
+    true,
+  );
+  for (const code of ["not_found", "invalid", "user_limit", "global_limit", "reserved"]) {
+    assert.equal(sql.includes(`'code', '${code}'`), true);
+  }
+  assert.match(sql, /perform pg_advisory_xact_lock\(hashtext\('vibode-remove-segmentation'\)::bigint\)/);
+  assert.doesNotMatch(sql, /force row level security/i);
+  assert.doesNotMatch(sql, /create policy/i);
+  const lockAt = sql.indexOf("perform pg_advisory_xact_lock(hashtext('vibode-remove-segmentation')::bigint);");
+  const dayAt = sql.indexOf("v_day := (date_trunc('day', (now() at time zone 'utc')) at time zone 'utc');");
+  const purgeAt = sql.indexOf("delete from public.vibode_remove_segmentation_calls\n  where created_at < v_day;");
+  const userCountAt = sql.indexOf("select count(*) into v_user_count");
+  const globalCountAt = sql.indexOf("select count(*) into v_global_count");
+  assert.ok(lockAt >= 0 && dayAt > lockAt && purgeAt > dayAt && userCountAt > purgeAt && globalCountAt > userCountAt);
+  assert.match(sql, /where user_id = p_user_id\s*and created_at >= v_day/);
+  assert.match(sql, /where created_at >= v_day/);
+  const quota = source("lib/vibode-stage/remove-segmentation-quota.server.ts");
+  assert.match(quota, /client\.rpc\("reserve_vibode_remove_segmentation"/);
+  assert.match(quota, /p_user_id: input\.userId/);
+  assert.match(quota, /p_room_id: input\.roomId/);
+  assert.match(quota, /p_generation_id: input\.generationId/);
+  assert.match(quota, /p_original_sha256: input\.originalSha256\.toLowerCase\(\)/);
+  assert.match(quota, /if \(!client\) return \{ ok: false, code: "unavailable" \}/);
+  assert.match(quota, /if \(error \|\| !data \|\| typeof data !== "object"\) return \{ ok: false, code: "unavailable" \}/);
+  assert.match(handler, /if \(reserved\.code === "user_limit" \|\| reserved\.code === "global_limit"\)/);
+  assert.match(handler, /if \(reserved\.code === "not_found"\) return jsonError\("Room not found\.", 404\)/);
+  assert.match(handler, /return jsonError\("Remove object detection is unavailable\.", 503\)/);
+  const reservedAt = handler.indexOf("const reserved = await deps.reserveSegmentation");
+  assert.ok(reservedAt >= 0 && segmentAt > reservedAt);
 });
 
 test("a daily segmentation ceiling refuses Roboflow before contact", async () => {
