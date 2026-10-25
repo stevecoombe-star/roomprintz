@@ -15,6 +15,8 @@ import {
 import { resolveEffectiveModelDimensions } from "@/lib/vibode-stage/model-dimensions";
 import { stageAddLockKey } from "@/lib/vibode-stage/stage-runtime-placement";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
+import { useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
+import { removeInspectionAllowsCatalogPlacement } from "@/lib/vibode-stage/remove-alignment";
 import type {
   StageCatalogSnapshot,
   StageProduct,
@@ -52,6 +54,9 @@ function resolveSelectedVariantId(
 
 export function StageProductDetail() {
   const stage = useStageEditor();
+  const placementOpen = removeInspectionAllowsCatalogPlacement(
+    useRemoveAlignment()?.active === true,
+  );
   const product = stage.detailProductId
     ? stageProductById(stage.detailProductId, stage.extraProducts, stage.catalog)
     : null;
@@ -82,7 +87,7 @@ export function StageProductDetail() {
     catalog: stage.catalog,
   });
   const asset = placement ? stageAssetById(placement.assetId, stage.catalog) : null;
-  const canAdd = Boolean(placement);
+  const canAdd = Boolean(placement) && placementOpen;
   const addKey = stageAddLockKey(
     product.productId,
     selectedVariantId || product.defaultVariantId,
@@ -171,10 +176,14 @@ export function StageProductDetail() {
           type="button"
           disabled={!canAdd || addPending}
           data-stage-add-pending={addPending ? "true" : "false"}
-          onClick={() => stage.addProductToRoom(
-            product.productId,
-            selectedVariantId || product.defaultVariantId,
-          )}
+          title={placementOpen ? undefined : "Placement is paused during Remove inspection."}
+          onClick={() => {
+            if (!placementOpen) return;
+            stage.addProductToRoom(
+              product.productId,
+              selectedVariantId || product.defaultVariantId,
+            );
+          }}
           className={`flex-1 rounded-md border px-3 py-2 text-xs ${FOCUS} ${
             canAdd && !addPending
               ? "border-neutral-600 bg-neutral-100 text-neutral-950 hover:bg-white"

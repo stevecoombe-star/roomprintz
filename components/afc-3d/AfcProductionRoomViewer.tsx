@@ -2,7 +2,7 @@
 
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 import { resolveSceneObjectCollision } from "@/lib/afc-v2-runtime/collision-resolver";
@@ -74,6 +74,7 @@ import {
 } from "@/lib/afc-v2-runtime/scene-runtime";
 import { realizeProductionWorld } from "@/lib/afc-v2-runtime/production-world";
 import type { CertifiedFrozenCamera } from "@/lib/afc-v2-runtime/production-runtime-client";
+import { settleRemoveInspectionGesture } from "@/lib/vibode-stage/remove-alignment";
 import { ROOM_SCALE_DEFAULT } from "@/lib/vibode-stage/room-scale";
 import type { TrustedPathBaseline } from "@/lib/vibode-stage/trusted-path";
 import { createTrustedPathOverlay } from "@/lib/vibode-stage/trusted-path-overlay";
@@ -192,6 +193,10 @@ type Props = Readonly<{
   harmonizeCertifiedCamera?: CertifiedFrozenCamera | null;
   harmonizeFlushScene?: () => Promise<boolean>;
   harmonizeFlushRoomScale?: () => Promise<boolean>;
+  furnitureManipulationEnabled?: boolean;
+  furnitureRenderingVisible?: boolean;
+  scenePointerEvents?: "auto" | "none";
+  inspectionOverlay?: ReactNode;
 }>;
 
 type ReadyProps = Readonly<{
@@ -226,6 +231,10 @@ type ReadyProps = Readonly<{
   harmonizeCertifiedCamera?: CertifiedFrozenCamera | null;
   harmonizeFlushScene?: () => Promise<boolean>;
   harmonizeFlushRoomScale?: () => Promise<boolean>;
+  furnitureManipulationEnabled?: boolean;
+  furnitureRenderingVisible?: boolean;
+  scenePointerEvents?: "auto" | "none";
+  inspectionOverlay?: ReactNode;
 }>;
 
 export function AfcProductionRoomViewer({
@@ -258,6 +267,10 @@ export function AfcProductionRoomViewer({
   harmonizeCertifiedCamera = null,
   harmonizeFlushScene,
   harmonizeFlushRoomScale,
+  furnitureManipulationEnabled = true,
+  furnitureRenderingVisible = true,
+  scenePointerEvents = "auto",
+  inspectionOverlay = null,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -317,6 +330,10 @@ export function AfcProductionRoomViewer({
       harmonizeCertifiedCamera={harmonizeCertifiedCamera}
       harmonizeFlushScene={harmonizeFlushScene}
       harmonizeFlushRoomScale={harmonizeFlushRoomScale}
+      furnitureManipulationEnabled={furnitureManipulationEnabled}
+      furnitureRenderingVisible={furnitureRenderingVisible}
+      scenePointerEvents={scenePointerEvents}
+      inspectionOverlay={inspectionOverlay}
     />
   );
 }
@@ -351,6 +368,10 @@ function AfcProductionRoomViewerReady({
   harmonizeCertifiedCamera = null,
   harmonizeFlushScene,
   harmonizeFlushRoomScale,
+  furnitureManipulationEnabled = true,
+  furnitureRenderingVisible = true,
+  scenePointerEvents = "auto",
+  inspectionOverlay = null,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -396,6 +417,21 @@ function AfcProductionRoomViewerReady({
   const harmonizeSceneIdentityRef = useRef("");
   const harmonizeFlushSceneRef = useRef(harmonizeFlushScene);
   const harmonizeFlushRoomScaleRef = useRef(harmonizeFlushRoomScale);
+  const furnitureManipulationRef = useRef(furnitureManipulationEnabled);
+  const furnitureRenderingRef = useRef(furnitureRenderingVisible);
+  const scenePointerEventsRef = useRef(scenePointerEvents);
+  const syncScenePointerEventsRef = useRef<(() => void) | null>(null);
+  const releaseUncommittedGestureRef = useRef<(() => void) | null>(null);
+  const manipulationWasEnabledRef = useRef(furnitureManipulationEnabled);
+  furnitureManipulationRef.current = furnitureManipulationEnabled;
+  furnitureRenderingRef.current = furnitureRenderingVisible;
+  scenePointerEventsRef.current = scenePointerEvents;
+  useLayoutEffect(() => {
+    if (manipulationWasEnabledRef.current && !furnitureManipulationEnabled) {
+      releaseUncommittedGestureRef.current?.();
+    }
+    manipulationWasEnabledRef.current = furnitureManipulationEnabled;
+  }, [furnitureManipulationEnabled]);
   harmonizeRoomIdRef.current = roomId;
   harmonizeAuthorityRef.current = authority;
   harmonizeBackgroundUrlRef.current = visualImageUrl;
@@ -510,6 +546,12 @@ function AfcProductionRoomViewerReady({
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     mount.appendChild(renderer.domElement);
+    const syncScenePointerEvents = () => {
+      renderer.domElement.style.pointerEvents =
+        scenePointerEventsRef.current === "none" ? "none" : "auto";
+    };
+    syncScenePointerEventsRef.current = syncScenePointerEvents;
+    syncScenePointerEvents();
 
     const scene = new THREE.Scene();
     scene.background = null;
@@ -560,6 +602,7 @@ function AfcProductionRoomViewerReady({
     let disposed = false;
     let animationFrame = 0;
     let gizmoDragging = false;
+    let gizmoTranslateOrigin: { objectId: string; x: number; z: number } | null = null;
     let shiftHeld = false;
     let pointerGesture: {
       clientX: number;
@@ -642,6 +685,12 @@ function AfcProductionRoomViewerReady({
     };
 
     const syncGizmo = () => {
+      if (!furnitureManipulationRef.current) {
+        controlsHelper.visible = false;
+        controls.enabled = false;
+        if (controls.object) controls.detach();
+        return;
+      }
       const gizmos = showTransformGizmosRef.current === true;
       controlsHelper.visible = gizmos;
       if (!gizmos) {
@@ -807,6 +856,52 @@ function AfcProductionRoomViewerReady({
         onSelectedObjectTranslatedRef.current?.(session.objectId);
       }
     };
+
+    const restorePersistedPose = (objectId: string | null) => {
+      if (!objectId) return;
+      const definition = persistedOrder.find((item) => item.objectId === objectId);
+      const object = getLiveSceneObject(sceneObjects, objectId);
+      if (!definition || !object) return;
+      const realized = realizeObjectWorldTransform(
+        definition.transform,
+        activeWorld.metricScale,
+      );
+      commitLiveSceneObjectTransform(object, realized, activeWorld.metricScale);
+      syncStageContactShadow(
+        object.placement,
+        object.localAabb,
+        lighting.contactResources,
+      );
+    };
+
+    const releaseUncommittedGesture = () => {
+      const settlement = settleRemoveInspectionGesture({
+        manipulationEnabled: furnitureManipulationRef.current,
+        bodyDrag: bodyDrag == null ? "none" : bodyDrag.active ? "active" : "armed",
+        gizmoDragging,
+      });
+      if (settlement === "keep") return;
+      const draggedId = bodyDrag?.active ? bodyDrag.objectId : null;
+      if (bodyDrag) {
+        releaseBodyDragCapture(bodyDrag.pointerId);
+        bodyDrag = null;
+      }
+      const gizmoId = gizmoDragging
+        ? resolveSceneObjectId(controls.object)
+        : null;
+      gizmoDragging = false;
+      gizmoTranslateOrigin = null;
+      publishHarmonizeGesture();
+      controls.enabled = false;
+      controlsHelper.visible = false;
+      if (controls.object) controls.detach();
+      if (settlement === "restore") {
+        restorePersistedPose(draggedId);
+        restorePersistedPose(gizmoId);
+      }
+      emitPresentation();
+    };
+    releaseUncommittedGestureRef.current = releaseUncommittedGesture;
 
     const recaptureBodyGrab = (
       session: NonNullable<typeof bodyDrag>,
@@ -983,6 +1078,7 @@ function AfcProductionRoomViewerReady({
     };
 
     const pointerDownListener = (event: PointerEvent) => {
+      if (!furnitureManipulationRef.current) return;
       if (event.isPrimary === false) return;
       shiftHeld = event.shiftKey;
       const pointerDownOnGizmo = controls.axis !== null || gizmoDragging;
@@ -1049,6 +1145,7 @@ function AfcProductionRoomViewerReady({
     };
 
     const pointerMoveListener = (event: PointerEvent) => {
+      if (!furnitureManipulationRef.current) return;
       const session = bodyDrag;
       if (!session || event.pointerId !== session.pointerId) {
         updateHover(event.clientX, event.clientY);
@@ -1074,6 +1171,11 @@ function AfcProductionRoomViewerReady({
     };
 
     const pointerUpListener = (event: PointerEvent) => {
+      if (!furnitureManipulationRef.current) {
+        pointerGesture = null;
+        releaseUncommittedGesture();
+        return;
+      }
       if (bodyDrag && event.pointerId !== bodyDrag.pointerId) return;
       const gesture = pointerGesture;
       pointerGesture = null;
@@ -1109,13 +1211,21 @@ function AfcProductionRoomViewerReady({
     };
 
     const pointerCancelListener = (event: PointerEvent) => {
+      if (!furnitureManipulationRef.current) {
+        pointerGesture = null;
+        releaseUncommittedGesture();
+        return;
+      }
       if (bodyDrag && event.pointerId !== bodyDrag.pointerId) return;
       pointerGesture = null;
       endBodyDrag();
     };
 
-    let gizmoTranslateOrigin: { objectId: string; x: number; z: number } | null = null;
     const draggingChangedListener = (event: { value?: unknown }) => {
+      if (!furnitureManipulationRef.current) {
+        releaseUncommittedGesture();
+        return;
+      }
       const starting = event.value === true;
       gizmoDragging = starting;
       publishHarmonizeGesture();
@@ -1149,6 +1259,7 @@ function AfcProductionRoomViewerReady({
       }
     };
     const objectChangeListener = () => {
+      if (!furnitureManipulationRef.current) return;
       writeAttachedTransform();
     };
 
@@ -1348,7 +1459,7 @@ function AfcProductionRoomViewerReady({
         publishSnapshot();
         return;
       }
-      objectLayer.visible = true;
+      objectLayer.visible = furnitureRenderingRef.current;
       const generation = ++applyGeneration;
       const objects = input.objects;
       const instanceId = input.instanceId;
@@ -1372,10 +1483,10 @@ function AfcProductionRoomViewerReady({
 
     const liveHost: ProductionSceneCrudHost = {
       objectCount: () => currentSerializedObjects().length,
-      canMutate: () => furnitureReady && sceneReadyRef.current,
+      canMutate: () => furnitureReady && sceneReadyRef.current && furnitureManipulationRef.current,
       addSceneObject: (assetId, identity?: SceneObjectProductIdentity) => {
         return enqueueMutation(async () => {
-          if (!furnitureReady || !sceneReadyRef.current) {
+          if (!furnitureReady || !sceneReadyRef.current || !furnitureManipulationRef.current) {
             return notReadyResult();
           }
           const capturedInstanceId = sceneInstanceIdRef.current;
@@ -1524,7 +1635,7 @@ function AfcProductionRoomViewerReady({
       },
       duplicateSceneObject: (objectId) => {
         return enqueueMutation(async () => {
-          if (!furnitureReady || !sceneReadyRef.current) {
+          if (!furnitureReady || !sceneReadyRef.current || !furnitureManipulationRef.current) {
             return notReadyResult();
           }
           const source = currentSerializedObjects().find((object) => object.objectId === objectId);
@@ -1571,7 +1682,7 @@ function AfcProductionRoomViewerReady({
         });
       },
       deleteSceneObject: (objectId) => {
-        if (!furnitureReady || !sceneReadyRef.current) {
+        if (!furnitureReady || !sceneReadyRef.current || !furnitureManipulationRef.current) {
           return notReadyResult();
         }
         const result = deleteSceneObjectDescriptor({
@@ -1593,7 +1704,7 @@ function AfcProductionRoomViewerReady({
       },
       commitRotationYDeg: (objectId, degrees) => {
         const object = getLiveSceneObject(sceneObjects, objectId);
-        if (!object || !furnitureReady || !sceneReadyRef.current) return false;
+        if (!object || !furnitureReady || !sceneReadyRef.current || !furnitureManipulationRef.current) return false;
         const resolved = resolveExplicitYaw({
           current: object.realizedTransform,
           yawDeg: degrees,
@@ -1611,7 +1722,7 @@ function AfcProductionRoomViewerReady({
       },
       commitUserSizeMultiplier: (objectId, multiplier) => {
         const object = getLiveSceneObject(sceneObjects, objectId);
-        if (!object || !furnitureReady || !sceneReadyRef.current) return false;
+        if (!object || !furnitureReady || !sceneReadyRef.current || !furnitureManipulationRef.current) return false;
         applyLiveUserSizeMultiplier(object, multiplier);
         syncStageContactShadow(
           object.placement,
@@ -1672,7 +1783,7 @@ function AfcProductionRoomViewerReady({
       applyRealizedFrozenCamera(camera, activeWorld.camera);
       syncTrustedPath();
       if (controls.getMode() === "scale") controls.setMode("translate");
-      objectLayer.visible = sceneReadyRef.current;
+      objectLayer.visible = sceneReadyRef.current && furnitureRenderingRef.current;
       const skipObjectId = bodyDrag?.active
         ? bodyDrag.objectId
         : (gizmoDragging ? resolveSceneObjectId(controls.object) : null);
@@ -1688,7 +1799,7 @@ function AfcProductionRoomViewerReady({
       }
       syncGizmo();
       renderer.render(scene, camera);
-      if (sceneReadyRef.current) {
+      if (sceneReadyRef.current && furnitureRenderingRef.current) {
         const outlines = stageOutlineTargets({
           selectedObjectId: selectedObjectIdRef.current,
           hoveredObjectId,
@@ -1803,6 +1914,7 @@ function AfcProductionRoomViewerReady({
       const quaternionW = camera.quaternion.w;
       exportLocked = true;
       try {
+        objectLayer.visible = true;
         const rendered = renderHarmonizeFurniturePixels({
           scene,
           camera,
@@ -1881,12 +1993,15 @@ function AfcProductionRoomViewerReady({
         };
       } finally {
         exportLocked = false;
+        objectLayer.visible = sceneReadyRef.current && furnitureRenderingRef.current;
       }
     };
     animate();
 
     return () => {
       disposed = true;
+      syncScenePointerEventsRef.current = null;
+      releaseUncommittedGestureRef.current = null;
       harmonizeCaptureRef.current = null;
       applyRoomScaleRef.current = null;
       syncTrustedPathRef.current = null;
@@ -2009,6 +2124,10 @@ function AfcProductionRoomViewerReady({
     };
   }, [registerHarmonizeExport, registerHarmonizeQa, roomId]);
 
+  useLayoutEffect(() => {
+    syncScenePointerEventsRef.current?.();
+  }, [scenePointerEvents]);
+
   useEffect(() => {
     applyRoomScaleRef.current?.(roomScaleMultiplier);
   }, [roomScaleMultiplier]);
@@ -2022,7 +2141,11 @@ function AfcProductionRoomViewerReady({
   }, [resolvedSceneInstanceId, resolvedSceneObjects, sceneReady]);
 
   return (
-    <div className="relative h-full min-h-0 w-full bg-neutral-950">
+    <div
+      className="relative h-full min-h-0 w-full bg-neutral-950"
+      data-furniture-manipulation={furnitureManipulationEnabled ? "open" : "blocked"}
+      data-furniture-rendering={furnitureRenderingVisible ? "shown" : "hidden"}
+    >
       <div
         ref={viewportRef}
         className="absolute inset-0 overflow-hidden bg-black"
@@ -2065,6 +2188,7 @@ function AfcProductionRoomViewerReady({
               image.src = fallback;
             }}
           />
+          {inspectionOverlay}
           <div
             ref={pathLabelRef}
             data-trusted-path-label="true"
@@ -2074,6 +2198,8 @@ function AfcProductionRoomViewerReady({
           <div
             ref={mountRef}
             className="absolute inset-0 z-10 bg-transparent"
+            data-scene-pointer-events={scenePointerEvents}
+            style={scenePointerEvents === "none" ? { pointerEvents: "none" } : undefined}
             aria-label={
               showInternalControls
                 ? "Production AFC frozen-camera runtime"

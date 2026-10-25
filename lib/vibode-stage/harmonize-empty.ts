@@ -46,6 +46,7 @@ const INTEGRITY = "Authoritative EMPTY image failed integrity checks.";
 
 export function selectHarmonizeEmptyBytes(input: Readonly<{
   callerIsAdmin: boolean;
+  roomOwnerAccess?: boolean;
   callerUserId: string | null;
   roomId: string;
   room: HarmonizeEmptyRoom | null;
@@ -53,7 +54,7 @@ export function selectHarmonizeEmptyBytes(input: Readonly<{
   authority: HarmonizeExportAuthority | null;
   bytes: Uint8Array | null;
 }>): HarmonizeEmptySelection {
-  if (!input.callerIsAdmin || !input.callerUserId) {
+  if (!(input.callerIsAdmin || input.roomOwnerAccess === true) || !input.callerUserId) {
     return { ok: false, status: 403, error: "Admin access required." };
   }
   if (!input.room || input.room.userId !== input.callerUserId) {

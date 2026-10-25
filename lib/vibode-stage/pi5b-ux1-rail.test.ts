@@ -65,8 +65,8 @@ test("PI-5B-UX1 contextual toolbar still drives certified scene actions", () => 
   assert.match(toolbar, /session\.deleteSelected\(\)/);
   assert.doesNotMatch(toolbar, />Scale</);
 
-  assert.match(header, /stage\.undo/);
-  assert.match(header, /disabled=\{!stage\.canUndo\}/);
+  assert.match(header, /stage\.canUndo && inspection\.undo/);
+  assert.match(header, /stage\.undo\(\)/);
 
   assert.match(context, /addFurnitureWithIdentity/);
   assert.match(catalog, /addProductToRoom/);

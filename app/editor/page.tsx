@@ -84,6 +84,8 @@ import {
   getWorkflowStepDisplayLabel,
   type VibodeVersionKind,
 } from "@/lib/vibode/version-kind";
+import { cleanupHistoryVersionSecondaryLabel } from "@/lib/vibode-stage/remove-cleanup-history-ui";
+import { isRemoveHistoryAsset, REMOVE_EDIT_LABEL } from "@/lib/vibode-stage/remove-edit";
 
 import {
   createInitialEditorViewportMode,
@@ -2250,6 +2252,7 @@ function formatVersionTimestamp(value: string): string {
 }
 
 function getVersionSecondaryLabel(asset: VibodeRoomAsset): string {
+  if (isRemoveHistoryAsset(asset)) return REMOVE_EDIT_LABEL;
   if (asset.asset_type !== "stage_output") return "Original upload";
   const stageLabel =
     typeof asset.stage_number === "number" && Number.isFinite(asset.stage_number)
@@ -2259,7 +2262,7 @@ function getVersionSecondaryLabel(asset: VibodeRoomAsset): string {
     typeof asset.model_version === "string" && asset.model_version.trim().length > 0
       ? asset.model_version
       : "Unknown model";
-  return `Stage ${stageLabel} · ${modelLabel}`;
+  return cleanupHistoryVersionSecondaryLabel(asset, `Stage ${stageLabel} · ${modelLabel}`);
 }
 
 async function loadRoomHydrationData(
@@ -5445,6 +5448,11 @@ function EditorPageInner() {
     () => readOriginalPlacementSnapshotFromMetadata(selectedVersion?.metadata),
     [selectedVersion?.metadata]
   );
+  const refreshCleanupHistory = useCallback(async (roomId: string) => {
+    const previousActiveId = activeAssetIdRef.current;
+    await refreshRoomVersions(roomId);
+    if (previousActiveId) setActiveAssetId(previousActiveId);
+  }, [refreshRoomVersions, setActiveAssetId]);
   const selectedVersionIdRef = useRef<string | null>(selectedVersionId);
   const selectedVersionRenderedPlacementStateHashRef = useRef<string | null>(
     selectedVersionRenderedPlacementStateHash
@@ -5763,6 +5771,17 @@ function EditorPageInner() {
     },
     [handleSelectVersion, selectedVersionId, versions]
   );
+
+  const activateSavedRemoveEdit = useCallback(async (roomId: string, assetId: string) => {
+    const accessToken = await tryGetSupabaseAccessToken();
+    if (!accessToken) throw new Error("Remove history needs a signed-in session.");
+    await setActiveVersionForRoom({ roomId, assetId, accessToken });
+    const latest = await refreshRoomVersions(roomId);
+    const asset = latest?.find((item) => item.id === assetId) ?? null;
+    if (!asset || !latest) throw new Error("Saved Remove image is not in History yet.");
+    const applied = applyVersionToEditorState(asset, latest);
+    if (!applied) throw new Error("Saved Remove image has no preview.");
+  }, [applyVersionToEditorState, refreshRoomVersions]);
 
   const handleSetVersionAsBaseImage = useCallback(
     async (asset: EditorVersionWithKind) => {
@@ -12208,7 +12227,14 @@ function EditorPageInner() {
       <div className="flex min-h-0 flex-1 w-full overflow-hidden">
         {/* Canvas area */}
         <main className={`flex min-h-0 flex-1 overflow-hidden bg-neutral-950 ${viewportMode === "3d" ? "" : "items-center justify-center"}`}>
-          <StageEditorShell active={viewportMode === "3d"}>
+          <StageEditorShell
+            active={viewportMode === "3d"}
+            roomId={editorRoomId}
+            activeHistoryAssetId={activeAssetId}
+            activeHistoryImageUrl={versions.find((asset) => asset.id === activeAssetId)?.image_url ?? null}
+            onCleanupHistoryAccepted={refreshCleanupHistory}
+            onRemoveEditSaved={activateSavedRemoveEdit}
+          >
           <div className="flex w-full flex-col items-center justify-center gap-3 px-3">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div

@@ -4,6 +4,7 @@ import { useCallback, useLayoutEffect, useRef } from "react";
 
 import { StageProductCard } from "@/components/stage/StageProductCard";
 import { StageProductDetail } from "@/components/stage/StageProductDetail";
+import { useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import {
   allStageProducts,
   useStageEditor,
@@ -16,6 +17,7 @@ import {
 } from "@/lib/vibode-stage/catalog";
 import { visibleStageCatalogProducts } from "@/lib/vibode-stage/catalog-query";
 import { resolveStagePlacement } from "@/lib/vibode-stage/catalog";
+import { removeInspectionAllowsCatalogPlacement } from "@/lib/vibode-stage/remove-alignment";
 import { stageAddLockKey } from "@/lib/vibode-stage/stage-runtime-placement";
 import {
   STAGE_CATALOG_MODES,
@@ -27,6 +29,9 @@ const FOCUS =
 
 export function StageCatalogDrawer() {
   const stage = useStageEditor();
+  const placementOpen = removeInspectionAllowsCatalogPlacement(
+    useRemoveAlignment()?.active === true,
+  );
   const scrollerRef = useRef<HTMLDivElement>(null);
   const pendingScrollTopRef = useRef<number | null>(null);
   const products = allStageProducts(stage.extraProducts, stage.catalog);
@@ -61,10 +66,11 @@ export function StageCatalogDrawer() {
   });
 
   const addProductPreservingScroll = useCallback((productId: string, variantId?: string | null) => {
+    if (!placementOpen) return;
     const scroller = scrollerRef.current;
     if (scroller) pendingScrollTopRef.current = scroller.scrollTop;
     stage.addProductToRoom(productId, variantId);
-  }, [stage]);
+  }, [placementOpen, stage]);
 
   return (
     <aside
@@ -78,6 +84,7 @@ export function StageCatalogDrawer() {
         stage.catalogSettled ? (stage.catalogOpen ? "open" : "closed") : "pending"
       }
       data-stage-catalog-pinned={stage.catalogPinned ? "true" : "false"}
+      data-catalog-placement={placementOpen ? "open" : "blocked"}
       data-stage-catalog-authority={stage.catalogAuthority}
       data-stage-catalog-mode={stage.catalogMode}
       aria-hidden={!stage.catalogSettled || !stage.catalogOpen}
@@ -217,6 +224,7 @@ export function StageCatalogDrawer() {
                     <CatalogCard
                       key={product.productId}
                       productId={product.productId}
+                      placementOpen={placementOpen}
                       onAdd={addProductPreservingScroll}
                     />
                   ))}
@@ -228,6 +236,7 @@ export function StageCatalogDrawer() {
               className="mt-3 border-t border-neutral-800 pt-3"
               onSubmit={(event) => {
                 event.preventDefault();
+                if (!placementOpen) return;
                 void stage.pasteProductLink();
               }}
             >
@@ -241,7 +250,8 @@ export function StageCatalogDrawer() {
                 />
                 <button
                   type="submit"
-                  disabled={stage.pasteBusy}
+                  disabled={!placementOpen || stage.pasteBusy}
+                  title={placementOpen ? undefined : "Placement is paused during Remove inspection."}
                   className={`rounded-md border border-neutral-700 px-2 py-1.5 text-xs text-neutral-200 ${FOCUS}`}
                 >
                   {stage.pasteBusy ? "…" : "+"}
@@ -260,9 +270,11 @@ export function StageCatalogDrawer() {
 
 function CatalogCard({
   productId,
+  placementOpen,
   onAdd,
 }: {
   productId: string;
+  placementOpen: boolean;
   onAdd: (productId: string, variantId?: string | null) => void;
 }) {
   const stage = useStageEditor();
@@ -281,7 +293,7 @@ function CatalogCard({
       product={product}
       favorited={stage.favorites.has(favoriteKey(product.productId, product.defaultVariantId))}
       added={stage.addedProductId === product.productId}
-      canAdd={canAdd}
+      canAdd={canAdd && placementOpen}
       addPending={stage.addPendingKey === addKey}
       addError={stage.addErrorKey === addKey ? stage.addError : null}
       onOpen={() => stage.openProductDetail(product.productId)}

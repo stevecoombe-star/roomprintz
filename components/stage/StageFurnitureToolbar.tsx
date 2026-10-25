@@ -1,6 +1,7 @@
 "use client";
 
 import { useAfcSceneObjectCrudSession } from "@/components/afc-3d/AfcSceneObjectCrudSession";
+import { useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import { useOptionalStageEditor } from "@/components/stage/StageEditorContext";
 import { formatRotationDeg, snapRotationDegIfNear } from "@/lib/vibode-stage/rotate";
 import {
@@ -10,6 +11,7 @@ import {
   STAGE_SIZE_MAX,
   STAGE_SIZE_MIN,
 } from "@/lib/vibode-stage/size";
+import { removeInspectionAllowsFurnitureManipulation } from "@/lib/vibode-stage/remove-alignment";
 import { placeStageToolbar, shouldHideToolbarDuringPointer } from "@/lib/vibode-stage/toolbar";
 
 const FOCUS =
@@ -18,6 +20,10 @@ const FOCUS =
 export function StageFurnitureToolbar() {
   const stage = useOptionalStageEditor();
   const session = useAfcSceneObjectCrudSession();
+  const remove = useRemoveAlignment();
+  const manipulationEnabled = removeInspectionAllowsFurnitureManipulation(remove?.active === true);
+  const brushPointerIgnored = remove?.active === true
+    && (remove.mode === "brush" || remove.mode === "objects");
   const selection = stage?.selection ?? null;
   if (!stage || !stage.active || !selection || !session?.selectedObjectId) return null;
   if (
@@ -42,9 +48,15 @@ export function StageFurnitureToolbar() {
     <div
       className="pointer-events-none absolute inset-0 z-30"
       data-stage-toolbar="true"
+      data-furniture-manipulation={manipulationEnabled ? "open" : "blocked"}
     >
       <div
-        className="pointer-events-auto absolute"
+        className={
+          brushPointerIgnored
+            ? "pointer-events-none absolute [&_*]:pointer-events-none"
+            : "pointer-events-auto absolute"
+        }
+        data-remove-brush-pointer={brushPointerIgnored ? "ignored" : "open"}
         style={{ left: placement.left, top: placement.top }}
       >
         {stage.toolbarSlider === "rotate" ? (
@@ -59,10 +71,13 @@ export function StageFurnitureToolbar() {
               step={1}
               value={Math.round(selection.rotationYDeg)}
               aria-label="Rotate"
+              disabled={!manipulationEnabled}
               onChange={(event) => {
+                if (!manipulationEnabled) return;
                 session.commitRotationYDeg(Number(event.target.value));
               }}
               onPointerUp={(event) => {
+                if (!manipulationEnabled) return;
                 session.commitRotationYDeg(
                   snapRotationDegIfNear(Number(event.currentTarget.value)),
                 );
@@ -79,7 +94,11 @@ export function StageFurnitureToolbar() {
                 <button
                   type="button"
                   className={`rounded border border-neutral-700 px-1.5 py-0.5 text-[10px] text-neutral-300 ${FOCUS}`}
-                  onClick={() => session.commitUserSizeMultiplier(STAGE_SIZE_DEFAULT)}
+                  disabled={!manipulationEnabled}
+                  onClick={() => {
+                    if (!manipulationEnabled) return;
+                    session.commitUserSizeMultiplier(STAGE_SIZE_DEFAULT);
+                  }}
                 >
                   100%
                 </button>
@@ -92,7 +111,9 @@ export function StageFurnitureToolbar() {
               step={0.01}
               value={selection.userSizeMultiplier}
               aria-label="Size"
+              disabled={!manipulationEnabled}
               onChange={(event) => {
+                if (!manipulationEnabled) return;
                 session.commitUserSizeMultiplier(Number(event.target.value));
               }}
               className="h-1 w-44 accent-neutral-200"
@@ -103,28 +124,45 @@ export function StageFurnitureToolbar() {
           <ToolbarButton
             label="Move"
             pressed={stage.transformMode === "move" && stage.toolbarSlider !== "size"}
-            onClick={() => stage.setTransformMode("move")}
+            disabled={!manipulationEnabled}
+            onClick={() => {
+              if (!manipulationEnabled) return;
+              stage.setTransformMode("move");
+            }}
           />
           <ToolbarButton
             label="Rotate"
             pressed={stage.toolbarSlider === "rotate"}
-            onClick={() => stage.setTransformMode("rotate")}
+            disabled={!manipulationEnabled}
+            onClick={() => {
+              if (!manipulationEnabled) return;
+              stage.setTransformMode("rotate");
+            }}
           />
           <ToolbarButton
             label="Size"
             pressed={stage.toolbarSlider === "size"}
+            disabled={!manipulationEnabled}
             onClick={() => {
+              if (!manipulationEnabled) return;
               stage.setToolbarSlider(stage.toolbarSlider === "size" ? null : "size");
             }}
           />
           <ToolbarButton
             label="Duplicate"
-            disabled={session.atObjectLimit}
-            onClick={() => session.duplicateSelected()}
+            disabled={!manipulationEnabled || session.atObjectLimit}
+            onClick={() => {
+              if (!manipulationEnabled) return;
+              session.duplicateSelected();
+            }}
           />
           <ToolbarButton
             label="Delete"
-            onClick={() => session.deleteSelected()}
+            disabled={!manipulationEnabled}
+            onClick={() => {
+              if (!manipulationEnabled) return;
+              session.deleteSelected();
+            }}
           />
         </div>
       </div>
