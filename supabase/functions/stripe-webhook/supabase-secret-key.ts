@@ -1,4 +1,4 @@
-const NAMED_SECRET_KEY = "vibode_ui_production";
+const NAMED_SECRET_KEY = "vibode_ui_railway_recovery_20261021";
 
 export function resolveSupabaseSecretKey(
   secretKeysJson: string | undefined,
