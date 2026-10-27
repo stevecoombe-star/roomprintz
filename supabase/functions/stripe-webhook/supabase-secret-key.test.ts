@@ -20,10 +20,11 @@ function assertThrows(callback: () => unknown, expectedMessage: string) {
   throw new Error("Expected callback to throw.");
 }
 
-Deno.test("resolves the vibode_ui_production named secret key", () => {
+Deno.test("resolves the vibode_ui_railway_recovery_20261021 named secret key", () => {
   const secretKey = resolveSupabaseSecretKey(
     JSON.stringify({
-      vibode_ui_production: "sb_secret_test_key",
+      vibode_ui_production: "old_key_not_selected",
+      vibode_ui_railway_recovery_20261021: "sb_secret_test_key",
       another_key: "unused",
     }),
   );
@@ -54,21 +55,27 @@ Deno.test("rejects non-object SUPABASE_SECRET_KEYS JSON", () => {
   }
 });
 
-Deno.test("rejects a missing vibode_ui_production named key", () => {
+Deno.test("rejects a missing vibode_ui_railway_recovery_20261021 named key", () => {
   assertThrows(
-    () => resolveSupabaseSecretKey(JSON.stringify({ another_key: "unused" })),
-    'named "vibode_ui_production"',
+    () =>
+      resolveSupabaseSecretKey(
+        JSON.stringify({
+          vibode_ui_production: "old_key_not_selected",
+          another_key: "unused",
+        }),
+      ),
+    'named "vibode_ui_railway_recovery_20261021"',
   );
 });
 
-Deno.test("rejects non-string and empty vibode_ui_production named keys", () => {
+Deno.test("rejects non-string and empty vibode_ui_railway_recovery_20261021 named keys", () => {
   for (const value of [null, 1, "", "   "]) {
     assertThrows(
       () =>
         resolveSupabaseSecretKey(
-          JSON.stringify({ vibode_ui_production: value }),
+          JSON.stringify({ vibode_ui_railway_recovery_20261021: value }),
         ),
-      'named "vibode_ui_production"',
+      'named "vibode_ui_railway_recovery_20261021"',
     );
   }
 });
