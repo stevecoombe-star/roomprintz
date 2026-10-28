@@ -207,8 +207,8 @@ test("cleanup route loads ORIGINAL itself and does not call a provider", () => {
   assert.match(route, /export const runtime = "nodejs"/);
   assert.match(route, /export const dynamic = "force-dynamic"/);
   assert.match(route, /loadOwnedOriginalForProductionAnalysis/);
-  assert.match(route, /getAuthenticatedAdminUser/);
-  assert.doesNotMatch(route, /readRemoveActor/);
+  assert.match(route, /readRemoveActor/);
+  assert.doesNotMatch(route, /getAuthenticatedAdminUser|isAdminEmail|VIBODE_ADMIN_EMAIL/);
   assert.doesNotMatch(route, /export async function GET|createRoboflowRemoveSegmentationProvider/);
   assert.match(handler, /prepareAuthorizedRemoveCleanupInput/);
   assert.match(handler, /Cache-Control": "no-store"/);

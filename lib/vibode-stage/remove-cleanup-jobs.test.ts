@@ -187,9 +187,16 @@ test("migration, routes, and worker stay private and isolated", () => {
   assert.match(sql, /grant select, insert, update, delete on table public\.vibode_cleanup_generations to service_role/);
   assert.equal(sql.includes("alter table public.vibode_harmonize"), false);
   assert.match(sql, /'vibode-cleanup',\s*\n\s*'vibode-cleanup',\s*\n\s*false/);
-  assert.match(route, /getAuthenticatedAdminUser|createRemoveCleanupRouteDeps/);
+  assert.match(route, /createRemoveCleanupRouteDeps/);
+  assert.doesNotMatch(route, /getAuthenticatedAdminUser|isAdminEmail/);
+  assert.match(source("lib/vibode-stage/remove-cleanup-jobs/route-deps.ts"), /readRemoveActor/);
+  assert.doesNotMatch(
+    source("lib/vibode-stage/remove-cleanup-jobs/route-deps.ts"),
+    /getAuthenticatedAdminUser|isAdminEmail|VIBODE_ADMIN_EMAIL/,
+  );
   assert.doesNotMatch(route, /generativelanguage|publishHarmonize|vibode-generations/);
-  assert.match(worker, /--provider/);
+  assert.match(worker, /process\.argv\.slice\(2\)/);
+  assert.match(source("cleanup-worker/src/startup.ts"), /--provider google\|fake/);
   assert.doesNotMatch(worker, /publishHarmonize|vibode_harmonize_generations/);
   assert.match(session, /RemoveCleanupGeneration/);
   assert.match(component, /Clean Up Room/);

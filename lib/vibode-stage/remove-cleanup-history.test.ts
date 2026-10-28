@@ -343,7 +343,7 @@ test("an owned success publishes once and another admin is rejected", async () =
   assert.equal(control.ledger.roomUpdates, 0);
 });
 
-test("accept route stays admin-only and history publication stays inactive", async () => {
+test("accept requires a signed-in user and history publication stays inactive", async () => {
   const denied = await handleRemoveCleanupAccept({
     getAdmin: async () => null,
     prepareDeps: {} as never,

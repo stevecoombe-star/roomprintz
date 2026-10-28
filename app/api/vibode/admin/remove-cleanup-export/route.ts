@@ -1,20 +1,17 @@
-import { getAuthenticatedAdminUser, getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 import {
   createProductionAfcStoreFromEnv,
   loadOwnedOriginalForProductionAnalysis,
 } from "@/lib/afc-v2-production/production-persistence.server";
 import { handleRemoveCleanupExport } from "@/lib/vibode-stage/remove-cleanup-export.server";
+import { readRemoveActor } from "@/lib/vibode-stage/remove-access.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   return handleRemoveCleanupExport(request, {
-    getAdmin: async () => {
-      const user = await getAuthenticatedAdminUser();
-      if (!user?.id) return null;
-      return { id: user.id };
-    },
+    getAdmin: readRemoveActor,
     createStore: createProductionAfcStoreFromEnv,
     createService: getServiceRoleSupabaseClient,
     loadOriginal: async (service, input) => {

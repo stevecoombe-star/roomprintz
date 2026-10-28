@@ -4,20 +4,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { deflateSync } from "node:zlib";
 import test from "node:test";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 
 import sharp from "sharp";
 
 import type { AfcGenerationRecord, AfcRoomPointer } from "@/lib/afc-v2-production/production-store";
 import { sha256Hex } from "@/lib/afc-v2-production/production-artifact-integrity";
 import { isAdminEmail } from "@/lib/adminAccess";
-import { RemoveCleanupAdminGate } from "@/components/stage/RemoveCleanupAdminGate";
-import {
-  cleanupAdminAccessConfirmed,
-  readCleanupAdminAccess,
-  REMOVE_CLEANUP_ADMIN_ACCESS_PATH,
-} from "@/lib/vibode-stage/remove-cleanup-admin-access";
 import { handleRemoveCleanupExport } from "@/lib/vibode-stage/remove-cleanup-export.server";
 import { createMemoryCleanupArtifacts } from "@/lib/vibode-stage/remove-cleanup-jobs/artifacts";
 import { enqueuePreparedCleanupJob } from "@/lib/vibode-stage/remove-cleanup-jobs/enqueue";
@@ -33,7 +25,7 @@ import {
   type CleanupHttpDeps,
 } from "@/lib/vibode-stage/remove-cleanup-jobs/http";
 import { createMemoryCleanupControl, type CleanupControl } from "@/lib/vibode-stage/remove-cleanup-jobs/runtime";
-import { authorizeCleanupWorkerClaim, type CleanupWorkerUserLookup } from "@/lib/vibode-stage/remove-cleanup-jobs/worker-auth";
+import { authorizeCleanupWorkerClaim } from "@/lib/vibode-stage/remove-cleanup-jobs/worker-auth";
 import {
   prepareAuthorizedRemoveCleanupInput,
   type RemoveCleanupExportDeps,
@@ -234,13 +226,15 @@ function providerFailure() {
   };
 }
 
-test("cleanup routes use the admin actor and leave instant REMOVE on readRemoveActor", () => {
+test("cleanup routes use the signed-in owner and leave administrator checks on genuine admin routes", () => {
   const deps = source("lib/vibode-stage/remove-cleanup-jobs/route-deps.ts");
   const exportRoute = source("app/api/vibode/admin/remove-cleanup-export/route.ts");
-  assert.match(deps, /getAuthenticatedAdminUser/);
-  assert.doesNotMatch(deps, /readRemoveActor/);
-  assert.match(exportRoute, /getAuthenticatedAdminUser/);
-  assert.doesNotMatch(exportRoute, /readRemoveActor/);
+  const workerAuth = source("lib/vibode-stage/remove-cleanup-jobs/worker-auth.ts");
+  assert.match(deps, /readRemoveActor/);
+  assert.doesNotMatch(deps, /getAuthenticatedAdminUser|isAdminEmail|VIBODE_ADMIN_EMAIL/);
+  assert.match(exportRoute, /readRemoveActor/);
+  assert.doesNotMatch(exportRoute, /getAuthenticatedAdminUser|isAdminEmail|VIBODE_ADMIN_EMAIL/);
+  assert.doesNotMatch(workerAuth, /isAdminEmail|VIBODE_ADMIN_EMAIL|getAuthenticatedAdminUser/);
   for (const relativePath of [
     "app/api/vibode/admin/remove-cleanup-jobs/route.ts",
     "app/api/vibode/admin/remove-cleanup-jobs/[jobId]/route.ts",
@@ -251,8 +245,10 @@ test("cleanup routes use the admin actor and leave instant REMOVE on readRemoveA
   ]) {
     const route = source(relativePath);
     assert.match(route, /createRemoveCleanupRouteDeps/);
-    assert.doesNotMatch(route, /readRemoveActor/);
+    assert.doesNotMatch(route, /getAuthenticatedAdminUser|isAdminEmail/);
   }
+  assert.match(source("app/api/vibode/admin/furniture-partners/route.ts"), /getAuthenticatedAdminUser/);
+  assert.match(source("lib/adminAccess.ts"), /VIBODE_ADMIN_EMAIL/);
   const objects = source("app/api/vibode/admin/remove-objects/route.ts");
   const alignment = source("app/api/vibode/admin/remove-alignment/route.ts");
   const actor = source("lib/vibode-stage/remove-access.server.ts");
@@ -273,7 +269,7 @@ test("cleanup routes use the admin actor and leave instant REMOVE on readRemoveA
   }
 });
 
-test("anonymous and authenticated non-admin cleanup calls fail before service writes", async () => {
+test("anonymous cleanup calls fail before service writes", async () => {
   const tiny = new Request("http://127.0.0.1/api/vibode/admin/remove-cleanup-jobs", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -281,7 +277,7 @@ test("anonymous and authenticated non-admin cleanup calls fail before service wr
   });
   const statusUrl = new Request(`http://127.0.0.1/api/vibode/admin/remove-cleanup-jobs?roomId=${ROOM}`);
   const jobUrl = new Request("http://127.0.0.1/api/vibode/admin/remove-cleanup-jobs/job");
-  for (const actor of ["anonymous", "authenticated-non-admin"] as const) {
+  for (const actor of ["anonymous"] as const) {
     const deps = closedDeps(null);
     const enqueue = await handleRemoveCleanupEnqueue(tiny.clone(), deps);
     const listed = await handleRemoveCleanupRoomStatus(statusUrl.clone(), deps);
@@ -303,7 +299,7 @@ test("anonymous and authenticated non-admin cleanup calls fail before service wr
   }
 });
 
-test("an admin can enqueue an owned room and cannot enqueue another user's room", async () => {
+test("an authenticated owner can enqueue an owned room and cannot enqueue another user's room", async () => {
   const bytes = await png(30, 20);
   const box = memoryControl();
   let originals = 0;
@@ -352,7 +348,7 @@ test("an admin can enqueue an owned room and cannot enqueue another user's room"
   assert.equal(box.runtime.database.jobs.length, 1);
 });
 
-test("forged ids, foreign jobs, and cleanup mutations stay inside the admin owner boundary", async () => {
+test("forged ids, foreign jobs, and cleanup mutations stay inside the owner boundary", async () => {
   const prepared = await preparedSnapshot();
   const box = memoryControl();
   const queued = await enqueuePreparedCleanupJob(box.runtime, prepared, {
@@ -478,92 +474,85 @@ test("non-admin cleanup export is rejected before the original is loaded", async
   assert.equal(loaded, 0);
 });
 
-test("cleanup controls mount and poll only after a confirmed admin-access response", async () => {
-  const deniedPayloads: unknown[] = [
-    null,
-    [],
-    {},
-    { isAdmin: false },
-    { isAdmin: "true" },
-    { isAdmin: 1 },
-    { admin: true },
-  ];
-  for (const payload of deniedPayloads) assert.equal(cleanupAdminAccessConfirmed(payload), false);
-  assert.equal(cleanupAdminAccessConfirmed({ isAdmin: true }), true);
-  assert.equal(cleanupAdminAccessConfirmed({ isAdmin: true, email: OWNER_EMAIL }), true);
-
-  const fetches: string[] = [];
-  const denied = await readCleanupAdminAccess(async (input) => {
-    fetches.push(String(input));
-    return new Response("not-json", { status: 200 });
-  });
-  assert.equal(denied, false);
-  assert.deepEqual(fetches, [REMOVE_CLEANUP_ADMIN_ACCESS_PATH]);
-
-  const unavailable = await readCleanupAdminAccess(async () => new Response(JSON.stringify({ isAdmin: true }), { status: 503 }));
-  assert.equal(unavailable, false);
-  const thrown = await readCleanupAdminAccess(async () => {
-    throw new Error("offline");
-  });
-  assert.equal(thrown, false);
-  const confirmed = await readCleanupAdminAccess(async () => Response.json({ isAdmin: true }));
-  assert.equal(confirmed, true);
-
-  let mounted = 0;
-  const polls: string[] = [];
-  function PollProbe() {
-    mounted += 1;
-    polls.push("/api/vibode/admin/remove-cleanup-jobs?roomId=probe");
-    return createElement("div", { "data-remove-cleanup-generation": "panel" });
-  }
-  const hidden = renderToStaticMarkup(createElement(
-    RemoveCleanupAdminGate,
-    { confirmed: denied },
-    createElement(PollProbe),
-  ));
-  assert.equal(hidden, "");
-  assert.equal(mounted, 0);
-  assert.deepEqual(polls, []);
-  const shown = renderToStaticMarkup(createElement(
-    RemoveCleanupAdminGate,
-    { confirmed },
-    createElement(PollProbe),
-  ));
-  assert.match(shown, /data-remove-cleanup-generation="panel"/);
-  assert.equal(mounted, 1);
-  assert.deepEqual(polls, ["/api/vibode/admin/remove-cleanup-jobs?roomId=probe"]);
-
+test("cleanup controls mount for an objects session without an administrator check", () => {
   const session = source("components/stage/RemoveAlignmentSession.tsx");
   const generation = source("components/stage/RemoveCleanupGeneration.tsx");
-  assert.match(session, /readCleanupAdminAccess\(\)/);
-  assert.match(session, /setCleanupAdmin\(confirmed === true\)/);
-  assert.match(session, /<RemoveCleanupAdminGate confirmed=\{session\.cleanupAdmin\}>/);
+  assert.doesNotMatch(session, /RemoveCleanupAdminGate|readCleanupAdminAccess|cleanupAdmin|\/api\/auth\/admin-access/);
   assert.doesNotMatch(session, /VIBODE_ADMIN_EMAIL|isAdminEmail|getAuthenticatedAdminUser/);
-  const withoutGate = session.replace(/<RemoveCleanupAdminGate[\s\S]*?<\/RemoveCleanupAdminGate>/, "");
-  assert.equal(withoutGate.includes("<RemoveCleanupGeneration"), false);
-  assert.equal(withoutGate.includes('data-remove-cleanup="export"'), false);
-  assert.match(withoutGate, /aria-label="Remove"/);
-  assert.match(withoutGate, /Hide All/);
-  assert.match(withoutGate, /Show All/);
-  assert.match(withoutGate, /data-remove-objects="done"/);
-  assert.match(withoutGate, /"Done"/);
-  assert.match(withoutGate, />\s*Brush\s*</);
-  assert.match(withoutGate, />\s*Objects\s*</);
+  assert.match(session, /data-remove-cleanup="panel"/);
+  assert.match(session, /data-remove-cleanup="export"/);
+  assert.match(session, /<RemoveCleanupGeneration/);
+  assert.match(session, /removeCleanupExportAvailability/);
+  assert.match(session, /aria-label="Remove"/);
+  assert.match(session, /Hide All/);
+  assert.match(session, /Show All/);
+  assert.match(session, /data-remove-objects="done"/);
+  assert.match(session, /"Done"/);
+  assert.match(session, />\s*Brush\s*</);
+  assert.match(session, />\s*Objects\s*</);
+  const objects = session.slice(session.indexOf("function ObjectControls"), session.indexOf("function objectStatus"));
+  assert.match(objects, /data-remove-cleanup="panel"/);
+  assert.match(objects, /<RemoveCleanupGeneration/);
+  assert.match(session, /session\.mode === "brush" \? \([\s\S]*<ObjectControls session=\{session\} \/>/);
   const roomPoll = generation.slice(
     generation.indexOf("useEffect(() => {"),
     generation.indexOf("}, [roomId, generationId]);"),
   );
   assert.match(roomPoll, /loadRoomJob/);
   assert.match(generation, /remove-cleanup-jobs\?roomId/);
+  assert.throws(() => source("components/stage/RemoveCleanupAdminGate.tsx"));
+  assert.throws(() => source("lib/vibode-stage/remove-cleanup-admin-access.ts"));
 });
 
-test("the worker denies a queued non-admin before contact and does not retry it", async () => {
-  const prepared = await preparedSnapshot();
+test("an ordinary owner can use Clean Up while the administrator email is someone else", async () => {
+  const bytes = await png(30, 20);
+  const box = memoryControl();
   await withAdminEmail(ADMIN_EMAIL, async () => {
+    assert.equal(isAdminEmail(OWNER_EMAIL), false);
+    const prepare = {
+      ...ownedDeps(bytes, 30, 20, OWNER),
+      getAdmin: async () => ({ id: OWNER }),
+    };
+    const http = {
+      getAdmin: async () => ({ id: OWNER }),
+      prepareDeps: prepare,
+      control: box.runtime,
+    };
+    const created = await handleRemoveCleanupEnqueue(cleanupRequest(bytes), http);
+    assert.equal(created.status, 200);
+    const body = await created.json() as { job: { jobId: string } };
+    const status = await handleRemoveCleanupJobStatus(new Request("http://127.0.0.1/job"), http, body.job.jobId);
+    assert.equal(status.status, 200);
+    const listed = await handleRemoveCleanupRoomStatus(
+      new Request(`http://127.0.0.1/jobs?roomId=${ROOM}`),
+      http,
+    );
+    assert.equal((await listed.json() as { job: { jobId: string } }).job.jobId, body.job.jobId);
+    const stranger = { ...http, getAdmin: async () => ({ id: ADMIN }) };
+    assert.equal((await handleRemoveCleanupJobStatus(new Request("http://127.0.0.1/job"), stranger, body.job.jobId)).status, 404);
+    assert.equal((await handleRemoveCleanupCandidate(stranger, body.job.jobId)).status, 404);
+    assert.equal((await handleRemoveCleanupAccept(stranger, body.job.jobId)).status, 404);
+    const hiddenList = await handleRemoveCleanupRoomStatus(
+      new Request(`http://127.0.0.1/jobs?roomId=${ROOM}`),
+      stranger,
+    );
+    assert.equal((await hiddenList.json() as { job: unknown }).job, null);
+    assert.equal((await handleRemoveCleanupJobStatus(
+      new Request("http://127.0.0.1/job"),
+      { ...http, getAdmin: async () => null },
+      body.job.jobId,
+    )).status, 404);
+  });
+});
+
+test("the worker denies a claim whose user does not own the room and does not retry it", async () => {
+  const prepared = await preparedSnapshot();
+  await withAdminEmail(undefined, async () => {
+    assert.equal(isAdminEmail(OWNER_EMAIL), false);
     const box = memoryControl();
     const queued = await enqueuePreparedCleanupJob(box.runtime, prepared, {
-      userId: ADMIN,
-      roomUserId: ADMIN,
+      userId: OWNER,
+      roomUserId: OWNER,
       currentGenerationId: GENERATION,
     });
     assert.equal(queued.ok, true);
@@ -576,10 +565,12 @@ test("the worker denies a queued non-admin before contact and does not retry it"
           throw new Error("provider contact");
         },
       },
-      authorizeClaim: (claim) => authorizeCleanupWorkerClaim(async (userId) => {
-        events.push(`authorize:${userId}`);
-        return { data: { user: { email: OWNER_EMAIL } }, error: null };
-      }, claim.userId),
+      authorizeClaim: (claim) => authorizeCleanupWorkerClaim(async (input) => {
+        events.push(`authorize:${input.userId}`);
+        assert.equal("jobId" in input, false);
+        assert.equal(input.roomId, ROOM);
+        return { data: { ownerId: ADMIN }, error: null };
+      }, { userId: claim.userId, roomId: claim.roomId }),
       heartbeatIntervalMs: 60_000,
       generate: async () => {
         events.push("generate");
@@ -589,12 +580,11 @@ test("the worker denies a queued non-admin before contact and does not retry it"
     assert.equal(denied.outcome, "failed");
     assert.equal(denied.code, "unauthorized");
     assert.equal(denied.posts, 0);
-    assert.deepEqual(events, [`authorize:${ADMIN}`]);
+    assert.deepEqual(events, [`authorize:${OWNER}`]);
     const job = box.runtime.database.jobs[0];
     assert.equal(job?.status, "failed");
     assert.equal(job?.failureCode, "unauthorized");
     assert.equal(job?.providerStartedAtMs, null);
-    assert.equal(job?.failureMessage?.includes(OWNER_EMAIL), false);
     const again = await executeCleanupClaim({
       control: box.runtime,
       authorizeClaim: async () => {
@@ -608,59 +598,68 @@ test("the worker denies a queued non-admin before contact and does not retry it"
       },
     });
     assert.equal(again.outcome, "idle");
-    assert.deepEqual(events, [`authorize:${ADMIN}`]);
+    assert.deepEqual(events, [`authorize:${OWNER}`]);
   });
 });
 
-test("missing admin configuration, missing users, and lookup errors fail closed before Gemini", async () => {
+test("missing rooms and lookup errors fail closed before Gemini", async () => {
   const prepared = await preparedSnapshot();
-  const cases: Array<readonly [string, string | undefined, CleanupWorkerUserLookup]> = [
-    ["missing-config", undefined, async () => {
-      throw new Error("lookup");
-    }],
-    ["lookup-error", ADMIN_EMAIL, async () => {
+  const cases: Array<readonly [string, (input: { userId: string; roomId: string }) => Promise<{ data: { ownerId: string } | null; error: unknown }>]> = [
+    ["lookup-error", async () => {
       throw new Error("auth unavailable");
     }],
-    ["missing-user", ADMIN_EMAIL, async () => ({ data: { user: null }, error: { message: "missing" } })],
-    ["blank-email", ADMIN_EMAIL, async () => ({ data: { user: { email: "  " } }, error: null })],
+    ["missing-room", async () => ({ data: null, error: { message: "missing" } })],
+    ["blank-owner", async () => ({ data: { ownerId: "  " }, error: null })],
   ];
-  for (const [label, email, lookup] of cases) {
-    await withAdminEmail(email, async () => {
-      assert.equal(await authorizeCleanupWorkerClaim(lookup, ADMIN), false, label);
-      const box = memoryControl();
-      const queued = await enqueuePreparedCleanupJob(box.runtime, prepared, {
-        userId: ADMIN,
-        roomUserId: ADMIN,
-        currentGenerationId: GENERATION,
-      });
-      assert.equal(queued.ok, true, label);
-      const events: string[] = [];
-      const result = await executeCleanupClaim({
-        control: {
-          ...box.runtime,
-          contact: async () => {
-            events.push("contact");
-            throw new Error("provider contact");
-          },
-        },
-        authorizeClaim: (claim) => authorizeCleanupWorkerClaim(lookup, claim.userId),
-        heartbeatIntervalMs: 60_000,
-        generate: async () => {
-          events.push("generate");
-          throw new Error("Gemini contacted");
-        },
-      });
-      assert.equal(result.code, "unauthorized", label);
-      assert.deepEqual(events, [], label);
-      assert.equal(box.runtime.database.jobs[0]?.providerStartedAtMs, null, label);
-      assert.equal(box.runtime.database.jobs[0]?.status, "failed", label);
+  let blankLookups = 0;
+  assert.equal(await authorizeCleanupWorkerClaim(async () => {
+    blankLookups += 1;
+    return { data: { ownerId: OWNER }, error: null };
+  }, { userId: " ", roomId: ROOM }), false);
+  assert.equal(await authorizeCleanupWorkerClaim(async () => {
+    blankLookups += 1;
+    return { data: { ownerId: OWNER }, error: null };
+  }, { userId: OWNER, roomId: "" }), false);
+  assert.equal(blankLookups, 0);
+  for (const [label, lookup] of cases) {
+    assert.equal(await authorizeCleanupWorkerClaim(lookup, { userId: OWNER, roomId: ROOM }), false, label);
+    const box = memoryControl();
+    const queued = await enqueuePreparedCleanupJob(box.runtime, prepared, {
+      userId: OWNER,
+      roomUserId: OWNER,
+      currentGenerationId: GENERATION,
     });
+    assert.equal(queued.ok, true, label);
+    const events: string[] = [];
+    const result = await executeCleanupClaim({
+      control: {
+        ...box.runtime,
+        contact: async () => {
+          events.push("contact");
+          throw new Error("provider contact");
+        },
+      },
+      authorizeClaim: (claim) => authorizeCleanupWorkerClaim(lookup, {
+        userId: claim.userId,
+        roomId: claim.roomId,
+      }),
+      heartbeatIntervalMs: 60_000,
+      generate: async () => {
+        events.push("generate");
+        throw new Error("Gemini contacted");
+      },
+    });
+    assert.equal(result.code, "unauthorized", label);
+    assert.deepEqual(events, [], label);
+    assert.equal(box.runtime.database.jobs[0]?.providerStartedAtMs, null, label);
+    assert.equal(box.runtime.database.jobs[0]?.status, "failed", label);
   }
 });
 
-test("an authorized administrator is checked before provider contact and Gemini", async () => {
+test("a room owner is authorized before provider contact without an administrator email", async () => {
   const prepared = await preparedSnapshot();
-  await withAdminEmail(ADMIN_EMAIL, async () => {
+  await withAdminEmail(undefined, async () => {
+    assert.equal(isAdminEmail(OWNER_EMAIL), false);
     const box = memoryControl();
     const queued = await enqueuePreparedCleanupJob(box.runtime, prepared, {
       userId: OWNER,
@@ -679,10 +678,13 @@ test("an authorized administrator is checked before provider contact and Gemini"
       },
       authorizeClaim: (claim) => {
         order.push("authorize");
-        return authorizeCleanupWorkerClaim(async (userId) => {
-          assert.equal(userId, OWNER);
-          return { data: { user: { email: "Admin@Example.com" } }, error: null };
-        }, claim.userId);
+        assert.equal(claim.jobId.length > 0, true);
+        return authorizeCleanupWorkerClaim(async (input) => {
+          assert.equal(input.userId, OWNER);
+          assert.equal(input.roomId, claim.roomId);
+          assert.equal("jobId" in input, false);
+          return { data: { ownerId: OWNER }, error: null };
+        }, { userId: claim.userId, roomId: claim.roomId });
       },
       heartbeatIntervalMs: 60_000,
       generate: async () => {
@@ -701,7 +703,10 @@ test("an authorized administrator is checked before provider contact and Gemini"
     const generateAt = executeSource.indexOf("await generate(");
     assert.ok(authAt > 0 && authAt < contactAt && contactAt < generateAt);
     assert.match(worker, /authorizeCleanupWorkerClaim/);
-    assert.match(source("lib/vibode-stage/remove-cleanup-jobs/worker-auth.ts"), /isAdminEmail/);
+    assert.match(worker, /from\("vibode_rooms"\)/);
+    assert.doesNotMatch(worker, /isAdminEmail|VIBODE_ADMIN_EMAIL|getUserById/);
+    assert.doesNotMatch(source("lib/vibode-stage/remove-cleanup-jobs/worker-auth.ts"), /isAdminEmail|VIBODE_ADMIN_EMAIL/);
+    assert.match(source("lib/adminAccess.ts"), /isAdminEmail/);
   });
 });
 
