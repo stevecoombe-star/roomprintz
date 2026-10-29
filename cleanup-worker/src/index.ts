@@ -1,5 +1,6 @@
 import { executeCleanupClaim, type CleanupGenerate } from "@/lib/vibode-stage/remove-cleanup-jobs/execute";
 import { authorizeCleanupWorkerClaim } from "@/lib/vibode-stage/remove-cleanup-jobs/worker-auth";
+import { cleanupWorkerProcessingEnabled } from "@/lib/vibode-stage/remove-cleanup-jobs/worker-enabled";
 import {
   removeCleanupNbpOutputConfig,
   requestRemoveCleanupNbpCandidate,
@@ -7,30 +8,27 @@ import {
 import { createSupabaseCleanupControl } from "@/lib/vibode-stage/remove-cleanup-jobs/production.server";
 import { createCleanupServiceClient } from "@/lib/vibode-stage/remove-cleanup-jobs/service-client";
 
+import { startCleanupWorkerHealthServer } from "./health";
 import { runCleanupWorker } from "./run";
+import { evaluateCleanupWorkerStartup } from "./startup";
 
-function log(event: string, fields: Record<string, string | number | null>): void {
+function log(event: string, fields: Record<string, string | number | boolean | null>): void {
   process.stdout.write(`${JSON.stringify({ event, at: new Date().toISOString(), ...fields })}\n`);
 }
 
-function providerMode(argv: readonly string[]): "google" | "fake" | null {
-  const index = argv.indexOf("--provider");
-  const mode = index >= 0 ? argv[index + 1] : "";
-  return mode === "google" || mode === "fake" ? mode : null;
+async function interruptibleSleep(ms: number, shouldStop: () => boolean): Promise<void> {
+  let remaining = ms;
+  while (remaining > 0 && !shouldStop()) {
+    const slice = Math.min(250, remaining);
+    await new Promise((resolve) => setTimeout(resolve, slice));
+    remaining -= slice;
+  }
 }
 
 async function main(): Promise<void> {
-  const mode = providerMode(process.argv.slice(2));
-  if (!mode) {
-    log("worker_config_invalid", { missing: "--provider google|fake" });
-    process.exit(1);
-  }
-  if (mode === "fake" && process.env.NODE_ENV === "production") {
-    log("worker_config_invalid", { missing: "fake provider is refused in production" });
-    process.exit(1);
-  }
-  if (mode === "google" && !process.env.GEMINI_API_KEY?.trim() && !process.env.GOOGLE_API_KEY?.trim()) {
-    log("worker_config_invalid", { missing: "GEMINI_API_KEY" });
+  const startup = evaluateCleanupWorkerStartup(process.env, process.argv.slice(2));
+  if (!startup.ok) {
+    log("worker_config_invalid", { missing: startup.missing });
     process.exit(1);
   }
   const client = createCleanupServiceClient();
@@ -39,7 +37,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const control = createSupabaseCleanupControl(client);
-  const generate: CleanupGenerate = mode === "google"
+  const generate: CleanupGenerate = startup.providerMode === "google"
     ? async ({ snapshot, signal }) => {
       const output = removeCleanupNbpOutputConfig(snapshot, "2K");
       if (!output) {
@@ -59,6 +57,19 @@ async function main(): Promise<void> {
       return requestRemoveCleanupNbpCandidate({ snapshot, output, signal, env: process.env });
     }
     : await fakeGenerate();
+  let idle = true;
+  const health = await startCleanupWorkerHealthServer({
+    port: startup.port,
+    snapshot: () => ({
+      status: "ok",
+      live: true,
+      ready: true,
+      readiness: "process",
+      processingEnabled: cleanupWorkerProcessingEnabled(process.env),
+      idle,
+      provider: startup.providerMode,
+    }),
+  });
   let stop = false;
   process.on("SIGTERM", () => {
     stop = true;
@@ -66,21 +77,38 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => {
     stop = true;
   });
-  log("worker_started", { provider: mode });
+  log("worker_started", {
+    provider: startup.providerMode,
+    processingEnabled: startup.processingEnabled,
+  });
   await runCleanupWorker({
-    once: () => executeCleanupClaim({
-      control,
-      generate,
-      authorizeClaim: (claimed) => authorizeCleanupWorkerClaim(
-        (userId) => client.auth.admin.getUserById(userId),
-        claimed.userId,
-      ),
-    }),
+    enabled: () => cleanupWorkerProcessingEnabled(process.env),
+    once: async () => {
+      idle = false;
+      try {
+        return await executeCleanupClaim({
+          control,
+          generate,
+          authorizeClaim: (claimed) => authorizeCleanupWorkerClaim(
+            async ({ roomId }) => {
+              const result = await client.from("vibode_rooms").select("user_id").eq("id", roomId).maybeSingle();
+              const ownerId = result.data && typeof result.data.user_id === "string" ? result.data.user_id : "";
+              if (result.error || !ownerId) return { data: null, error: result.error ?? { message: "missing" } };
+              return { data: { ownerId }, error: null };
+            },
+            { userId: claimed.userId, roomId: claimed.roomId },
+          ),
+        });
+      } finally {
+        idle = true;
+      }
+    },
     pollIntervalMs: 2000,
     shouldStop: () => stop,
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    sleep: (ms) => interruptibleSleep(ms, () => stop),
     log,
   });
+  await health.close();
 }
 
 async function fakeGenerate(): Promise<CleanupGenerate> {

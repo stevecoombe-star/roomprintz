@@ -1,8 +1,9 @@
-import { getAuthenticatedAdminUser, getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 import {
   createProductionAfcStoreFromEnv,
   loadOwnedOriginalForProductionAnalysis,
 } from "@/lib/afc-v2-production/production-persistence.server";
+import { readRemoveActor } from "@/lib/vibode-stage/remove-access.server";
 import type { RemoveCleanupExportDeps } from "@/lib/vibode-stage/remove-cleanup-snapshot.server";
 
 import type { CleanupHttpDeps } from "./http";
@@ -12,11 +13,7 @@ import { createCleanupServiceClient } from "./service-client";
 export function createRemoveCleanupRouteDeps(): CleanupHttpDeps | null {
   const client = createCleanupServiceClient();
   if (!client) return null;
-  const getAdmin = async () => {
-    const user = await getAuthenticatedAdminUser();
-    if (!user?.id) return null;
-    return { id: user.id };
-  };
+  const getAdmin = readRemoveActor;
   const prepareDeps: RemoveCleanupExportDeps = {
     getAdmin,
     createStore: createProductionAfcStoreFromEnv,

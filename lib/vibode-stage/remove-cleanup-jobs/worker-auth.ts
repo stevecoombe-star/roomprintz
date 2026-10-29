@@ -1,34 +1,31 @@
-import { isAdminEmail } from "@/lib/adminAccess";
-
 /**
- * Service-role lookup of the queued user's current email.
- * A transport error, a missing user, or a missing email fails closed.
+ * Authorize one claimed Clean Up job for the dedicated worker.
+ *
+ * The worker process is already the service-role caller. This check is the
+ * room-ownership gate: the lookup must return the room's current owner.
+ * A job id is not an input. Administrator email is not consulted.
+ * A missing room, a lookup error, or a different owner fails closed.
  */
-export type CleanupWorkerUserLookup = (userId: string) => Promise<{
-  data: { user: { email?: string | null } | null } | null;
+export type CleanupWorkerOwnershipLookup = (input: Readonly<{
+  userId: string;
+  roomId: string;
+}>) => Promise<{
+  data: { ownerId: string } | null;
   error: unknown;
 }>;
 
-/**
- * Independently authorize one claimed Clean Up job.
- * Missing administrator configuration denies before the lookup.
- * The comparison uses the existing `VIBODE_ADMIN_EMAIL` allowlist.
- */
 export async function authorizeCleanupWorkerClaim(
-  lookup: CleanupWorkerUserLookup,
-  userId: string,
+  lookup: CleanupWorkerOwnershipLookup,
+  claim: Readonly<{ userId: string; roomId: string }>,
 ): Promise<boolean> {
-  if (!isAdminEmailConfigured()) return false;
-  if (!userId.trim()) return false;
+  const userId = claim.userId.trim();
+  const roomId = claim.roomId.trim();
+  if (!userId || !roomId) return false;
   try {
-    const result = await lookup(userId);
-    if (result.error || !result.data?.user) return false;
-    return isAdminEmail(result.data.user.email);
+    const result = await lookup({ userId, roomId });
+    if (result.error || !result.data?.ownerId) return false;
+    return result.data.ownerId === userId;
   } catch {
     return false;
   }
-}
-
-function isAdminEmailConfigured(): boolean {
-  return (process.env.VIBODE_ADMIN_EMAIL ?? "").trim().length > 0;
 }
