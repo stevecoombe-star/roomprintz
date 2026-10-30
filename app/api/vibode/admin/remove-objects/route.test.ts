@@ -558,8 +558,19 @@ test("provider failures stay classified and are not followed by another call", a
     post({ roomId: ROOM, generationId: GENERATION }),
     rle.deps,
   );
-  assert.equal(unverified.status, 502);
-  assert.match((await unverified.json() as { reason: string }).reason, /unverified mask encoding/);
+  assert.equal(unverified.status, 200);
+  const isolated = await unverified.json() as {
+    usable: boolean;
+    objects: unknown[];
+    predictionRejections: Array<{ concept: string; reason: string }>;
+    reason?: string;
+  };
+  assert.equal(isolated.usable, true);
+  assert.equal(isolated.objects.length, 0);
+  assert.equal(isolated.predictionRejections.length, 1);
+  assert.equal(isolated.predictionRejections[0]?.concept, "chair");
+  assert.equal(isolated.predictionRejections[0]?.reason, "unsupported_rle");
+  assert.equal(JSON.stringify(isolated).includes("synthetic"), false);
   assert.equal(fetches, 2);
 
   let thrown = 0;

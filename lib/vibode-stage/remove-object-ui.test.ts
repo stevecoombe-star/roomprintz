@@ -40,6 +40,7 @@ import {
   type RemoveObjectUiIdentity,
   type RemoveObjectUiState,
 } from "@/lib/vibode-stage/remove-object-ui";
+import { encodeRemoveMaskTransport } from "@/lib/vibode-stage/remove-mask-transport";
 import {
   packRemoveMask,
   removePackedBit,
@@ -56,24 +57,14 @@ const IDENTITY: RemoveObjectUiIdentity = {
   sessionSerial: 1,
 };
 
-function bitsToBase64(bits: Uint8Array): string {
-  let binary = "";
-  for (const byte of bits) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
 function wireRecord(record: RemoveObjectRecord) {
+  const mask = encodeRemoveMaskTransport(record.mask);
+  assert.ok(mask);
   return {
     id: record.id,
     concept: record.concept,
     confidence: record.confidence,
-    mask: {
-      width: record.mask.width,
-      height: record.mask.height,
-      areaPx: record.mask.areaPx,
-      bounds: record.mask.bounds,
-      bits: bitsToBase64(record.mask.bits),
-    },
+    mask,
     eligibility: record.eligibility,
   };
 }

@@ -359,29 +359,12 @@ test("eligibility, duplicate reports, and nested selection run on normalized mas
   );
 });
 
-test("malformed, contradictory, and unverified payloads do not become an empty object list", () => {
+test("structural response failures stay closed and are not an empty object list", () => {
   const missing = normalize({ payload: { time: 0.1 } });
   assert.equal(missing.ok, false);
   if (missing.ok) return;
   assert.equal(missing.error, "response_invalid");
 
-  const shortRing = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: { chair: [{ format: "polygon", confidence: 0.9, masks: [[[1, 1], [2, 2]]] }] },
-    }),
-  });
-  assert.equal(shortRing.ok, false);
-  if (shortRing.ok) return;
-  assert.equal(shortRing.error, "response_invalid");
-
-  const echo = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: { chair: [polygon(0.9, rect(1, 1, 21, 21))] },
-    }),
-  });
-  assert.equal(echo.ok, true);
   const mismatched = normalize({
     payload: {
       prompt_results: [{
@@ -392,56 +375,29 @@ test("malformed, contradictory, and unverified payloads do not become an empty o
     },
   });
   assert.equal(mismatched.ok, false);
+  if (mismatched.ok) return;
+  assert.equal(mismatched.error, "response_invalid");
 
-  const outside = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: { chair: [polygon(0.9, rect(0, 0, 80, 10))] },
-    }),
+  const duplicateIndex = normalize({
+    concepts: ["chair", "lamp"],
+    payload: {
+      prompt_results: [
+        { prompt_index: 0, predictions: [] },
+        { prompt_index: 0, predictions: [] },
+      ],
+    },
   });
-  assert.equal(outside.ok, false);
-  if (outside.ok) return;
-  assert.equal(outside.error, "mask_dimensions");
+  assert.equal(duplicateIndex.ok, false);
+  if (duplicateIndex.ok) return;
+  assert.equal(duplicateIndex.error, "response_invalid");
 
-  const jsonFormat = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: {
-        chair: [{ format: "json", confidence: 0.9, masks: [rect(1, 1, 21, 21)] }],
-      },
-    }),
+  const missingPrompt = normalize({
+    concepts: ["chair", "lamp"],
+    payload: { prompt_results: [{ prompt_index: 0, predictions: [] }] },
   });
-  assert.equal(jsonFormat.ok, false);
-  if (jsonFormat.ok) return;
-  assert.equal(jsonFormat.error, "response_invalid");
-
-  /**
-   * Not a captured serverless response. The public inference server names
-   * `size` and `counts`; this checkpoint refuses that object.
-   */
-  const rle = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: {
-        chair: [{ format: "rle", confidence: 0.9, masks: { size: [32, 32], counts: "synthetic" } }],
-      },
-    }),
-  });
-  assert.equal(rle.ok, false);
-  if (rle.ok) return;
-  assert.equal(rle.error, "rle_contract_unverified");
-
-  const unlabeledObject = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: {
-        chair: [{ confidence: 0.9, masks: { size: [32, 32], counts: [4, 8] } }],
-      },
-    }),
-  });
-  assert.equal(unlabeledObject.ok, false);
-  if (unlabeledObject.ok) return;
-  assert.equal(unlabeledObject.error, "rle_contract_unverified");
+  assert.equal(missingPrompt.ok, false);
+  if (missingPrompt.ok) return;
+  assert.equal(missingPrompt.error, "response_invalid");
 
   const tooMany = normalize({
     payload: documentedPolygonResponse({
@@ -459,12 +415,18 @@ test("malformed, contradictory, and unverified payloads do not become an empty o
   if (tooMany.ok) return;
   assert.equal(tooMany.error, "response_unbounded");
 
+  const dimensions = normalize({ width: 0, height: 32, payload: { prompt_results: [] } });
+  assert.equal(dimensions.ok, false);
+  if (dimensions.ok) return;
+  assert.equal(dimensions.error, "mask_dimensions");
+
   const none = normalize({
     payload: documentedPolygonResponse({ concepts: ["chair"], predictions: { chair: [] } }),
   });
   assert.equal(none.ok, true);
   if (!none.ok) return;
   assert.equal(none.preparation.eligible.length, 0);
+  assert.equal(none.predictionRejections.length, 0);
   assert.equal(none.conceptSet, "remove-segmentation-concepts/unversioned");
 });
 
@@ -672,6 +634,7 @@ test("captured serverless polygon response normalizes onto the ORIGINAL grid", (
   assert.equal(removePackedBit(leftLamp.mask, 140, 400), true);
   assert.equal(removePackedBit(rug.mask, 500, 520), true);
   assert.equal(removePackedBit(pillow.mask, 230, 400), true);
+  assert.equal(result.predictionRejections.length, 0);
   assert.equal(result.preparation.suppressed.length, 1);
   const duplicate = result.preparation.suppressed[0];
   assert.ok(duplicate);

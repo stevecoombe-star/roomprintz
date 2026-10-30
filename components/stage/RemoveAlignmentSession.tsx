@@ -79,6 +79,8 @@ import {
   formatRemoveObjectInferenceTime,
   formatRemoveObjectRejected,
   formatRemoveObjectSuppressed,
+  formatRemovePredictionRejections,
+  formatRemoveScanStatus,
   hideAllRemoveObjectUi,
   highlightRemoveObject,
   initialRemoveObjectUiState,
@@ -1051,9 +1053,7 @@ function protectionControl(session: RemoveAlignmentContextValue): Readonly<{
   if (!available) {
     const title = session.objectUi.phase === "loading" || session.objectUi.phase === "idle"
       ? "Finding objects…"
-      : session.objectUi.phase === "error"
-        ? session.objectUi.error ?? "Object masks are unavailable."
-        : "No removable objects found.";
+      : scanStatus(session);
     return { available: false, pressed: false, status: "unavailable", label: "Unavailable", title };
   }
   const pressed = session.objectProtectionEnabled === true;
@@ -1278,15 +1278,20 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
 }
 
 function objectStatus(session: RemoveAlignmentContextValue): string {
-  if (session.objectUi.phase === "error") {
-    return session.objectUi.error ?? "Segmentation failed.";
-  }
-  if (session.objectUi.phase !== "ready") return "Finding objects…";
-  if (session.objectUi.objects.length === 0) return "No removable objects found.";
-  const hidden = session.objectUi.selectedIds.size;
-  return hidden === 0
-    ? `${session.objectUi.objects.length} objects`
-    : `${session.objectUi.objects.length} objects, ${hidden} hidden`;
+  return scanStatus(session);
+}
+
+function scanStatus(session: RemoveAlignmentContextValue): string {
+  const diagnostics = session.objectUi.diagnostics;
+  return formatRemoveScanStatus({
+    phase: session.objectUi.phase,
+    error: session.objectUi.error,
+    eligibleCount: session.objectUi.objects.length,
+    hiddenCount: session.objectUi.selectedIds.size,
+    rejectedCount: diagnostics?.rejected.length ?? 0,
+    suppressedCount: diagnostics?.suppressed.length ?? 0,
+    predictionRejectionCount: diagnostics?.predictionRejections.length ?? 0,
+  });
 }
 
 function AlignmentDetails({ session }: { session: RemoveAlignmentContextValue }) {
@@ -1329,6 +1334,10 @@ function AlignmentDetails({ session }: { session: RemoveAlignmentContextValue })
               value={formatRemoveObjectRejected(session.objectUi.diagnostics.rejected)}
             />
             <Row
+              label="Prediction rejections"
+              value={formatRemovePredictionRejections(session.objectUi.diagnostics.predictionRejections)}
+            />
+            <Row
               label="Inference time"
               value={formatRemoveObjectInferenceTime(session.objectUi.diagnostics)}
             />
@@ -1364,7 +1373,7 @@ function AlignmentDetails({ session }: { session: RemoveAlignmentContextValue })
 
 function segmentationLabel(session: RemoveAlignmentContextValue): string {
   if (session.objectUi.phase === "error") return session.objectUi.error ?? "Segmentation failed.";
-  if (session.objectUi.phase === "ready") return "ready";
+  if (session.objectUi.phase === "ready") return scanStatus(session);
   return "Finding objects…";
 }
 
