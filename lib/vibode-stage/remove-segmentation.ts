@@ -27,7 +27,12 @@
  *
  * Polygon pixels use the image origin at the top-left, the same orientation
  * as Roboflow's top-left box coordinates. Rings are filled even-odd at pixel
- * centers. The packed mask is then owned by `packRemoveObjectMaskAtOriginal`.
+ * centers. A ring with fewer than three vertices is skipped. Sibling rings
+ * keep their coordinates and the same even-odd fill. If every provided ring
+ * was short, the prediction is still dropped as `degenerate_polygon`. An
+ * empty `masks` array is not a short ring. A ring that is not an array still
+ * drops that prediction. The packed mask is then owned by
+ * `packRemoveObjectMaskAtOriginal`.
  *
  * One malformed prediction is dropped and recorded. A broken response
  * envelope, prompt association, aggregate prediction count, or transport
@@ -496,7 +501,8 @@ function readRings(
   const rings: PolygonRing[] = [];
   let points = 0;
   for (const ring of masks) {
-    if (!Array.isArray(ring) || ring.length < 3) return { ok: false, reason: "degenerate_polygon" };
+    if (!Array.isArray(ring)) return { ok: false, reason: "degenerate_polygon" };
+    if (ring.length < 3) continue;
     const parsed: Array<[number, number]> = [];
     for (const point of ring) {
       if (!Array.isArray(point) || point.length !== 2) return { ok: false, reason: "invalid_polygon" };
@@ -515,6 +521,9 @@ function readRings(
       parsed.push([x, y]);
     }
     rings.push(parsed);
+  }
+  if (masks.length > 0 && rings.length === 0) {
+    return { ok: false, reason: "degenerate_polygon" };
   }
   return { ok: true, rings };
 }
