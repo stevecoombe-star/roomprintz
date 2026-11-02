@@ -143,7 +143,7 @@ test("the scan handler still sends V2 and unregistered lists never reach Roboflo
   const client = source("lib/vibode-stage/remove-segmentation-roboflow.server.ts");
   const worker = source("cleanup-worker/src/index.ts");
   assert.equal(handler.match(/\.segment\(/g)?.length, 1);
-  assert.match(handler, /REMOVE_SEGMENTATION_CONCEPTS_V2/);
+  assert.match(handler, /selectRemoveScanVocabulary/);
   assert.doesNotMatch(handler, /REMOVE_SEGMENTATION_CONCEPTS_BEDROOM|nightstand|dresser|removeVocabularyForProfile/);
   assert.equal(client.match(/fetchImpl\(/g)?.length, 1);
   assert.doesNotMatch(worker, /nightstand|dresser|concept_segment/);

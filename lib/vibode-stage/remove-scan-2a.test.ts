@@ -70,6 +70,7 @@ function identity(width: number, height: number): RemoveObjectUiIdentity {
     originalWidth: width,
     originalHeight: height,
     sessionSerial: 1,
+    vocabularyRevision: 0,
   };
 }
 

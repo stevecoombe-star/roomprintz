@@ -260,6 +260,27 @@ export function removeVocabularyForProfile(profile: unknown): readonly string[] 
   return REMOVE_VOCABULARY_PROFILES[resolveRemoveVocabularyProfile(profile)];
 }
 
+/**
+ * Bedroom is used only when the saved profile is exactly `bedroom` and its
+ * hash is the verified ORIGINAL. Every other value stays on V2.
+ */
+export function selectRemoveScanVocabulary(input: Readonly<{
+  profile: unknown;
+  originalSha256: unknown;
+  verifiedOriginalSha256: string;
+}>): readonly string[] {
+  const verified = input.verifiedOriginalSha256.toLowerCase();
+  const stored = typeof input.originalSha256 === "string" ? input.originalSha256.toLowerCase() : "";
+  if (
+    input.profile === "bedroom"
+    && /^[0-9a-f]{64}$/.test(verified)
+    && stored === verified
+  ) {
+    return REMOVE_SEGMENTATION_CONCEPTS_BEDROOM;
+  }
+  return REMOVE_SEGMENTATION_CONCEPTS_V2;
+}
+
 /** Outgoing SAM 3 lists. V1 remains valid for fixture normalization only. */
 export function isRemoveSegmentationVocabulary(concepts: readonly string[]): boolean {
   return registeredRemoveVocabularies().some((profile) => sameConceptList(concepts, profile));

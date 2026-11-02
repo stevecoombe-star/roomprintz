@@ -55,6 +55,7 @@ const IDENTITY: RemoveObjectUiIdentity = {
   originalWidth: 960,
   originalHeight: 640,
   sessionSerial: 1,
+  vocabularyRevision: 0,
 };
 
 function wireRecord(record: RemoveObjectRecord) {

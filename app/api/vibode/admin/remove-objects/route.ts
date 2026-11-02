@@ -7,6 +7,7 @@ import { readRemoveActor } from "@/lib/vibode-stage/remove-access.server";
 import { handleRemoveObjectsAdmin } from "@/lib/vibode-stage/remove-segmentation-admin";
 import { reserveRemoveSegmentation } from "@/lib/vibode-stage/remove-segmentation-quota.server";
 import { createRoboflowRemoveSegmentationProvider } from "@/lib/vibode-stage/remove-segmentation-roboflow.server";
+import { readStoredRemoveVocabularyProfile } from "@/lib/vibode-stage/remove-vocabulary-profile.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +25,11 @@ export async function POST(request: Request) {
       );
       if (!loaded.ok) return { ok: false };
       return { ok: true, bytes: loaded.bytes };
+    },
+    readVocabularyProfile: async (input) => {
+      const service = getServiceRoleSupabaseClient();
+      if (!service) return { ok: false, code: "unavailable" };
+      return readStoredRemoveVocabularyProfile(service, input);
     },
     reserveSegmentation: reserveRemoveSegmentation,
     provider: createRoboflowRemoveSegmentationProvider(),

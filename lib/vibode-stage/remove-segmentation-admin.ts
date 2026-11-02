@@ -28,11 +28,11 @@ import {
   type RemoveImageDescriptor,
 } from "@/lib/vibode-stage/remove-alignment";
 import {
-  REMOVE_SEGMENTATION_CONCEPTS_V2,
   REMOVE_SEGMENTATION_MAX_EDGE,
   REMOVE_SEGMENTATION_MAX_IMAGE_BYTES,
   REMOVE_SEGMENTATION_MAX_PIXELS,
   REMOVE_SEGMENTATION_MAX_RESPONSE_BYTES,
+  selectRemoveScanVocabulary,
   type RemoveSegmentationFailure,
   type RemoveSegmentationProvider,
   type RemoveSegmentationResult,
@@ -63,6 +63,10 @@ export type RemoveSegmentationReserve = (input: Readonly<{
   | Readonly<{ ok: false; code: "user_limit" | "global_limit" | "unavailable" | "not_found" }>
 >;
 
+export type RemoveVocabularyProfileRead =
+  | Readonly<{ ok: true; profile: string | null; originalSha256: string | null }>
+  | Readonly<{ ok: false; code: "unavailable" | "not_found" }>;
+
 export type RemoveObjectsAdminDeps = Readonly<{
   getAdmin: () => Promise<{ id: string } | null>;
   createStore: () => RemoveObjectsAdminStore | null;
@@ -71,6 +75,10 @@ export type RemoveObjectsAdminDeps = Readonly<{
     service: unknown,
     input: Readonly<{ userId: string; room: AfcRoomPointer }>,
   ) => Promise<RemoveObjectsOriginalLoad>;
+  readVocabularyProfile: (input: Readonly<{
+    userId: string;
+    roomId: string;
+  }>) => Promise<RemoveVocabularyProfileRead>;
   reserveSegmentation: RemoveSegmentationReserve;
   provider: RemoveSegmentationProvider;
 }>;
@@ -174,6 +182,20 @@ export async function handleRemoveObjectsAdmin(
     return jsonError("ORIGINAL image exceeds the segmentation limit.", 422);
   }
 
+  const profile = await deps.readVocabularyProfile({
+    userId: admin.id,
+    roomId: parsed.roomId,
+  });
+  if (!profile.ok) {
+    if (profile.code === "not_found") return jsonError("Room not found.", 404);
+    return jsonError("Remove object detection is unavailable.", 503);
+  }
+  const concepts = selectRemoveScanVocabulary({
+    profile: profile.profile,
+    originalSha256: profile.originalSha256,
+    verifiedOriginalSha256: original.sha256,
+  });
+
   const reserved = await deps.reserveSegmentation({
     userId: admin.id,
     roomId: parsed.roomId,
@@ -196,7 +218,7 @@ export async function handleRemoveObjectsAdmin(
       height: original.decodedHeight,
       sha256: original.sha256,
       mimeType: original.mimeType,
-    }, REMOVE_SEGMENTATION_CONCEPTS_V2);
+    }, concepts);
   } catch {
     return jsonError("Segmentation provider did not respond.", 502);
   }

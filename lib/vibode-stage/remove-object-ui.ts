@@ -9,8 +9,9 @@
  * That union is undilated and ignores which objects are hidden.
  * Hide All, Show All, and object clicks change the selection only. Clear Mask
  * changes the brush buffer only. A session loads segmentation once for its
- * room, generation, ORIGINAL identity, and session serial. Mode switches do
- * not load again.
+ * room, generation, ORIGINAL identity, session serial, and vocabulary
+ * revision. The revision changes only after a confirmed vocabulary save.
+ * Mode switches do not load again.
  */
 
 import { decodeRemoveMaskTransport } from "@/lib/vibode-stage/remove-mask-transport";
@@ -66,6 +67,7 @@ export type RemoveObjectUiIdentity = Readonly<{
   originalWidth: number;
   originalHeight: number;
   sessionSerial: number;
+  vocabularyRevision: number;
 }>;
 
 export type RemoveObjectUiSuppressed = Readonly<{
@@ -138,6 +140,7 @@ export function removeObjectUiIdentityKey(identity: RemoveObjectUiIdentity): str
     identity.originalSha256,
     identity.originalWidth,
     identity.originalHeight,
+    identity.vocabularyRevision,
   ].join(":");
 }
 
@@ -876,7 +879,8 @@ function sameIdentity(
     && left.originalSha256 === right.originalSha256
     && left.originalWidth === right.originalWidth
     && left.originalHeight === right.originalHeight
-    && left.sessionSerial === right.sessionSerial;
+    && left.sessionSerial === right.sessionSerial
+    && left.vocabularyRevision === right.vocabularyRevision;
 }
 
 function validIdentity(identity: RemoveObjectUiIdentity): boolean {
@@ -886,7 +890,9 @@ function validIdentity(identity: RemoveObjectUiIdentity): boolean {
     && positiveEdge(identity.originalWidth)
     && positiveEdge(identity.originalHeight)
     && Number.isInteger(identity.sessionSerial)
-    && identity.sessionSerial >= 0;
+    && identity.sessionSerial >= 0
+    && Number.isInteger(identity.vocabularyRevision)
+    && identity.vocabularyRevision >= 0;
 }
 
 function positiveEdge(value: number): boolean {

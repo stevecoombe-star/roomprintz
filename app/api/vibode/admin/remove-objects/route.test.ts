@@ -14,6 +14,7 @@ import {
   handleRemoveObjectsAdmin,
   type RemoveObjectsAdminDeps,
   type RemoveObjectsAdminStore,
+  type RemoveVocabularyProfileRead,
 } from "@/lib/vibode-stage/remove-segmentation-admin";
 import {
   REMOVE_SEGMENTATION_CONCEPTS_V2,
@@ -152,6 +153,7 @@ function harness(patch: {
   fetchImpl?: typeof fetch;
   provider?: RemoveObjectsAdminDeps["provider"];
   quota?: "allow" | "user_limit" | "global_limit" | "unavailable";
+  profile?: RemoveVocabularyProfileRead;
 } = {}) {
   const calls = {
     admin: 0,
@@ -161,6 +163,7 @@ function harness(patch: {
     original: 0,
     fetch: 0,
     reserve: 0,
+    profile: 0,
   };
   const provider = patch.provider ?? createRoboflowRemoveSegmentationProvider({
     apiKey: API_KEY,
@@ -197,6 +200,10 @@ function harness(patch: {
       if (patch.originalBytes === null) return { ok: false };
       return { ok: true, bytes: patch.originalBytes ?? ORIGINAL_BYTES };
     },
+    readVocabularyProfile: async () => {
+      calls.profile += 1;
+      return patch.profile ?? { ok: true, profile: null, originalSha256: null };
+    },
     reserveSegmentation: async () => {
       calls.reserve += 1;
       if (patch.quota && patch.quota !== "allow") return { ok: false, code: patch.quota };
@@ -223,7 +230,7 @@ test("REMOVE object route is an admin POST with no browser image and no writes",
   assert.match(handler, /room\.userId !== admin\.id/);
   assert.match(handler, /assessRemoveAlignment/);
   assert.match(handler, /assertProductionPayloadPrivacy/);
-  assert.match(handler, /REMOVE_SEGMENTATION_CONCEPTS_V2/);
+  assert.match(handler, /selectRemoveScanVocabulary/);
   assert.doesNotMatch(handler, /REMOVE_SEGMENTATION_CONCEPTS_V1|bookshelf|wall art/);
   assert.doesNotMatch(handler, /updateGeneration|activateGeneration|putArtifact|publishDurable|enqueue/);
   assert.equal(client.match(/fetchImpl\(/g)?.length, 1);

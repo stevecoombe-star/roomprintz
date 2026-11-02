@@ -264,6 +264,7 @@ test("an open Remove session does not start another scan when the vocabulary cha
     originalWidth: 64,
     originalHeight: 64,
     sessionSerial: 4,
+    vocabularyRevision: 0,
   };
   const ready: RemoveObjectUiState = {
     phase: "ready",
@@ -298,7 +299,7 @@ test("an open Remove session does not start another scan when the vocabulary cha
   const session = source("components/stage/RemoveAlignmentSession.tsx");
   const worker = source("cleanup-worker/src/index.ts");
   assert.equal(handler.match(/\.segment\(/g)?.length, 1);
-  assert.match(handler, /REMOVE_SEGMENTATION_CONCEPTS_V2/);
+  assert.match(handler, /selectRemoveScanVocabulary/);
   assert.doesNotMatch(handler, /REMOVE_SEGMENTATION_CONCEPTS_V1|bookshelf|wall art|retry/);
   assert.equal(client.match(/fetchImpl\(/g)?.length, 1);
   assert.doesNotMatch(client, /retry|fallback|visual_segment/);
