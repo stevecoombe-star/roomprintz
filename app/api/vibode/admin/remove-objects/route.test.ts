@@ -16,7 +16,7 @@ import {
   type RemoveObjectsAdminStore,
 } from "@/lib/vibode-stage/remove-segmentation-admin";
 import {
-  REMOVE_SEGMENTATION_CONCEPTS_V1,
+  REMOVE_SEGMENTATION_CONCEPTS_V2,
   ROBOFLOW_CONCEPT_SEGMENT_URL,
 } from "@/lib/vibode-stage/remove-segmentation";
 
@@ -119,7 +119,7 @@ function room(userId = ADMIN): AfcRoomPointer {
 function polygonResponse() {
   return {
     time: 0.4,
-    prompt_results: REMOVE_SEGMENTATION_CONCEPTS_V1.map((text, promptIndex) => ({
+    prompt_results: REMOVE_SEGMENTATION_CONCEPTS_V2.map((text, promptIndex) => ({
       prompt_index: promptIndex,
       echo: { prompt_index: promptIndex, type: "text", text, num_boxes: 0 },
       predictions: text === "chair"
@@ -223,7 +223,8 @@ test("REMOVE object route is an admin POST with no browser image and no writes",
   assert.match(handler, /room\.userId !== admin\.id/);
   assert.match(handler, /assessRemoveAlignment/);
   assert.match(handler, /assertProductionPayloadPrivacy/);
-  assert.match(handler, /REMOVE_SEGMENTATION_CONCEPTS_V1/);
+  assert.match(handler, /REMOVE_SEGMENTATION_CONCEPTS_V2/);
+  assert.doesNotMatch(handler, /REMOVE_SEGMENTATION_CONCEPTS_V1|bookshelf|wall art/);
   assert.doesNotMatch(handler, /updateGeneration|activateGeneration|putArtifact|publishDurable|enqueue/);
   assert.equal(client.match(/fetchImpl\(/g)?.length, 1);
   assert.doesNotMatch(client, /retry|fallback|visual_segment|fal\.ai|api_key=/i);
@@ -474,11 +475,17 @@ test("a verified ORIGINAL is segmented once and the response keeps no path or cr
       assert.equal(headers.get("authorization"), `Bearer ${API_KEY}`);
       const body = JSON.parse(String(init?.body)) as {
         format: string;
+        output_prob_thresh: number;
         nms_iou_threshold?: number;
         api_key?: string;
         image: { type: string; value: string };
+        prompts: Array<{ type: string; text: string }>;
       };
       assert.equal(body.format, "polygon");
+      assert.equal(body.output_prob_thresh, 0.5);
+      assert.equal(body.prompts.length, 16);
+      assert.deepEqual(body.prompts.map((prompt) => prompt.text), [...REMOVE_SEGMENTATION_CONCEPTS_V2]);
+      assert.equal(body.prompts.some((prompt) => prompt.text === "bookshelf" || prompt.text === "wall art"), false);
       assert.equal(body.nms_iou_threshold, undefined);
       assert.equal(body.api_key, undefined);
       assert.equal(body.image.type, "base64");
@@ -545,7 +552,7 @@ test("provider failures stay classified and are not followed by another call", a
       fetches += 1;
       return Response.json({
         time: 0.2,
-        prompt_results: REMOVE_SEGMENTATION_CONCEPTS_V1.map((text, promptIndex) => ({
+        prompt_results: REMOVE_SEGMENTATION_CONCEPTS_V2.map((text, promptIndex) => ({
           prompt_index: promptIndex,
           predictions: text === "chair"
             ? [{ format: "rle", confidence: 0.9, masks: { size: [32, 32], counts: "synthetic" } }]

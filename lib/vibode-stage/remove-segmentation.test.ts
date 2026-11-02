@@ -13,6 +13,7 @@ import {
 import { createRoboflowRemoveSegmentationProvider } from "./remove-segmentation-roboflow.server";
 import {
   REMOVE_SEGMENTATION_CONCEPTS_V1,
+  REMOVE_SEGMENTATION_CONCEPTS_V2,
   REMOVE_SEGMENTATION_CONCEPT_SET,
   REMOVE_SEGMENTATION_MAX_CONCEPTS,
   REMOVE_SEGMENTATION_MAX_EDGE,
@@ -92,9 +93,11 @@ function normalize(input: Readonly<{
 }
 
 test("the versioned vocabulary is the 16-concept serverless maximum", () => {
+  assert.equal(REMOVE_SEGMENTATION_CONCEPTS_V2.length, 16);
+  assert.equal(REMOVE_SEGMENTATION_CONCEPTS_V2.length, REMOVE_SEGMENTATION_MAX_CONCEPTS);
   assert.equal(REMOVE_SEGMENTATION_CONCEPTS_V1.length, 16);
-  assert.equal(REMOVE_SEGMENTATION_CONCEPTS_V1.length, REMOVE_SEGMENTATION_MAX_CONCEPTS);
-  assert.equal(isRemoveSegmentationVocabulary(REMOVE_SEGMENTATION_CONCEPTS_V1), true);
+  assert.equal(isRemoveSegmentationVocabulary(REMOVE_SEGMENTATION_CONCEPTS_V2), true);
+  assert.equal(isRemoveSegmentationVocabulary(REMOVE_SEGMENTATION_CONCEPTS_V1), false);
   assert.equal(isRemoveSegmentationVocabulary(["chair"]), false);
   assert.equal(ROBOFLOW_SAM3_RLE_CONTRACT, "unverified");
   assert.equal(decodeRoboflowRleMask({ size: [4, 4], counts: "not-a-captured-fixture" }).error, "rle_contract_unverified");
@@ -103,7 +106,7 @@ test("the versioned vocabulary is the 16-concept serverless maximum", () => {
 test("the request is one bounded polygon call without provider NMS or a query key", () => {
   const built = buildRoboflowConceptSegmentRequest({
     image: image(),
-    concepts: REMOVE_SEGMENTATION_CONCEPTS_V1,
+    concepts: REMOVE_SEGMENTATION_CONCEPTS_V2,
     requestId: "request-1",
   });
   assert.equal(built.ok, true);
@@ -124,7 +127,10 @@ test("the request is one bounded polygon call without provider NMS or a query ke
   assert.equal(body.api_key, undefined);
   assert.equal(body.image.type, "base64");
   assert.equal(body.image.value, Buffer.from([1, 2, 3, 4]).toString("base64"));
-  assert.deepEqual(body.prompts.map((prompt) => prompt.text), [...REMOVE_SEGMENTATION_CONCEPTS_V1]);
+  assert.deepEqual(body.prompts.map((prompt) => prompt.text), [...REMOVE_SEGMENTATION_CONCEPTS_V2]);
+  assert.equal(body.prompts.some((prompt) => prompt.text === "bookshelf" || prompt.text === "wall art"), false);
+  assert.equal(body.prompts.some((prompt) => prompt.text === "bookcase"), true);
+  assert.equal(body.prompts.some((prompt) => prompt.text === "framed picture"), true);
   assert.equal(built.body.includes("roboflow-test-key"), false);
   assert.equal(ROBOFLOW_CONCEPT_SEGMENT_URL.includes("?"), false);
 });
@@ -436,7 +442,7 @@ test("the Roboflow client sends one authenticated request and does not repeat it
     apiKey: "roboflow-test-key",
     fetch: async (url, init) => {
       calls.push({ url: String(url), init });
-      const concepts = REMOVE_SEGMENTATION_CONCEPTS_V1;
+      const concepts = REMOVE_SEGMENTATION_CONCEPTS_V2;
       return Response.json(documentedPolygonResponse({
         concepts,
         predictions: {
@@ -445,7 +451,7 @@ test("the Roboflow client sends one authenticated request and does not repeat it
       }));
     },
   });
-  const result = await provider.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const result = await provider.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.url, ROBOFLOW_CONCEPT_SEGMENT_URL);
   assert.equal(calls[0]?.init?.method, "POST");
@@ -475,7 +481,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
     fetch: counting,
   });
   assert.deepEqual(
-    await missing.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1),
+    await missing.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2),
     { ok: false, error: "credentials_missing" },
   );
   assert.equal(fetches, 0);
@@ -487,7 +493,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
       return new Response("", { status: 401 });
     },
   });
-  const denied = await unauthorized.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const denied = await unauthorized.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(denied.ok, false);
   if (denied.ok) return;
   assert.equal(denied.error, "provider_unauthorized");
@@ -497,7 +503,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
     apiKey: "roboflow-test-key",
     fetch: counting,
   });
-  const http = await failing.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const http = await failing.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(http.ok, false);
   if (http.ok) return;
   assert.equal(http.error, "provider_http");
@@ -515,7 +521,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
       });
     }),
   });
-  const timedOut = await stalled.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const timedOut = await stalled.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(timedOut.ok, false);
   if (timedOut.ok) return;
   assert.equal(timedOut.error, "provider_timeout");
@@ -527,7 +533,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
       throw new TypeError("socket closed");
     },
   });
-  const network = await offline.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const network = await offline.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(network.ok, false);
   if (network.ok) return;
   assert.equal(network.error, "provider_network");
@@ -542,7 +548,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
       });
     },
   });
-  const unbounded = await huge.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const unbounded = await huge.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(unbounded.ok, false);
   if (unbounded.ok) return;
   assert.equal(unbounded.error, "response_unbounded");
@@ -554,7 +560,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
       return new Response("not-json", { status: 200 });
     },
   });
-  const invalid = await garbage.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const invalid = await garbage.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(invalid.ok, false);
   if (invalid.ok) return;
   assert.equal(invalid.error, "response_invalid");

@@ -72,6 +72,7 @@ export const REMOVE_SEGMENTATION_OUTPUT_PROB_THRESH = 0.5;
 export const ROBOFLOW_CONCEPT_SEGMENT_URL =
   "https://serverless.roboflow.com/sam3/concept_segment";
 
+/** Prompts echoed by the captured polygon fixture. A new scan does not send this list. */
 export const REMOVE_SEGMENTATION_CONCEPTS_V1 = Object.freeze([
   "chair",
   "sofa",
@@ -89,6 +90,26 @@ export const REMOVE_SEGMENTATION_CONCEPTS_V1 = Object.freeze([
   "mirror",
   "stool",
   "bookshelf",
+] as const);
+
+/** Active SAM 3 prompts. `wall art` and `bookshelf` are replaced in place. */
+export const REMOVE_SEGMENTATION_CONCEPTS_V2 = Object.freeze([
+  "chair",
+  "sofa",
+  "table",
+  "lamp",
+  "rug",
+  "curtain",
+  "plant",
+  "framed picture",
+  "bed",
+  "pillow",
+  "decoration",
+  "cabinet",
+  "television",
+  "mirror",
+  "stool",
+  "bookcase",
 ] as const);
 
 export const REMOVE_SEGMENTATION_ERRORS = Object.freeze([
@@ -188,8 +209,13 @@ type DecodedPolygon = Readonly<{
 }>;
 
 export function isRemoveSegmentationVocabulary(concepts: readonly string[]): boolean {
-  return concepts.length === REMOVE_SEGMENTATION_CONCEPTS_V1.length
-    && concepts.every((concept, index) => concept === REMOVE_SEGMENTATION_CONCEPTS_V1[index]);
+  return sameConceptList(concepts, REMOVE_SEGMENTATION_CONCEPTS_V2);
+}
+
+/** V2 prompts, plus V1 labels already present on captured or in-session masks. */
+export function isRecognizedRemoveSegmentationConcept(concept: string): boolean {
+  return (REMOVE_SEGMENTATION_CONCEPTS_V2 as readonly string[]).includes(concept)
+    || (REMOVE_SEGMENTATION_CONCEPTS_V1 as readonly string[]).includes(concept);
 }
 
 export function segmentationImageRejection(
@@ -375,9 +401,7 @@ export function normalizeRoboflowConceptSegment(input: Readonly<{
     ok: true,
     provider: REMOVE_SEGMENTATION_PROVIDER_ID,
     modelId: REMOVE_SEGMENTATION_MODEL_ID,
-    conceptSet: isRemoveSegmentationVocabulary(input.concepts)
-      ? REMOVE_SEGMENTATION_CONCEPT_SET
-      : "remove-segmentation-concepts/unversioned",
+    conceptSet: conceptSetForConcepts(input.concepts),
     schema: ROBOFLOW_SAM3_POLYGON_SCHEMA,
     maskEncoding: "polygon",
     unverifiedEncodings: ["rle"],
@@ -434,6 +458,21 @@ function compareDecoded(left: DecodedPolygon, right: DecodedPolygon): number {
   if (bounds.height !== other.height) return bounds.height - other.height;
   if (left.digest !== right.digest) return left.digest < right.digest ? -1 : 1;
   return left.sourceOrdinal - right.sourceOrdinal;
+}
+
+function sameConceptList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length
+    && left.every((concept, index) => concept === right[index]);
+}
+
+function conceptSetForConcepts(concepts: readonly string[]): string {
+  if (
+    sameConceptList(concepts, REMOVE_SEGMENTATION_CONCEPTS_V2)
+    || sameConceptList(concepts, REMOVE_SEGMENTATION_CONCEPTS_V1)
+  ) {
+    return REMOVE_SEGMENTATION_CONCEPT_SET;
+  }
+  return "remove-segmentation-concepts/unversioned";
 }
 
 function originalGrid(width: number, height: number): boolean {

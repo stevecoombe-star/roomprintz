@@ -62,7 +62,7 @@ import {
 } from "@/lib/vibode-stage/remove-cleanup-contract";
 import type { RemoveDirtyRect } from "@/lib/vibode-stage/remove-mask";
 import {
-  REMOVE_SEGMENTATION_CONCEPTS_V1,
+  isRecognizedRemoveSegmentationConcept,
   REMOVE_SEGMENTATION_MAX_EDGE,
   REMOVE_SEGMENTATION_MAX_PIXELS,
   REMOVE_SEGMENTATION_MAX_PREDICTIONS,
@@ -732,7 +732,7 @@ function decodeSelectedObject(
   const concept = typeof value.concept === "string" ? value.concept : "";
   const confidence = value.confidence;
   if (!/^[a-z0-9-]{1,80}$/.test(id)) return { ok: false, reason: "Selected object id does not match its mask." };
-  if (!REMOVE_SEGMENTATION_CONCEPTS_V1.includes(concept as (typeof REMOVE_SEGMENTATION_CONCEPTS_V1)[number])) {
+  if (!isRecognizedRemoveSegmentationConcept(concept)) {
     return { ok: false, reason: "Segmentation concept is not supported." };
   }
   if (typeof confidence !== "number" || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {

@@ -47,6 +47,7 @@ import { createRoboflowRemoveSegmentationProvider } from "@/lib/vibode-stage/rem
 import { assembleRemoveSegmentationPayload } from "@/lib/vibode-stage/remove-segmentation-admin";
 import {
   REMOVE_SEGMENTATION_CONCEPTS_V1,
+  REMOVE_SEGMENTATION_CONCEPTS_V2,
   REMOVE_SEGMENTATION_MAX_PACKED_BYTES,
   REMOVE_SEGMENTATION_MAX_PREDICTIONS,
   REMOVE_SEGMENTATION_MAX_RESPONSE_BYTES,
@@ -165,7 +166,7 @@ test("transport ceilings stay aligned with the segmentation safeguards", () => {
       sha256: SHA,
       mimeType: "image/png",
     },
-    concepts: REMOVE_SEGMENTATION_CONCEPTS_V1,
+    concepts: REMOVE_SEGMENTATION_CONCEPTS_V2,
     requestId: "request-1",
   });
   assert.equal(built.ok, true);
@@ -386,7 +387,7 @@ test("D. one invalid polygon does not drop seven valid objects or trigger anothe
     fetch: async () => {
       calls += 1;
       return Response.json(documented({
-        concepts: REMOVE_SEGMENTATION_CONCEPTS_V1,
+        concepts: REMOVE_SEGMENTATION_CONCEPTS_V2,
         predictions: {
           chair: [
             ...valid,
@@ -402,7 +403,7 @@ test("D. one invalid polygon does not drop seven valid objects or trigger anothe
     height: 40,
     sha256: SHA,
     mimeType: "image/png",
-  }, REMOVE_SEGMENTATION_CONCEPTS_V1);
+  }, REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(calls, 1);
   assert.equal(served.ok, true);
   if (!served.ok) return;
@@ -507,7 +508,7 @@ test("E. response-level integrity failures stay hard failures", async () => {
     height: 32,
     sha256: SHA,
     mimeType: "image/png",
-  }, REMOVE_SEGMENTATION_CONCEPTS_V1);
+  }, REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(fetches, 1);
   assert.equal(oversized.ok, false);
   if (oversized.ok) return;

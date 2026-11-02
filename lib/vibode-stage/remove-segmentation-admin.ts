@@ -28,7 +28,7 @@ import {
   type RemoveImageDescriptor,
 } from "@/lib/vibode-stage/remove-alignment";
 import {
-  REMOVE_SEGMENTATION_CONCEPTS_V1,
+  REMOVE_SEGMENTATION_CONCEPTS_V2,
   REMOVE_SEGMENTATION_MAX_EDGE,
   REMOVE_SEGMENTATION_MAX_IMAGE_BYTES,
   REMOVE_SEGMENTATION_MAX_PIXELS,
@@ -196,7 +196,7 @@ export async function handleRemoveObjectsAdmin(
       height: original.decodedHeight,
       sha256: original.sha256,
       mimeType: original.mimeType,
-    }, REMOVE_SEGMENTATION_CONCEPTS_V1);
+    }, REMOVE_SEGMENTATION_CONCEPTS_V2);
   } catch {
     return jsonError("Segmentation provider did not respond.", 502);
   }
