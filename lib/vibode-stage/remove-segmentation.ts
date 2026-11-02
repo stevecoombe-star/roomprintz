@@ -92,7 +92,7 @@ export const REMOVE_SEGMENTATION_CONCEPTS_V1 = Object.freeze([
   "bookshelf",
 ] as const);
 
-/** Active SAM 3 prompts. `wall art` and `bookshelf` are replaced in place. */
+/** Active SAM 3 prompts. The scan handler sends this list. */
 export const REMOVE_SEGMENTATION_CONCEPTS_V2 = Object.freeze([
   "chair",
   "sofa",
@@ -111,6 +111,45 @@ export const REMOVE_SEGMENTATION_CONCEPTS_V2 = Object.freeze([
   "stool",
   "bookcase",
 ] as const);
+
+/**
+ * Registered bedroom prompts. Same order as V2, with two in-place replacements.
+ * The scan handler does not select this list.
+ */
+export const REMOVE_SEGMENTATION_CONCEPTS_BEDROOM = Object.freeze([
+  "chair",
+  "sofa",
+  "nightstand",
+  "lamp",
+  "rug",
+  "curtain",
+  "plant",
+  "framed picture",
+  "bed",
+  "pillow",
+  "decoration",
+  "dresser",
+  "television",
+  "mirror",
+  "stool",
+  "bookcase",
+] as const);
+
+export const REMOVE_VOCABULARY_PROFILE_IDS = Object.freeze(["default", "bedroom"] as const);
+
+export type RemoveVocabularyProfileId = (typeof REMOVE_VOCABULARY_PROFILE_IDS)[number];
+
+/** `default` is the living-room list. Every other input resolves to it. */
+export const REMOVE_VOCABULARY_PROFILES = Object.freeze({
+  default: REMOVE_SEGMENTATION_CONCEPTS_V2,
+  bedroom: REMOVE_SEGMENTATION_CONCEPTS_BEDROOM,
+} as const);
+
+const EXPLICIT_REMOVE_VOCABULARY_PROFILES: Readonly<Record<string, RemoveVocabularyProfileId>> = Object.freeze({
+  default: "default",
+  living: "default",
+  bedroom: "bedroom",
+});
 
 export const REMOVE_SEGMENTATION_ERRORS = Object.freeze([
   "credentials_missing",
@@ -208,14 +247,33 @@ type DecodedPolygon = Readonly<{
   digest: string;
 }>;
 
-export function isRemoveSegmentationVocabulary(concepts: readonly string[]): boolean {
-  return sameConceptList(concepts, REMOVE_SEGMENTATION_CONCEPTS_V2);
+/**
+ * Explicit profile token only. Titles, upload hints, and staging tokens are
+ * not interpreted. Missing, stale, mixed, and untested values use V2.
+ */
+export function resolveRemoveVocabularyProfile(profile: unknown): RemoveVocabularyProfileId {
+  if (typeof profile !== "string") return "default";
+  return EXPLICIT_REMOVE_VOCABULARY_PROFILES[profile] ?? "default";
 }
 
-/** V2 prompts, plus V1 labels already present on captured or in-session masks. */
+export function removeVocabularyForProfile(profile: unknown): readonly string[] {
+  return REMOVE_VOCABULARY_PROFILES[resolveRemoveVocabularyProfile(profile)];
+}
+
+/** Outgoing SAM 3 lists. V1 remains valid for fixture normalization only. */
+export function isRemoveSegmentationVocabulary(concepts: readonly string[]): boolean {
+  return registeredRemoveVocabularies().some((profile) => sameConceptList(concepts, profile));
+}
+
+const RECOGNIZED_REMOVE_SEGMENTATION_CONCEPTS = new Set<string>([
+  ...REMOVE_SEGMENTATION_CONCEPTS_V1,
+  ...REMOVE_SEGMENTATION_CONCEPTS_V2,
+  ...REMOVE_SEGMENTATION_CONCEPTS_BEDROOM,
+]);
+
+/** Registered prompts, plus V1 labels already present on captured or in-session masks. */
 export function isRecognizedRemoveSegmentationConcept(concept: string): boolean {
-  return (REMOVE_SEGMENTATION_CONCEPTS_V2 as readonly string[]).includes(concept)
-    || (REMOVE_SEGMENTATION_CONCEPTS_V1 as readonly string[]).includes(concept);
+  return RECOGNIZED_REMOVE_SEGMENTATION_CONCEPTS.has(concept);
 }
 
 export function segmentationImageRejection(
@@ -465,10 +523,15 @@ function sameConceptList(left: readonly string[], right: readonly string[]): boo
     && left.every((concept, index) => concept === right[index]);
 }
 
+function registeredRemoveVocabularies(): readonly (readonly string[])[] {
+  return Object.values(REMOVE_VOCABULARY_PROFILES);
+}
+
 function conceptSetForConcepts(concepts: readonly string[]): string {
   if (
     sameConceptList(concepts, REMOVE_SEGMENTATION_CONCEPTS_V2)
     || sameConceptList(concepts, REMOVE_SEGMENTATION_CONCEPTS_V1)
+    || sameConceptList(concepts, REMOVE_SEGMENTATION_CONCEPTS_BEDROOM)
   ) {
     return REMOVE_SEGMENTATION_CONCEPT_SET;
   }
