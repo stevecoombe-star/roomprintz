@@ -1,8 +1,10 @@
 -- Explicit REMOVE vocabulary profile bound to an ORIGINAL SHA-256.
--- Existing rooms stay unset. Authenticated clients cannot write these
--- columns. The service role writes them after owner and ORIGINAL checks.
--- Review this file before applying it to hosted Supabase. Do not apply it
--- from application startup.
+-- Existing rooms stay unset. anon and authenticated sessions cannot write
+-- these columns, including when request.jwt.claim.role is forged.
+-- service_role, postgres, supabase_admin, and supabase_auth_admin remain
+-- able to write them. The service role does so after owner and ORIGINAL
+-- checks. Review this file before applying it to hosted Supabase.
+-- Do not apply it from application startup.
 
 begin;
 
@@ -23,7 +25,9 @@ alter table public.vibode_rooms
       and remove_vocabulary_original_sha256 is null
     )
     or (
-      remove_vocabulary_profile in ('default', 'bedroom')
+      remove_vocabulary_profile is not null
+      and remove_vocabulary_original_sha256 is not null
+      and remove_vocabulary_profile in ('default', 'bedroom')
       and remove_vocabulary_original_sha256 ~ '^[0-9a-f]{64}$'
     )
   );
@@ -33,8 +37,23 @@ returns trigger
 language plpgsql
 set search_path = public
 as $$
+declare
+  effective_role text := current_user;
+  claimed_role text := coalesce(auth.role(), '');
+  privileged boolean := effective_role in (
+    'service_role',
+    'postgres',
+    'supabase_admin',
+    'supabase_auth_admin'
+  );
+  client_role boolean := effective_role in ('anon', 'authenticated')
+    or session_user in ('anon', 'authenticated')
+    or (
+      not privileged
+      and claimed_role in ('anon', 'authenticated')
+    );
 begin
-  if auth.role() = 'authenticated'
+  if client_role
     and (
       (
         tg_op = 'INSERT'

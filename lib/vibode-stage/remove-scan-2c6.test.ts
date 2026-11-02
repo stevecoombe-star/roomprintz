@@ -459,9 +459,16 @@ test("the migration constrains the pair and blocks authenticated writes", () => 
   assert.match(sql, /add column if not exists remove_vocabulary_profile text/);
   assert.match(sql, /add column if not exists remove_vocabulary_original_sha256 text/);
   assert.match(sql, /remove_vocabulary_profile is null[\s\S]*remove_vocabulary_original_sha256 is null/);
+  assert.match(sql, /remove_vocabulary_profile is not null/);
+  assert.match(sql, /remove_vocabulary_original_sha256 is not null/);
   assert.match(sql, /remove_vocabulary_profile in \('default', 'bedroom'\)/);
   assert.match(sql, /remove_vocabulary_original_sha256 ~ '\^\[0-9a-f\]\{64\}\$'/);
-  assert.match(sql, /auth\.role\(\) = 'authenticated'/);
+  assert.match(sql, /effective_role text := current_user/);
+  assert.match(sql, /session_user in \('anon', 'authenticated'\)/);
+  assert.match(sql, /effective_role in \('anon', 'authenticated'\)/);
+  assert.match(sql, /claimed_role in \('anon', 'authenticated'\)/);
+  assert.match(sql, /'service_role'/);
+  assert.match(sql, /auth\.role\(\)/);
   assert.match(sql, /raise exception 'remove vocabulary profile is server-managed'/);
   assert.match(sql, /before insert or update on public\.vibode_rooms/);
   assert.doesNotMatch(sql, /metadata|reserve_vibode_remove_segmentation|vibode_remove_segmentation_calls|vibode_cleanup/i);
