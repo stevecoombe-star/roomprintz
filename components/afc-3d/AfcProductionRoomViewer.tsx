@@ -78,6 +78,7 @@ import { settleRemoveInspectionGesture } from "@/lib/vibode-stage/remove-alignme
 import { ROOM_SCALE_DEFAULT } from "@/lib/vibode-stage/room-scale";
 import type { TrustedPathBaseline } from "@/lib/vibode-stage/trusted-path";
 import { createTrustedPathOverlay } from "@/lib/vibode-stage/trusted-path-overlay";
+import { BringForwardLayer } from "@/components/stage/BringForwardLayer";
 import {
   useRegisterHarmonizeExport,
   useRegisterHarmonizeQa,
@@ -2206,6 +2207,11 @@ function AfcProductionRoomViewerReady({
                 : "3D room"
             }
             data-scene-interaction="viewport"
+          />
+          <BringForwardLayer
+            roomId={roomId}
+            generationId={authority.generationId}
+            backgroundUrl={visualImageUrl}
           />
           {furniturePhase === "loading" ? (
             <div
