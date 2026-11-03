@@ -10,6 +10,7 @@ import {
   paintRemoveBrush,
   planRemoveMaskHold,
   reduceRemoveStroke,
+  revealRemoveBrushMask,
   removeBrushScreenDiameter,
   removeMaskedCoveragePercent,
   type RemoveArtifactIdentity,
@@ -213,6 +214,7 @@ export function RemoveBrushCanvas({
   diameterPx,
   featherPx,
   maskHoldRef,
+  revealMaskRef,
   onMaskSummary,
   onDisplayedSize,
   keepImageUrl,
@@ -236,6 +238,7 @@ export function RemoveBrushCanvas({
   diameterPx: number;
   featherPx: number;
   maskHoldRef: { current: RemoveMaskHold | null };
+  revealMaskRef: { current: (() => boolean) | null };
   onMaskSummary: (summary: RemoveMaskSummary | null) => void;
   onDisplayedSize: (artifact: "original" | "empty", size: { width: number; height: number }) => void;
   keepImageUrl: string | null;
@@ -642,6 +645,24 @@ export function RemoveBrushCanvas({
     paintDisplay(FULL_IMAGE);
     publish();
 
+    const revealFull = () => {
+      const current = maskHoldRef.current;
+      const revealed = revealRemoveBrushMask({
+        hold: current,
+        roomId,
+        generationId: report.generationId,
+        sessionSerial,
+        width: current?.width ?? 0,
+        height: current?.height ?? 0,
+        epoch: maskEpoch,
+      });
+      if (!revealed) return false;
+      paintDisplay(FULL_IMAGE);
+      publish();
+      return true;
+    };
+    revealMaskRef.current = revealFull;
+
     const stroke = { current: initialRemoveStrokeState() };
     const applyEffect = (effect: RemoveStrokeEffect) => {
       if (effect.capturePointerId != null) {
@@ -813,6 +834,7 @@ export function RemoveBrushCanvas({
     const stopRatio = watchRemoveDevicePixelRatio(redraw);
 
     return () => {
+      revealMaskRef.current = null;
       repaintRef.current = null;
       endBrushRef.current = () => {};
       const ended = reduceRemoveStroke(stroke.current, { type: "end" });
@@ -830,7 +852,7 @@ export function RemoveBrushCanvas({
       maskCanvas.width = 0;
       scratch.width = 0;
     };
-  }, [bitmapVersion, maskEpoch, maskHoldRef, report.generationId, roomId, sessionSerial]);
+  }, [bitmapVersion, maskEpoch, maskHoldRef, report.generationId, revealMaskRef, roomId, sessionSerial]);
 
   return (
     <>

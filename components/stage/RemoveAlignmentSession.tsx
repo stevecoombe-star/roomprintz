@@ -134,6 +134,8 @@ type RemoveAlignmentContextValue = Readonly<{
   brushAdmission: RemoveBrushAdmission | null;
   maskSummary: RemoveMaskSummary | null;
   maskHoldRef: { current: RemoveMaskHold | null };
+  revealMaskRef: { current: (() => boolean) | null };
+  revealEmptyRoom: () => void;
   enter: () => void;
   exit: () => void;
   setOpacity: (opacity: number) => void;
@@ -181,6 +183,7 @@ type RemoveAlignmentContextValue = Readonly<{
 }>;
 
 const RemoveAlignmentContext = createContext<RemoveAlignmentContextValue | null>(null);
+const RemovePresentationContext = createContext<"simple" | "advanced">("simple");
 
 async function loadRemoveAlignment(roomId: string): Promise<RemoveAlignmentLookup> {
   const response = await fetch(
@@ -218,6 +221,7 @@ export function RemoveAlignmentProvider({
   }>>({ original: null, empty: null });
   const [maskSummary, setMaskSummary] = useState<RemoveMaskSummary | null>(null);
   const maskHoldRef = useRef<RemoveMaskHold | null>(null);
+  const revealMaskRef = useRef<(() => boolean) | null>(null);
   const [objectUi, setObjectUi] = useState<RemoveObjectUiState>(initialRemoveObjectUiState());
   const objectUiRef = useRef(objectUi);
   const [cleanupUi, setCleanupUi] = useState<RemoveCleanupUiState>(initialRemoveCleanupUiState());
@@ -480,6 +484,9 @@ export function RemoveAlignmentProvider({
   }, []);
   const clearMask = useCallback(() => {
     dispatch({ type: "clear-mask" });
+  }, []);
+  const revealEmptyRoom = useCallback(() => {
+    revealMaskRef.current?.();
   }, []);
   const updateObjectUi = useCallback((reduce: (state: RemoveObjectUiState) => RemoveObjectUiState) => {
     setObjectUi((current) => {
@@ -834,6 +841,8 @@ export function RemoveAlignmentProvider({
     brushAdmission,
     maskSummary,
     maskHoldRef,
+    revealMaskRef,
+    revealEmptyRoom,
     enter,
     exit,
     setOpacity,
@@ -924,6 +933,8 @@ export function RemoveAlignmentProvider({
     originalDisagreement,
     removeSaveError,
     removeSavePhase,
+    revealEmptyRoom,
+    revealMaskRef,
     requestVocabulary,
     confirmVocabulary,
     cancelVocabulary,
@@ -961,7 +972,6 @@ export function RemoveAlignmentControl() {
   const session = useRemoveAlignment();
   if (!session || session.access === "hidden") return null;
   const disabled = session.access !== "ready";
-  const pressedPreset = removeOpacityPreset(session.opacity);
   return (
     <div className="relative shrink-0" data-remove-alignment="control">
       <button
@@ -991,37 +1001,77 @@ export function RemoveAlignmentControl() {
         Remove
       </button>
       {session.active && session.report ? (
-        <div
-          role="region"
-          aria-label="Remove inspection"
-          data-remove-mode={session.mode}
-          className="absolute right-0 top-full z-50 mt-1 max-h-[70vh] w-80 overflow-y-auto rounded-md border border-neutral-700 bg-neutral-950 p-3 text-neutral-200 shadow-lg"
-        >
-          <div className="flex gap-1" role="group" aria-label="Remove mode">
-            <ModeButton
-              pressed={session.mode === "objects"}
-              onClick={() => session.setMode("objects")}
-            >
-              Objects
-            </ModeButton>
-            <ModeButton
-              pressed={session.mode === "alignment"}
-              onClick={() => session.setMode("alignment")}
-            >
-              Alignment
-            </ModeButton>
-            <ModeButton
-              pressed={session.mode === "brush"}
-              disabled={session.brushAdmission?.allowed !== true}
-              title={session.brushAdmission?.allowed === false ? session.brushAdmission.reason : undefined}
-              onClick={() => session.setMode("brush")}
-            >
-              Brush
-            </ModeButton>
-          </div>
+        <RemoveInspectionPanel session={session} />
+      ) : null}
+    </div>
+  );
+}
+
+function RemoveInspectionPanel({ session }: { session: RemoveAlignmentContextValue }) {
+  const [presentation, setPresentation] = useState<"simple" | "advanced">("simple");
+  const pressedPreset = removeOpacityPreset(session.opacity);
+  const brushDisabled = session.brushAdmission?.allowed !== true;
+  const brushTitle = session.brushAdmission?.allowed === false ? session.brushAdmission.reason : undefined;
+  return (
+    <RemovePresentationContext.Provider value={presentation}>
+      <div
+        role="region"
+        aria-label="Remove inspection"
+        data-remove-mode={session.mode}
+        data-remove-presentation={presentation}
+        className="absolute right-0 top-full z-50 mt-1 flex max-h-[70vh] w-80 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-md border border-neutral-700 bg-neutral-950 text-neutral-200 shadow-lg"
+      >
+        <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3">
+          {presentation === "simple" ? (
+            <div className="flex flex-wrap gap-1" role="group" aria-label="Remove mode">
+              <ModeButton
+                pressed={session.mode === "objects"}
+                onClick={() => session.setMode("objects")}
+              >
+                Objects
+              </ModeButton>
+              <ModeButton
+                pressed={session.mode === "brush"}
+                disabled={brushDisabled}
+                title={brushTitle}
+                onClick={() => session.setMode("brush")}
+              >
+                Brush
+              </ModeButton>
+              <ModeButton pressed={false} onClick={() => setPresentation("advanced")}>
+                Advanced
+              </ModeButton>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-1" role="group" aria-label="Remove mode">
+              <ModeButton
+                pressed={session.mode === "objects"}
+                onClick={() => session.setMode("objects")}
+              >
+                Objects
+              </ModeButton>
+              <ModeButton
+                pressed={session.mode === "alignment"}
+                onClick={() => session.setMode("alignment")}
+              >
+                Alignment
+              </ModeButton>
+              <ModeButton
+                pressed={session.mode === "brush"}
+                disabled={brushDisabled}
+                title={brushTitle}
+                onClick={() => session.setMode("brush")}
+              >
+                Brush
+              </ModeButton>
+              <ModeButton pressed={false} onClick={() => setPresentation("simple")}>
+                Simple
+              </ModeButton>
+            </div>
+          )}
           {session.mode === "alignment" ? (
             <>
-              <div className="mt-3 flex gap-1" role="group" aria-label="Alignment presets">
+              <div className="mt-3 flex flex-wrap gap-1" role="group" aria-label="Alignment presets">
                 {REMOVE_OPACITY_PRESETS.map((preset) => (
                   <button
                     key={preset.id}
@@ -1058,51 +1108,59 @@ export function RemoveAlignmentControl() {
           ) : (
             <ObjectControls session={session} />
           )}
-          <button
-            type="button"
-            aria-pressed={session.furnitureHidden}
-            onClick={() => session.setFurnitureHidden(!session.furnitureHidden)}
-            className={`mt-3 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
-              session.furnitureHidden
-                ? "border-neutral-500 bg-neutral-800 text-neutral-50"
-                : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
-            }`}
-          >
-          {session.furnitureHidden ? "Show furniture" : "Hide furniture"}
-        </button>
-        <button
-          type="button"
-          data-remove-objects="done"
-          disabled={session.removeSavePhase === "saving"}
-          onClick={session.saveRemoveEdits}
-          className={`mt-2 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
-            session.removeSavePhase === "saving"
-              ? "border-neutral-900 bg-neutral-950 text-neutral-600"
-              : "border-neutral-200 bg-neutral-100 text-neutral-950 hover:bg-white"
-          }`}
-        >
-          {session.removeSavePhase === "saving" ? "Saving…" : "Done"}
-        </button>
-        <button
-          type="button"
-          data-remove-edit="cancel"
-          disabled={session.removeSavePhase === "saving"}
-          onClick={session.exit}
-          className={`mt-2 ml-1 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:border-neutral-900 disabled:bg-neutral-950 disabled:text-neutral-600 ${FOCUS}`}
-        >
-          Cancel
-        </button>
-        {session.removeSaveError ? (
-          <p className="mt-2 text-[11px] leading-relaxed text-red-300" role="alert" data-remove-edit="error">
-            {session.removeSaveError}
-          </p>
-        ) : session.keepNotice ? (
-          <p className="mt-2 text-[11px] leading-relaxed text-amber-200" role="status" data-remove-edit="keep-notice">
-            {session.keepNotice}
-          </p>
-        ) : null}
-        <AlignmentDetails session={session} />
+          {presentation === "advanced" ? <AlignmentDetails session={session} /> : null}
         </div>
+        <RemoveInspectionFooter session={session} />
+      </div>
+    </RemovePresentationContext.Provider>
+  );
+}
+
+function RemoveInspectionFooter({ session }: { session: RemoveAlignmentContextValue }) {
+  return (
+    <div className="min-w-0 shrink-0 break-words border-t border-neutral-800 p-3" data-remove-footer="true">
+      <button
+        type="button"
+        aria-pressed={session.furnitureHidden}
+        onClick={() => session.setFurnitureHidden(!session.furnitureHidden)}
+        className={`rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+          session.furnitureHidden
+            ? "border-neutral-500 bg-neutral-800 text-neutral-50"
+            : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+        }`}
+      >
+        {session.furnitureHidden ? "Show Furniture" : "Hide Furniture"}
+      </button>
+      <button
+        type="button"
+        data-remove-objects="done"
+        disabled={session.removeSavePhase === "saving"}
+        onClick={session.saveRemoveEdits}
+        className={`mt-2 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+          session.removeSavePhase === "saving"
+            ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+            : "border-neutral-200 bg-neutral-100 text-neutral-950 hover:bg-white"
+        }`}
+      >
+        {session.removeSavePhase === "saving" ? "Saving…" : "Done"}
+      </button>
+      <button
+        type="button"
+        data-remove-edit="cancel"
+        disabled={session.removeSavePhase === "saving"}
+        onClick={session.exit}
+        className={`mt-2 ml-1 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:border-neutral-900 disabled:bg-neutral-950 disabled:text-neutral-600 ${FOCUS}`}
+      >
+        Cancel
+      </button>
+      {session.removeSaveError ? (
+        <p className="mt-2 text-[11px] leading-relaxed text-red-300" role="alert" data-remove-edit="error">
+          {session.removeSaveError}
+        </p>
+      ) : session.keepNotice ? (
+        <p className="mt-2 text-[11px] leading-relaxed text-amber-200" role="status" data-remove-edit="keep-notice">
+          {session.keepNotice}
+        </p>
       ) : null}
     </div>
   );
@@ -1169,10 +1227,11 @@ function protectionControl(session: RemoveAlignmentContextValue): Readonly<{
 }
 
 function BrushControls({ session }: { session: RemoveAlignmentContextValue }) {
+  const presentation = useContext(RemovePresentationContext);
   const protection = protectionControl(session);
   return (
     <div className="mt-3">
-      <div className="flex gap-1" role="group" aria-label="Brush tool">
+      <div className="flex flex-wrap gap-1" role="group" aria-label="Brush tool">
         <ModeButton pressed={session.tool === "reveal"} onClick={() => session.setTool("reveal")}>
           Reveal
         </ModeButton>
@@ -1218,13 +1277,25 @@ function BrushControls({ session }: { session: RemoveAlignmentContextValue }) {
         value={session.featherPx}
         onChange={session.setFeather}
       />
-      <button
-        type="button"
-        onClick={session.clearMask}
-        className={`mt-3 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 ${FOCUS}`}
-      >
-        Clear Mask
-      </button>
+      <div className="mt-3 flex flex-wrap gap-1">
+        {presentation === "simple" ? (
+          <button
+            type="button"
+            data-remove-brush="empty-room"
+            onClick={session.revealEmptyRoom}
+            className={`rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 ${FOCUS}`}
+          >
+            Empty Room
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={session.clearMask}
+          className={`rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 ${FOCUS}`}
+        >
+          Clear Mask
+        </button>
+      </div>
     </div>
   );
 }
@@ -1263,30 +1334,68 @@ function BrushSlider({
 }
 
 function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
+  const presentation = useContext(RemovePresentationContext);
+  const simple = presentation === "simple";
   const ready = session.objectUi.phase === "ready" && session.objectUi.objects.length > 0;
   const canReveal = ready && session.brushAdmission?.allowed === true;
   const reason = session.brushAdmission?.allowed === false ? session.brushAdmission.reason : undefined;
+  const outlineButton = (label: "Show Mask Outline" | "Show Mask Outlines") => (
+    <button
+      type="button"
+      aria-pressed={session.objectOutlinesVisible}
+      data-remove-objects="outlines"
+      onClick={() => session.setObjectOutlinesVisible(!session.objectOutlinesVisible)}
+      className={`mt-3 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+        session.objectOutlinesVisible
+          ? "border-neutral-500 bg-neutral-800 text-neutral-50"
+          : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+      }`}
+    >
+      {label}
+    </button>
+  );
   return (
     <div className="mt-3">
-      <div role="group" aria-label="Detection vocabulary" data-remove-vocabulary="choices">
-        <p className="text-[11px] text-neutral-400">Detection vocabulary</p>
-        <div className="mt-1 flex gap-1">
-          <ModeButton
-            pressed={session.vocabularyChoice === "default"}
+      {simple ? (
+        <label className="block text-[11px] text-neutral-400" data-remove-vocabulary="room-type">
+          Room Type
+          <select
+            aria-label="Room Type"
+            data-remove-vocabulary="choice"
             disabled={session.vocabularyPhase === "saving"}
-            onClick={() => session.requestVocabulary("default")}
+            value={session.vocabularyChoice}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (value !== "default" && value !== "bedroom") return;
+              session.requestVocabulary(value);
+            }}
+            className={`mt-1 block w-full max-w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-[11px] text-neutral-100 ${FOCUS}`}
           >
-            Default
-          </ModeButton>
-          <ModeButton
-            pressed={session.vocabularyChoice === "bedroom"}
-            disabled={session.vocabularyPhase === "saving"}
-            onClick={() => session.requestVocabulary("bedroom")}
-          >
-            Bedroom
-          </ModeButton>
+            <option value="default">Default</option>
+            <option value="bedroom">Bedroom</option>
+          </select>
+        </label>
+      ) : (
+        <div role="group" aria-label="Detection vocabulary" data-remove-vocabulary="choices">
+          <p className="text-[11px] text-neutral-400">Detection vocabulary</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            <ModeButton
+              pressed={session.vocabularyChoice === "default"}
+              disabled={session.vocabularyPhase === "saving"}
+              onClick={() => session.requestVocabulary("default")}
+            >
+              Default
+            </ModeButton>
+            <ModeButton
+              pressed={session.vocabularyChoice === "bedroom"}
+              disabled={session.vocabularyPhase === "saving"}
+              onClick={() => session.requestVocabulary("bedroom")}
+            >
+              Bedroom
+            </ModeButton>
+          </div>
         </div>
-      </div>
+      )}
       {session.vocabularyPhase === "confirming" || session.vocabularyPhase === "saving" ? (
         <div className="mt-2" data-remove-vocabulary="confirm">
           <p className="text-[11px] leading-relaxed text-neutral-300">
@@ -1323,13 +1432,15 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
           {session.vocabularyError}
         </p>
       ) : null}
-      <p className="mt-3 text-[11px] text-neutral-300" role="status" data-remove-objects="status">
-        {objectStatus(session)}
-      </p>
-      {reason ? (
+      {simple ? null : (
+        <p className="mt-3 text-[11px] text-neutral-300" role="status" data-remove-objects="status">
+          {objectStatus(session)}
+        </p>
+      )}
+      {simple || !reason ? null : (
         <p className="mt-2 text-[11px] leading-relaxed text-neutral-500">{reason}</p>
-      ) : null}
-      <div className="mt-3 flex gap-1" role="group" aria-label="Object selection">
+      )}
+      <div className="mt-3 flex flex-wrap gap-1" role="group" aria-label="Object selection">
         <ModeButton
           pressed={false}
           disabled={!canReveal}
@@ -1347,8 +1458,9 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
           Show All
         </ModeButton>
       </div>
+      {simple ? outlineButton("Show Mask Outline") : null}
       <div className="mt-3" data-remove-cleanup="panel">
-        {session.cleanupPhase === "idle" ? (
+        {simple ? null : session.cleanupPhase === "idle" ? (
           <button
             type="button"
             data-remove-cleanup="export"
@@ -1397,39 +1509,30 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
             ) : null}
           </div>
         )}
-        {session.cleanupError ? (
+        {simple || !session.cleanupError ? null : (
           <p className="mt-2 text-[11px] leading-relaxed text-red-300" role="alert" data-remove-cleanup="error">
             {session.cleanupError}
           </p>
-        ) : null}
+        )}
         <RemoveCleanupGeneration
+          key="remove-cleanup-generation"
           objectUi={session.objectUi}
           onHistoryAccepted={session.onCleanupHistoryAccepted}
         />
       </div>
-      <div data-remove-objects="expansion">
-        <BrushSlider
-          label="Mask Expansion"
-          ariaLabel="Mask Expansion"
-          min={0}
-          max={REMOVE_OBJECT_EXPANSION_MAX_PX}
-          value={session.objectExpansionPx}
-          onChange={session.setObjectExpansion}
-        />
-      </div>
-      <button
-        type="button"
-        aria-pressed={session.objectOutlinesVisible}
-        data-remove-objects="outlines"
-        onClick={() => session.setObjectOutlinesVisible(!session.objectOutlinesVisible)}
-        className={`mt-3 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
-          session.objectOutlinesVisible
-            ? "border-neutral-500 bg-neutral-800 text-neutral-50"
-            : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
-        }`}
-      >
-        Show Mask Outlines
-      </button>
+      {simple ? null : (
+        <div data-remove-objects="expansion">
+          <BrushSlider
+            label="Mask Expansion"
+            ariaLabel="Mask Expansion"
+            min={0}
+            max={REMOVE_OBJECT_EXPANSION_MAX_PX}
+            value={session.objectExpansionPx}
+            onChange={session.setObjectExpansion}
+          />
+        </div>
+      )}
+      {simple ? null : outlineButton("Show Mask Outlines")}
     </div>
   );
 }
@@ -1599,6 +1702,7 @@ export function RemoveAlignmentOverlay() {
             diameterPx={session.diameterPx}
             featherPx={session.featherPx}
             maskHoldRef={session.maskHoldRef}
+            revealMaskRef={session.revealMaskRef}
             onMaskSummary={session.noteMaskSummary}
             onDisplayedSize={session.noteDisplayedSize}
             keepImageUrl={session.keepImageUrl}

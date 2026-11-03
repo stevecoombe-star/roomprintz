@@ -408,6 +408,38 @@ export function planRemoveMaskHold(input: Readonly<{
   return "keep";
 }
 
+/**
+ * Full-frame brush reveal. Writes 255 through the live buffer.
+ * Diameter, feather, and Protect Objects are not inputs. A missing buffer
+ * or a room, generation, size, or epoch mismatch leaves the buffer untouched.
+ */
+export function revealRemoveBrushMask(input: Readonly<{
+  hold: (RemoveMaskHoldIdentity & Readonly<{ pixels: Uint8Array }>) | null;
+  roomId: string;
+  generationId: string;
+  sessionSerial: number;
+  width: number;
+  height: number;
+  epoch: number;
+}>): boolean {
+  const hold = input.hold;
+  if (!hold) return false;
+  if (
+    hold.roomId !== input.roomId
+    || hold.generationId !== input.generationId
+    || hold.sessionSerial !== input.sessionSerial
+    || hold.epoch !== input.epoch
+    || hold.width !== input.width
+    || hold.height !== input.height
+  ) {
+    return false;
+  }
+  const count = hold.width * hold.height;
+  if (!grid(hold.width, hold.height) || hold.pixels.length !== count) return false;
+  hold.pixels.fill(255);
+  return true;
+}
+
 export function removeMaskedCoveragePercent(mask: Uint8Array): number {
   if (mask.length === 0) return 0;
   let sum = 0;

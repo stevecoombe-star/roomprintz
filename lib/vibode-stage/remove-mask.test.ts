@@ -18,6 +18,7 @@ import {
   removeBrushScreenDiameter,
   removeBrushSegmentPoints,
   removeMaskedCoveragePercent,
+  revealRemoveBrushMask,
   resampleCoverageToOriginal,
   type RemoveMaskHoldIdentity,
   type RemovePoint,
@@ -552,6 +553,78 @@ test("protected reveal skips identity pixels and restore stays open", () => {
   assert.equal(mask[1], 255);
 });
 
+test("full-frame reveal fills the brush buffer and restore paints the core back", () => {
+  const width = 8;
+  const height = 6;
+  const pixels = new Uint8Array(width * height);
+  pixels[0] = 40;
+  const hold = {
+    sessionSerial: 2,
+    roomId: "room-1",
+    generationId: "22222222-2222-4222-8222-222222222222",
+    width,
+    height,
+    epoch: 3,
+    pixels,
+  };
+  const request = {
+    hold,
+    roomId: hold.roomId,
+    generationId: hold.generationId,
+    sessionSerial: hold.sessionSerial,
+    width,
+    height,
+    epoch: hold.epoch,
+  };
+  assert.equal(revealRemoveBrushMask({ ...request, hold: null }), false);
+  assert.equal(pixels[0], 40);
+  assert.equal(revealRemoveBrushMask({ ...request, roomId: "other-room" }), false);
+  assert.equal(revealRemoveBrushMask({ ...request, generationId: "other-generation" }), false);
+  assert.equal(revealRemoveBrushMask({ ...request, sessionSerial: 9 }), false);
+  assert.equal(revealRemoveBrushMask({ ...request, epoch: 4 }), false);
+  assert.equal(revealRemoveBrushMask({ ...request, width: width - 1 }), false);
+  assert.equal(revealRemoveBrushMask({
+    ...request,
+    hold: { ...hold, pixels: new Uint8Array(3) },
+  }), false);
+  assert.equal(pixels[0], 40);
+
+  assert.equal(revealRemoveBrushMask(request), true);
+  assert.ok(pixels.every((value) => value === 255));
+
+  const protection = new Uint8Array(width * height).fill(255);
+  const blocked = new Uint8Array(width * height);
+  paintRemoveBrush({
+    mask: blocked,
+    width,
+    height,
+    from: null,
+    to: { x: 3.5, y: 2.5 },
+    diameterPx: 512,
+    featherPx: 64,
+    tool: "reveal",
+    protection,
+  });
+  assert.equal(blocked[2 * width + 3], 0);
+  assert.equal(pixels[2 * width + 3], 255);
+
+  paintRemoveBrush({
+    mask: pixels,
+    width,
+    height,
+    from: null,
+    to: { x: 3.5, y: 2.5 },
+    diameterPx: 3,
+    featherPx: 1,
+    tool: "restore",
+    protection,
+  });
+  assert.equal(pixels[2 * width + 3], 0);
+  assert.equal(pixels[0], 255);
+  const edge = pixels[2 * width + 4] ?? 255;
+  assert.ok(edge > 0 && edge < 255);
+});
+
 test("brush compositing stays off the History image and the WebGL scene", () => {
   const brush = readFileSync(new URL("../../components/stage/RemoveBrushCanvas.tsx", import.meta.url), "utf8");
   const session = readFileSync(new URL("../../components/stage/RemoveAlignmentSession.tsx", import.meta.url), "utf8");
@@ -561,6 +634,11 @@ test("brush compositing stays off the History image and the WebGL scene", () => 
 
   assert.match(brush, /acceptRemoveBrushBitmaps/);
   assert.match(brush, /planRemoveMaskHold/);
+  const reveal = brush.slice(brush.indexOf("const revealFull"), brush.indexOf("const stroke ="));
+  assert.match(reveal, /revealRemoveBrushMask\(/);
+  assert.match(reveal, /paintDisplay\(FULL_IMAGE\)/);
+  assert.match(reveal, /publish\(\)/);
+  assert.match(brush, /revealMaskRef\.current = null/);
   assert.match(brush, /removeAlignmentArtifactPath/);
   assert.match(brush, /setPointerCapture/);
   assert.match(brush, /lostpointercapture/);
