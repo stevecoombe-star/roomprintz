@@ -85,6 +85,12 @@ import {
   type VibodeVersionKind,
 } from "@/lib/vibode/version-kind";
 import { cleanupHistoryVersionSecondaryLabel } from "@/lib/vibode-stage/remove-cleanup-history-ui";
+import {
+  CLEANUP_HISTORY_ACTIVATION_ERROR,
+  CLEANUP_HISTORY_STALE_ERROR,
+  nextRemoveReadinessGenerationId,
+  uploadedRoomUrlSync,
+} from "@/lib/vibode-stage/remove-readiness";
 import { isRemoveHistoryAsset, REMOVE_EDIT_LABEL } from "@/lib/vibode-stage/remove-edit";
 
 import {
@@ -3070,6 +3076,7 @@ function EditorPageInner() {
   const [roomBaseAssetId, setRoomBaseAssetId] = useState<string | null>(null);
   const requestedRoomIdRef = useRef<string | null>(requestedRoomId);
   const vibodeRoomIdRef = useRef<string | null>(vibodeRoomId);
+  const roomUploadSerialRef = useRef(0);
   const lastStageOutputsRef = useRef<StageOutputMap>(lastStageOutputs);
   const pendingPlacementNodeHydrationRef = useRef<ScenePlacement[] | null>(null);
   const clearLegacyPlacementNodes = useCallback(() => {
@@ -3114,6 +3121,7 @@ function EditorPageInner() {
   useEffect(() => {
     requestedRoomIdRef.current = requestedRoomId;
   }, [requestedRoomId]);
+  vibodeRoomIdRef.current = vibodeRoomId;
   useEffect(() => {
     vibodeRoomIdRef.current = vibodeRoomId;
   }, [vibodeRoomId]);
@@ -3152,6 +3160,19 @@ function EditorPageInner() {
     reloadKey: afcRuntimeReloadKey,
   });
   const prepare3dPhase = prepare3d.state.phase;
+  const [removeReadinessGenerationId, setRemoveReadinessGenerationId] = useState<string | null>(null);
+  const removeReadinessRoomRef = useRef(editorRoomId);
+  const removeReadinessRoomChanged = removeReadinessRoomRef.current !== editorRoomId;
+  if (removeReadinessRoomChanged) removeReadinessRoomRef.current = editorRoomId;
+  const nextRemoveReadinessId = nextRemoveReadinessGenerationId({
+    phase: prepare3dPhase,
+    generationId: prepare3d.state.generationId,
+    previous: removeReadinessRoomChanged ? null : removeReadinessGenerationId,
+    roomChanged: removeReadinessRoomChanged,
+  });
+  if (nextRemoveReadinessId !== removeReadinessGenerationId) {
+    setRemoveReadinessGenerationId(nextRemoveReadinessId);
+  }
   const requestPrepare3d = prepare3d.requestPrepare;
   const retryIntegratedAfcRestore = useCallback(() => {
     setAfcRuntimeReloadKey((current) => current + 1);
@@ -5448,11 +5469,6 @@ function EditorPageInner() {
     () => readOriginalPlacementSnapshotFromMetadata(selectedVersion?.metadata),
     [selectedVersion?.metadata]
   );
-  const refreshCleanupHistory = useCallback(async (roomId: string) => {
-    const previousActiveId = activeAssetIdRef.current;
-    await refreshRoomVersions(roomId);
-    if (previousActiveId) setActiveAssetId(previousActiveId);
-  }, [refreshRoomVersions, setActiveAssetId]);
   const selectedVersionIdRef = useRef<string | null>(selectedVersionId);
   const selectedVersionRenderedPlacementStateHashRef = useRef<string | null>(
     selectedVersionRenderedPlacementStateHash
@@ -5724,6 +5740,28 @@ function EditorPageInner() {
       setVersions,
     ]
   );
+
+  const refreshCleanupHistory = useCallback(async (
+    roomId: string,
+    assetId: string,
+    stillCurrent: () => boolean = () => vibodeRoomIdRef.current === roomId,
+  ) => {
+    if (!stillCurrent()) throw new Error(CLEANUP_HISTORY_STALE_ERROR);
+    const accessToken = await tryGetSupabaseAccessToken();
+    if (!accessToken) throw new Error(CLEANUP_HISTORY_ACTIVATION_ERROR);
+    if (!stillCurrent()) throw new Error(CLEANUP_HISTORY_STALE_ERROR);
+    await setActiveVersionForRoom({ roomId, assetId, accessToken });
+    if (!stillCurrent()) throw new Error(CLEANUP_HISTORY_STALE_ERROR);
+    const latest = await loadRoomVersions(roomId, accessToken);
+    if (!stillCurrent()) throw new Error(CLEANUP_HISTORY_STALE_ERROR);
+    const asset = latest.find((item) => item.id === assetId) ?? null;
+    if (!asset) throw new Error(CLEANUP_HISTORY_ACTIVATION_ERROR);
+    if (!stillCurrent()) throw new Error(CLEANUP_HISTORY_STALE_ERROR);
+    setVersions(latest);
+    const applied = applyVersionToEditorState(asset, latest);
+    if (!applied) throw new Error(CLEANUP_HISTORY_ACTIVATION_ERROR);
+    if (!stillCurrent()) throw new Error(CLEANUP_HISTORY_STALE_ERROR);
+  }, [applyVersionToEditorState, setVersions]);
 
   const handleSelectVersion = useCallback(
     (asset: VibodeRoomAsset) => {
@@ -6539,14 +6577,24 @@ function EditorPageInner() {
 
     // 2) Upload to storage + swap to signed URL (kills blob in payload)
     setIsUploading(true);
+    let uploadSerial = 0;
+    let openSession = 0;
     try {
+      uploadSerial = roomUploadSerialRef.current + 1;
+      roomUploadSerialRef.current = uploadSerial;
+      openSession = roomOpenSessionRef.current;
+      const uploadIsCurrent = () =>
+        uploadSerial === roomUploadSerialRef.current && openSession === roomOpenSessionRef.current;
+
       let accessToken = await tryGetSupabaseAccessToken();
+      if (!uploadIsCurrent()) return;
       if (!accessToken) {
         // Small retry to reduce early-click hydration races right after page load.
         await new Promise<void>((resolve) => setTimeout(resolve, 250));
         accessToken = await tryGetSupabaseAccessToken();
       }
 
+      if (!uploadIsCurrent()) return;
       if (!accessToken) {
         console.warn("[upload-base][auth-diag]", {
           tokenPresent: false,
@@ -6566,15 +6614,29 @@ function EditorPageInner() {
         aspectRatio: currentAspectRatioForUpload,
         accessToken,
       });
+      if (!uploadIsCurrent()) return;
       await preloadImage(up.signedUrl);
+      if (!uploadIsCurrent()) return;
 
+      const sync = uploadedRoomUrlSync({
+        roomId: up.vibodeRoomId,
+        uploadSerial,
+        activeUploadSerial: roomUploadSerialRef.current,
+        openSession,
+        activeOpenSession: roomOpenSessionRef.current,
+      });
       setBaseImageUrl(up.signedUrl);
       setWorkingImageUrl(up.signedUrl);
       setIsWorkingImageGenerated(false);
       setVibodeRoomId(up.vibodeRoomId ?? null);
+      if (sync) {
+        hydratedRoomIdRef.current = sync.roomId;
+        router.replace(sync.path);
+      }
       let resolvedAssetId: string | null = null;
       if (up.vibodeRoomId) {
         const latestVersions = await refreshRoomVersions(up.vibodeRoomId);
+        if (!uploadIsCurrent()) return;
         const baseAsset = latestVersions?.find((asset) => asset.asset_type === "base") ?? null;
         const activeAsset = latestVersions?.find((asset) => asset.is_active) ?? null;
         setRoomBaseAssetId(baseAsset?.id ?? null);
@@ -6602,6 +6664,12 @@ function EditorPageInner() {
       })();
       pushSnack("Room photo uploaded.");
     } catch (err: unknown) {
+      if (
+        uploadSerial !== 0
+        && (uploadSerial !== roomUploadSerialRef.current || openSession !== roomOpenSessionRef.current)
+      ) {
+        return;
+      }
       console.error(err);
       setVibodeRoomId(null);
       setRoomMetadata(null);
@@ -6610,7 +6678,9 @@ function EditorPageInner() {
       setRoomPhotoUploadError(message);
       pushSnack(message);
     } finally {
-      setIsUploading(false);
+      if (uploadSerial === 0 || uploadSerial === roomUploadSerialRef.current) {
+        setIsUploading(false);
+      }
     }
   };
 
@@ -12232,6 +12302,7 @@ function EditorPageInner() {
             roomId={editorRoomId}
             activeHistoryAssetId={activeAssetId}
             activeHistoryImageUrl={versions.find((asset) => asset.id === activeAssetId)?.image_url ?? null}
+            alignmentGenerationId={removeReadinessGenerationId}
             onCleanupHistoryAccepted={refreshCleanupHistory}
             onRemoveEditSaved={activateSavedRemoveEdit}
           >

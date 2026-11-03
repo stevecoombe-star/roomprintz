@@ -490,7 +490,7 @@ test("Clean Up versions are labeled Clean Up Room and other stage rows keep thei
   );
 });
 
-test("acceptance refresh keeps the current image and updates both History surfaces", () => {
+test("successful acceptance activates the saved image instead of restoring the previous one", () => {
   const editor = source("app/editor/page.tsx");
   const generation = source("components/stage/RemoveCleanupGeneration.tsx");
   const session = source("components/stage/RemoveAlignmentSession.tsx");
@@ -503,15 +503,17 @@ test("acceptance refresh keeps the current image and updates both History surfac
   const recovery = accept.slice(accept.indexOf("catch {"));
   assert.doesNotMatch(failure, /onHistoryAccepted/);
   assert.ok(accept.indexOf("publishCleanupJob") < accept.indexOf("onHistoryAccepted"));
-  assert.match(accept, /await onHistoryAccepted\?\.\(roomToRefresh\)/);
-  assert.doesNotMatch(recovery, /setJob|setPhase|setError|handleSelectVersion/);
+  assert.match(accept, /await onHistoryAccepted\?\.\(decision\.roomId, decision\.assetId\)/);
+  assert.doesNotMatch(accept, /saveRemoveEdits|\/api\/vibode\/admin\/remove-edits/);
+  assert.doesNotMatch(recovery, /setJob|setPhase|handleSelectVersion|saveRemoveEdits/);
   const callback = editor.slice(
     editor.indexOf("const refreshCleanupHistory"),
-    editor.indexOf("const selectedVersionIdRef"),
+    editor.indexOf("const handleSelectVersion"),
   );
-  assert.match(callback, /await refreshRoomVersions\(roomId\)/);
-  assert.match(callback, /setActiveAssetId\(previousActiveId\)/);
-  assert.doesNotMatch(callback, /handleSelectVersion|applyVersionToEditorState|setWorkingImageUrl|publishHarmonize|room_scale_multiplier/);
+  assert.match(callback, /await setActiveVersionForRoom\(\{ roomId, assetId, accessToken \}\)/);
+  assert.match(callback, /applyVersionToEditorState\(asset, latest\)/);
+  assert.match(callback, /loadRoomVersions\(roomId, accessToken\)/);
+  assert.doesNotMatch(callback, /previousActiveId|saveRemoveEdits|remove-edits|publishHarmonize|room_scale_multiplier/);
   assert.match(shell, /onCleanupHistoryAccepted=\{onCleanupHistoryAccepted\}/);
   assert.match(session, /onHistoryAccepted=\{session\.onCleanupHistoryAccepted\}/);
   assert.match(editor, /<ImageHistoryTimeline[\s\S]*versions=\{versions\}/);

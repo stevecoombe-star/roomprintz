@@ -95,6 +95,11 @@ import {
   type RemoveObjectUiState,
 } from "@/lib/vibode-stage/remove-object-ui";
 import {
+  CLEANUP_HISTORY_ACTIVATION_ERROR,
+  type CleanupFinalizeResult,
+  shouldApplyRemoveAlignmentLookup,
+} from "@/lib/vibode-stage/remove-readiness";
+import {
   REMOVE_VOCABULARY_SAVE_ERROR,
   REMOVE_VOCABULARY_SCAN_CONFIRMATION,
   applyRemoveVocabularySave,
@@ -134,6 +139,8 @@ type RemoveAlignmentContextValue = Readonly<{
   brushAdmission: RemoveBrushAdmission | null;
   maskSummary: RemoveMaskSummary | null;
   maskHoldRef: { current: RemoveMaskHold | null };
+  revealMaskRef: { current: (() => boolean) | null };
+  revealEmptyRoom: () => void;
   enter: () => void;
   exit: () => void;
   setOpacity: (opacity: number) => void;
@@ -161,7 +168,14 @@ type RemoveAlignmentContextValue = Readonly<{
   downloadCleanupExport: () => void;
   noteDisplayedSize: (artifact: "original" | "empty", size: DisplayedSize) => void;
   noteMaskSummary: (summary: RemoveMaskSummary | null) => void;
-  onCleanupHistoryAccepted?: (roomId: string) => void | Promise<void>;
+  onCleanupHistoryAccepted: (roomId: string, assetId: string) => Promise<CleanupFinalizeResult>;
+  noteCleanupAcceptancePending: (pending: boolean) => void;
+  noteCleanupActivationBlocked: (assetId: string | null) => void;
+  cleanupFinalizing: boolean;
+  cleanupActivationBlocked: boolean;
+  cleanupActivationError: string | null;
+  cleanupActivationAssetId: string | null;
+  showSavedCleanupImage: () => void;
   saveRemoveEdits: () => void;
   removeSavePhase: "idle" | "saving" | "error";
   removeSaveError: string | null;
@@ -181,6 +195,7 @@ type RemoveAlignmentContextValue = Readonly<{
 }>;
 
 const RemoveAlignmentContext = createContext<RemoveAlignmentContextValue | null>(null);
+const RemovePresentationContext = createContext<"simple" | "advanced">("simple");
 
 async function loadRemoveAlignment(roomId: string): Promise<RemoveAlignmentLookup> {
   const response = await fetch(
@@ -195,6 +210,7 @@ export function RemoveAlignmentProvider({
   roomId,
   activeHistoryAssetId = null,
   activeHistoryImageUrl = null,
+  alignmentGenerationId = null,
   onCleanupHistoryAccepted,
   onRemoveEditSaved,
   children,
@@ -202,7 +218,12 @@ export function RemoveAlignmentProvider({
   roomId: string | null;
   activeHistoryAssetId?: string | null;
   activeHistoryImageUrl?: string | null;
-  onCleanupHistoryAccepted?: (roomId: string) => void | Promise<void>;
+  alignmentGenerationId?: string | null;
+  onCleanupHistoryAccepted?: (
+    roomId: string,
+    assetId: string,
+    stillCurrent: () => boolean,
+  ) => Promise<void>;
   onRemoveEditSaved?: (roomId: string, assetId: string) => Promise<void>;
   children: ReactNode;
 }) {
@@ -212,12 +233,15 @@ export function RemoveAlignmentProvider({
     reduceRemoveInspection,
     initialRemoveInspectionState(),
   );
+  const inspectionRef = useRef(inspection);
+  inspectionRef.current = inspection;
   const [displayed, setDisplayed] = useState<Readonly<{
     original: DisplayedSize | null;
     empty: DisplayedSize | null;
   }>>({ original: null, empty: null });
   const [maskSummary, setMaskSummary] = useState<RemoveMaskSummary | null>(null);
   const maskHoldRef = useRef<RemoveMaskHold | null>(null);
+  const revealMaskRef = useRef<(() => boolean) | null>(null);
   const [objectUi, setObjectUi] = useState<RemoveObjectUiState>(initialRemoveObjectUiState());
   const objectUiRef = useRef(objectUi);
   const [cleanupUi, setCleanupUi] = useState<RemoveCleanupUiState>(initialRemoveCleanupUiState());
@@ -232,12 +256,24 @@ export function RemoveAlignmentProvider({
   }>(null);
   const ticketRef = useRef(0);
   const saveLock = useRef(false);
+  const cleanupFinalizingRef = useRef(false);
+  const cleanupActivationRef = useRef<Readonly<{ roomId: string | null; assetId: string | null }> | null>(null);
+  const cleanupFinalizeLock = useRef(false);
+  const cleanupExitLock = useRef(false);
+  const alignmentRequestSerial = useRef(0);
+  const alignmentGenerationRef = useRef<string | null>(alignmentGenerationId);
+  const onCleanupHistoryAcceptedRef = useRef(onCleanupHistoryAccepted);
+  const exitRef = useRef<() => void>(() => {});
   const frozenKeepIdRef = useRef<string | null>(null);
   const [frozenKeep, setFrozenKeep] = useState<Readonly<{ assetId: string; imageUrl: string }> | null>(null);
   const [keepIdentity, setKeepIdentity] = useState<RemoveKeepIdentity | null>(null);
   const [keepShaConflict, setKeepShaConflict] = useState(false);
   const [removeSavePhase, setRemoveSavePhase] = useState<"idle" | "saving" | "error">("idle");
   const [removeSaveError, setRemoveSaveError] = useState<string | null>(null);
+  const [cleanupFinalizing, setCleanupFinalizing] = useState(false);
+  const [cleanupActivationBlocked, setCleanupActivationBlocked] = useState(false);
+  const [cleanupActivationError, setCleanupActivationError] = useState<string | null>(null);
+  const [cleanupActivationAssetId, setCleanupActivationAssetId] = useState<string | null>(null);
   const [vocabularyRevision, setVocabularyRevision] = useState(0);
   const [vocabularyView, setVocabularyView] = useState<RemoveVocabularyProfileResponse | null>(null);
   const [vocabularyConfirm, setVocabularyConfirm] = useState<RemoveVocabularyConfirmState>(
@@ -254,20 +290,51 @@ export function RemoveAlignmentProvider({
     setVocabularyRevision(0);
     setVocabularyView(null);
     setVocabularyConfirm(initialRemoveVocabularyConfirmState());
+    cleanupFinalizingRef.current = false;
+    cleanupActivationRef.current = null;
+    cleanupFinalizeLock.current = false;
+    cleanupExitLock.current = false;
+    setCleanupFinalizing(false);
+    setCleanupActivationBlocked(false);
+    setCleanupActivationError(null);
+    setCleanupActivationAssetId(null);
     dispatch({ type: "exit" });
   }
 
+  alignmentGenerationRef.current = alignmentGenerationId;
+  onCleanupHistoryAcceptedRef.current = onCleanupHistoryAccepted;
+
+  const commitLookup = useCallback((
+    next: RemoveAlignmentLookup,
+    request: Readonly<{ roomId: string; serial: number; generationId: string | null }>,
+  ) => {
+    const reportGenerationId = next.access === "ready" ? next.report.generationId : null;
+    if (!shouldApplyRemoveAlignmentLookup({
+      requestRoomId: request.roomId,
+      currentRoomId: roomRef.current,
+      requestSerial: request.serial,
+      currentSerial: alignmentRequestSerial.current,
+      requestedGenerationId: request.generationId,
+      reportGenerationId,
+      access: next.access,
+    })) return;
+    setLookup(next);
+  }, []);
+
   const refresh = useCallback(async (nextRoomId: string) => {
+    const serial = alignmentRequestSerial.current + 1;
+    alignmentRequestSerial.current = serial;
+    const generationId = alignmentGenerationRef.current;
     try {
       const next = await loadRemoveAlignment(nextRoomId);
-      if (roomRef.current === nextRoomId) setLookup(next);
+      commitLookup(next, { roomId: nextRoomId, serial, generationId });
       return next;
     } catch {
       const hidden: RemoveAlignmentLookup = { access: "hidden" };
-      if (roomRef.current === nextRoomId) setLookup(hidden);
+      commitLookup(hidden, { roomId: nextRoomId, serial, generationId });
       return hidden;
     }
-  }, []);
+  }, [commitLookup]);
 
   useEffect(() => {
     roomRef.current = roomId;
@@ -276,21 +343,26 @@ export function RemoveAlignmentProvider({
   useEffect(() => {
     if (!roomId) return undefined;
     const activeRoomId = roomId;
+    const serial = alignmentRequestSerial.current + 1;
+    alignmentRequestSerial.current = serial;
+    const requestedGenerationId = alignmentGenerationId;
     let cancelled = false;
     void loadRemoveAlignment(activeRoomId).then((next) => {
-      if (!cancelled && roomRef.current === activeRoomId) setLookup(next);
+      if (cancelled) return;
+      commitLookup(next, { roomId: activeRoomId, serial, generationId: requestedGenerationId });
     }).catch(() => {
-      if (!cancelled && roomRef.current === activeRoomId) setLookup({ access: "hidden" });
+      if (cancelled) return;
+      commitLookup({ access: "hidden" }, { roomId: activeRoomId, serial, generationId: requestedGenerationId });
     });
     return () => {
       cancelled = true;
     };
-  }, [roomId]);
+  }, [alignmentGenerationId, commitLookup, roomId]);
 
   useEffect(() => {
     if (!inspection.active) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !saveLock.current) dispatch({ type: "exit" });
+      if (event.key === "Escape" && !saveLock.current && !cleanupFinalizingRef.current) exitRef.current();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -442,12 +514,81 @@ export function RemoveAlignmentProvider({
   const enter = useCallback(() => {
     const requested = roomRef.current;
     if (!requested) return;
+    const serial = alignmentRequestSerial.current;
     void refresh(requested).then((next) => {
       if (roomRef.current !== requested || next.access !== "ready") return;
+      if (alignmentRequestSerial.current !== serial + 1) return;
+      cleanupExitLock.current = false;
       dispatch({ type: "enter" });
     });
   }, [refresh]);
-  const exit = useCallback(() => dispatch({ type: "exit" }), []);
+  const clearCleanupActivation = useCallback(() => {
+    cleanupFinalizingRef.current = false;
+    cleanupActivationRef.current = null;
+    cleanupFinalizeLock.current = false;
+    setCleanupFinalizing(false);
+    setCleanupActivationBlocked(false);
+    setCleanupActivationError(null);
+    setCleanupActivationAssetId(null);
+  }, []);
+  const exit = useCallback(() => {
+    clearCleanupActivation();
+    dispatch({ type: "exit" });
+  }, [clearCleanupActivation]);
+  exitRef.current = exit;
+  const blockCleanupPublication = useCallback((assetId: string | null) => {
+    cleanupActivationRef.current = { roomId: roomRef.current, assetId };
+    setCleanupActivationBlocked(true);
+    setCleanupActivationAssetId(assetId);
+    setCleanupActivationError(CLEANUP_HISTORY_ACTIVATION_ERROR);
+    setRemoveSaveError(CLEANUP_HISTORY_ACTIVATION_ERROR);
+    setRemoveSavePhase("error");
+  }, []);
+  const noteCleanupAcceptancePending = useCallback((pending: boolean) => {
+    cleanupFinalizingRef.current = pending;
+    setCleanupFinalizing(pending);
+  }, []);
+  const finalizeCleanupHistory = useCallback(async (
+    acceptedRoomId: string,
+    assetId: string,
+  ): Promise<CleanupFinalizeResult> => {
+    if (cleanupFinalizeLock.current) return "finalized";
+    const sessionSerial = inspectionRef.current.sessionSerial;
+    const stillCurrent = () =>
+      roomRef.current === acceptedRoomId
+      && inspectionRef.current.sessionSerial === sessionSerial
+      && inspectionRef.current.active;
+    if (!stillCurrent()) return "stale";
+    const activate = onCleanupHistoryAcceptedRef.current;
+    if (!activate) {
+      blockCleanupPublication(assetId);
+      return "failed";
+    }
+    cleanupFinalizeLock.current = true;
+    cleanupFinalizingRef.current = true;
+    setCleanupFinalizing(true);
+    try {
+      await activate(acceptedRoomId, assetId, stillCurrent);
+      if (!stillCurrent()) return "stale";
+      if (cleanupExitLock.current) return "finalized";
+      cleanupExitLock.current = true;
+      exit();
+      return "finalized";
+    } catch {
+      if (!stillCurrent()) return "stale";
+      blockCleanupPublication(assetId);
+      return "failed";
+    } finally {
+      cleanupFinalizeLock.current = false;
+      cleanupFinalizingRef.current = false;
+      setCleanupFinalizing(false);
+    }
+  }, [blockCleanupPublication, exit]);
+  const showSavedCleanupImage = useCallback(() => {
+    const pending = cleanupActivationRef.current;
+    if (!pending?.roomId || !pending.assetId) return;
+    void finalizeCleanupHistory(pending.roomId, pending.assetId);
+  }, [finalizeCleanupHistory]);
   const setOpacity = useCallback((opacity: number) => {
     dispatch({ type: "opacity", opacity });
   }, []);
@@ -480,6 +621,9 @@ export function RemoveAlignmentProvider({
   }, []);
   const clearMask = useCallback(() => {
     dispatch({ type: "clear-mask" });
+  }, []);
+  const revealEmptyRoom = useCallback(() => {
+    revealMaskRef.current?.();
   }, []);
   const updateObjectUi = useCallback((reduce: (state: RemoveObjectUiState) => RemoveObjectUiState) => {
     setObjectUi((current) => {
@@ -636,6 +780,11 @@ export function RemoveAlignmentProvider({
 
   const saveRemoveEdits = useCallback(() => {
     if (saveLock.current) return;
+    if (cleanupFinalizingRef.current || cleanupActivationRef.current) {
+      setRemoveSaveError(CLEANUP_HISTORY_ACTIVATION_ERROR);
+      setRemoveSavePhase("error");
+      return;
+    }
     const report = lookup.access === "ready" ? lookup.report : null;
     const hold = maskHoldRef.current;
     if (
@@ -834,6 +983,8 @@ export function RemoveAlignmentProvider({
     brushAdmission,
     maskSummary,
     maskHoldRef,
+    revealMaskRef,
+    revealEmptyRoom,
     enter,
     exit,
     setOpacity,
@@ -867,7 +1018,14 @@ export function RemoveAlignmentProvider({
     downloadCleanupExport,
     noteDisplayedSize,
     noteMaskSummary,
-    onCleanupHistoryAccepted,
+    onCleanupHistoryAccepted: finalizeCleanupHistory,
+    noteCleanupAcceptancePending,
+    noteCleanupActivationBlocked: blockCleanupPublication,
+    cleanupFinalizing,
+    cleanupActivationBlocked,
+    cleanupActivationError,
+    cleanupActivationAssetId,
+    showSavedCleanupImage,
     saveRemoveEdits,
     removeSavePhase,
     removeSaveError,
@@ -919,11 +1077,20 @@ export function RemoveAlignmentProvider({
     noteDisplayedSize,
     noteMaskSummary,
     objectUi,
-    onCleanupHistoryAccepted,
+    finalizeCleanupHistory,
+    noteCleanupAcceptancePending,
+    blockCleanupPublication,
+    cleanupFinalizing,
+    cleanupActivationBlocked,
+    cleanupActivationError,
+    cleanupActivationAssetId,
+    showSavedCleanupImage,
     openCleanupExport,
     originalDisagreement,
     removeSaveError,
     removeSavePhase,
+    revealEmptyRoom,
+    revealMaskRef,
     requestVocabulary,
     confirmVocabulary,
     cancelVocabulary,
@@ -961,7 +1128,6 @@ export function RemoveAlignmentControl() {
   const session = useRemoveAlignment();
   if (!session || session.access === "hidden") return null;
   const disabled = session.access !== "ready";
-  const pressedPreset = removeOpacityPreset(session.opacity);
   return (
     <div className="relative shrink-0" data-remove-alignment="control">
       <button
@@ -991,37 +1157,77 @@ export function RemoveAlignmentControl() {
         Remove
       </button>
       {session.active && session.report ? (
-        <div
-          role="region"
-          aria-label="Remove inspection"
-          data-remove-mode={session.mode}
-          className="absolute right-0 top-full z-50 mt-1 max-h-[70vh] w-80 overflow-y-auto rounded-md border border-neutral-700 bg-neutral-950 p-3 text-neutral-200 shadow-lg"
-        >
-          <div className="flex gap-1" role="group" aria-label="Remove mode">
-            <ModeButton
-              pressed={session.mode === "objects"}
-              onClick={() => session.setMode("objects")}
-            >
-              Objects
-            </ModeButton>
-            <ModeButton
-              pressed={session.mode === "alignment"}
-              onClick={() => session.setMode("alignment")}
-            >
-              Alignment
-            </ModeButton>
-            <ModeButton
-              pressed={session.mode === "brush"}
-              disabled={session.brushAdmission?.allowed !== true}
-              title={session.brushAdmission?.allowed === false ? session.brushAdmission.reason : undefined}
-              onClick={() => session.setMode("brush")}
-            >
-              Brush
-            </ModeButton>
-          </div>
+        <RemoveInspectionPanel session={session} />
+      ) : null}
+    </div>
+  );
+}
+
+function RemoveInspectionPanel({ session }: { session: RemoveAlignmentContextValue }) {
+  const [presentation, setPresentation] = useState<"simple" | "advanced">("simple");
+  const pressedPreset = removeOpacityPreset(session.opacity);
+  const brushDisabled = session.brushAdmission?.allowed !== true;
+  const brushTitle = session.brushAdmission?.allowed === false ? session.brushAdmission.reason : undefined;
+  return (
+    <RemovePresentationContext.Provider value={presentation}>
+      <div
+        role="region"
+        aria-label="Remove inspection"
+        data-remove-mode={session.mode}
+        data-remove-presentation={presentation}
+        className="absolute right-0 top-full z-50 mt-1 flex max-h-[70vh] w-80 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-md border border-neutral-700 bg-neutral-950 text-neutral-200 shadow-lg"
+      >
+        <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3">
+          {presentation === "simple" ? (
+            <div className="flex flex-wrap gap-1" role="group" aria-label="Remove mode">
+              <ModeButton
+                pressed={session.mode === "objects"}
+                onClick={() => session.setMode("objects")}
+              >
+                Objects
+              </ModeButton>
+              <ModeButton
+                pressed={session.mode === "brush"}
+                disabled={brushDisabled}
+                title={brushTitle}
+                onClick={() => session.setMode("brush")}
+              >
+                Brush
+              </ModeButton>
+              <ModeButton pressed={false} onClick={() => setPresentation("advanced")}>
+                Advanced
+              </ModeButton>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-1" role="group" aria-label="Remove mode">
+              <ModeButton
+                pressed={session.mode === "objects"}
+                onClick={() => session.setMode("objects")}
+              >
+                Objects
+              </ModeButton>
+              <ModeButton
+                pressed={session.mode === "alignment"}
+                onClick={() => session.setMode("alignment")}
+              >
+                Alignment
+              </ModeButton>
+              <ModeButton
+                pressed={session.mode === "brush"}
+                disabled={brushDisabled}
+                title={brushTitle}
+                onClick={() => session.setMode("brush")}
+              >
+                Brush
+              </ModeButton>
+              <ModeButton pressed={false} onClick={() => setPresentation("simple")}>
+                Simple
+              </ModeButton>
+            </div>
+          )}
           {session.mode === "alignment" ? (
             <>
-              <div className="mt-3 flex gap-1" role="group" aria-label="Alignment presets">
+              <div className="mt-3 flex flex-wrap gap-1" role="group" aria-label="Alignment presets">
                 {REMOVE_OPACITY_PRESETS.map((preset) => (
                   <button
                     key={preset.id}
@@ -1058,51 +1264,84 @@ export function RemoveAlignmentControl() {
           ) : (
             <ObjectControls session={session} />
           )}
-          <button
-            type="button"
-            aria-pressed={session.furnitureHidden}
-            onClick={() => session.setFurnitureHidden(!session.furnitureHidden)}
-            className={`mt-3 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
-              session.furnitureHidden
-                ? "border-neutral-500 bg-neutral-800 text-neutral-50"
-                : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
-            }`}
-          >
-          {session.furnitureHidden ? "Show furniture" : "Hide furniture"}
-        </button>
-        <button
-          type="button"
-          data-remove-objects="done"
-          disabled={session.removeSavePhase === "saving"}
-          onClick={session.saveRemoveEdits}
-          className={`mt-2 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
-            session.removeSavePhase === "saving"
-              ? "border-neutral-900 bg-neutral-950 text-neutral-600"
-              : "border-neutral-200 bg-neutral-100 text-neutral-950 hover:bg-white"
-          }`}
-        >
-          {session.removeSavePhase === "saving" ? "Saving…" : "Done"}
-        </button>
-        <button
-          type="button"
-          data-remove-edit="cancel"
-          disabled={session.removeSavePhase === "saving"}
-          onClick={session.exit}
-          className={`mt-2 ml-1 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:border-neutral-900 disabled:bg-neutral-950 disabled:text-neutral-600 ${FOCUS}`}
-        >
-          Cancel
-        </button>
-        {session.removeSaveError ? (
-          <p className="mt-2 text-[11px] leading-relaxed text-red-300" role="alert" data-remove-edit="error">
-            {session.removeSaveError}
-          </p>
-        ) : session.keepNotice ? (
-          <p className="mt-2 text-[11px] leading-relaxed text-amber-200" role="status" data-remove-edit="keep-notice">
-            {session.keepNotice}
-          </p>
-        ) : null}
-        <AlignmentDetails session={session} />
+          {presentation === "advanced" ? <AlignmentDetails session={session} /> : null}
         </div>
+        <RemoveInspectionFooter session={session} />
+      </div>
+    </RemovePresentationContext.Provider>
+  );
+}
+
+function RemoveInspectionFooter({ session }: { session: RemoveAlignmentContextValue }) {
+  const doneBlocked = session.removeSavePhase === "saving"
+    || session.cleanupFinalizing
+    || session.cleanupActivationBlocked;
+  const cancelBlocked = session.removeSavePhase === "saving" || session.cleanupFinalizing;
+  return (
+    <div className="min-w-0 shrink-0 break-words border-t border-neutral-800 p-3" data-remove-footer="true">
+      <button
+        type="button"
+        aria-pressed={session.furnitureHidden}
+        onClick={() => session.setFurnitureHidden(!session.furnitureHidden)}
+        className={`rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+          session.furnitureHidden
+            ? "border-neutral-500 bg-neutral-800 text-neutral-50"
+            : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+        }`}
+      >
+        {session.furnitureHidden ? "Show Furniture" : "Hide Furniture"}
+      </button>
+      <button
+        type="button"
+        data-remove-objects="done"
+        disabled={doneBlocked}
+        onClick={session.saveRemoveEdits}
+        className={`mt-2 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+          doneBlocked
+            ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+            : "border-neutral-200 bg-neutral-100 text-neutral-950 hover:bg-white"
+        }`}
+      >
+        {session.removeSavePhase === "saving" ? "Saving…" : "Done"}
+      </button>
+      <button
+        type="button"
+        data-remove-edit="cancel"
+        disabled={cancelBlocked}
+        onClick={session.exit}
+        className={`mt-2 ml-1 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:border-neutral-900 disabled:bg-neutral-950 disabled:text-neutral-600 ${FOCUS}`}
+      >
+        Cancel
+      </button>
+      {session.cleanupActivationError ? (
+        <div className="mt-2" data-remove-cleanup-activation="recovery">
+          <p className="text-[11px] leading-relaxed text-red-300" role="alert" data-remove-cleanup-activation="error">
+            {session.cleanupActivationError}
+          </p>
+          {session.cleanupActivationAssetId ? (
+            <button
+              type="button"
+              data-remove-cleanup-activation="show-saved"
+              disabled={session.cleanupFinalizing}
+              onClick={() => void session.showSavedCleanupImage()}
+              className={`mt-2 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+                session.cleanupFinalizing
+                  ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+                  : "border-neutral-500 text-neutral-100"
+              }`}
+            >
+              Show saved image
+            </button>
+          ) : null}
+        </div>
+      ) : session.removeSaveError ? (
+        <p className="mt-2 text-[11px] leading-relaxed text-red-300" role="alert" data-remove-edit="error">
+          {session.removeSaveError}
+        </p>
+      ) : session.keepNotice ? (
+        <p className="mt-2 text-[11px] leading-relaxed text-amber-200" role="status" data-remove-edit="keep-notice">
+          {session.keepNotice}
+        </p>
       ) : null}
     </div>
   );
@@ -1169,10 +1408,11 @@ function protectionControl(session: RemoveAlignmentContextValue): Readonly<{
 }
 
 function BrushControls({ session }: { session: RemoveAlignmentContextValue }) {
+  const presentation = useContext(RemovePresentationContext);
   const protection = protectionControl(session);
   return (
     <div className="mt-3">
-      <div className="flex gap-1" role="group" aria-label="Brush tool">
+      <div className="flex flex-wrap gap-1" role="group" aria-label="Brush tool">
         <ModeButton pressed={session.tool === "reveal"} onClick={() => session.setTool("reveal")}>
           Reveal
         </ModeButton>
@@ -1218,13 +1458,25 @@ function BrushControls({ session }: { session: RemoveAlignmentContextValue }) {
         value={session.featherPx}
         onChange={session.setFeather}
       />
-      <button
-        type="button"
-        onClick={session.clearMask}
-        className={`mt-3 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 ${FOCUS}`}
-      >
-        Clear Mask
-      </button>
+      <div className="mt-3 flex flex-wrap gap-1">
+        {presentation === "simple" ? (
+          <button
+            type="button"
+            data-remove-brush="empty-room"
+            onClick={session.revealEmptyRoom}
+            className={`rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 ${FOCUS}`}
+          >
+            Empty Room
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={session.clearMask}
+          className={`rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 ${FOCUS}`}
+        >
+          Clear Mask
+        </button>
+      </div>
     </div>
   );
 }
@@ -1263,30 +1515,68 @@ function BrushSlider({
 }
 
 function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
+  const presentation = useContext(RemovePresentationContext);
+  const simple = presentation === "simple";
   const ready = session.objectUi.phase === "ready" && session.objectUi.objects.length > 0;
   const canReveal = ready && session.brushAdmission?.allowed === true;
   const reason = session.brushAdmission?.allowed === false ? session.brushAdmission.reason : undefined;
+  const outlineButton = (label: "Show Mask Outline" | "Show Mask Outlines") => (
+    <button
+      type="button"
+      aria-pressed={session.objectOutlinesVisible}
+      data-remove-objects="outlines"
+      onClick={() => session.setObjectOutlinesVisible(!session.objectOutlinesVisible)}
+      className={`mt-3 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+        session.objectOutlinesVisible
+          ? "border-neutral-500 bg-neutral-800 text-neutral-50"
+          : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+      }`}
+    >
+      {label}
+    </button>
+  );
   return (
     <div className="mt-3">
-      <div role="group" aria-label="Detection vocabulary" data-remove-vocabulary="choices">
-        <p className="text-[11px] text-neutral-400">Detection vocabulary</p>
-        <div className="mt-1 flex gap-1">
-          <ModeButton
-            pressed={session.vocabularyChoice === "default"}
+      {simple ? (
+        <label className="block text-[11px] text-neutral-400" data-remove-vocabulary="room-type">
+          Room Type
+          <select
+            aria-label="Room Type"
+            data-remove-vocabulary="choice"
             disabled={session.vocabularyPhase === "saving"}
-            onClick={() => session.requestVocabulary("default")}
+            value={session.vocabularyChoice}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (value !== "default" && value !== "bedroom") return;
+              session.requestVocabulary(value);
+            }}
+            className={`mt-1 block w-full max-w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-[11px] text-neutral-100 ${FOCUS}`}
           >
-            Default
-          </ModeButton>
-          <ModeButton
-            pressed={session.vocabularyChoice === "bedroom"}
-            disabled={session.vocabularyPhase === "saving"}
-            onClick={() => session.requestVocabulary("bedroom")}
-          >
-            Bedroom
-          </ModeButton>
+            <option value="default">Default</option>
+            <option value="bedroom">Bedroom</option>
+          </select>
+        </label>
+      ) : (
+        <div role="group" aria-label="Detection vocabulary" data-remove-vocabulary="choices">
+          <p className="text-[11px] text-neutral-400">Detection vocabulary</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            <ModeButton
+              pressed={session.vocabularyChoice === "default"}
+              disabled={session.vocabularyPhase === "saving"}
+              onClick={() => session.requestVocabulary("default")}
+            >
+              Default
+            </ModeButton>
+            <ModeButton
+              pressed={session.vocabularyChoice === "bedroom"}
+              disabled={session.vocabularyPhase === "saving"}
+              onClick={() => session.requestVocabulary("bedroom")}
+            >
+              Bedroom
+            </ModeButton>
+          </div>
         </div>
-      </div>
+      )}
       {session.vocabularyPhase === "confirming" || session.vocabularyPhase === "saving" ? (
         <div className="mt-2" data-remove-vocabulary="confirm">
           <p className="text-[11px] leading-relaxed text-neutral-300">
@@ -1323,13 +1613,15 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
           {session.vocabularyError}
         </p>
       ) : null}
-      <p className="mt-3 text-[11px] text-neutral-300" role="status" data-remove-objects="status">
-        {objectStatus(session)}
-      </p>
-      {reason ? (
+      {simple ? null : (
+        <p className="mt-3 text-[11px] text-neutral-300" role="status" data-remove-objects="status">
+          {objectStatus(session)}
+        </p>
+      )}
+      {simple || !reason ? null : (
         <p className="mt-2 text-[11px] leading-relaxed text-neutral-500">{reason}</p>
-      ) : null}
-      <div className="mt-3 flex gap-1" role="group" aria-label="Object selection">
+      )}
+      <div className="mt-3 flex flex-wrap gap-1" role="group" aria-label="Object selection">
         <ModeButton
           pressed={false}
           disabled={!canReveal}
@@ -1347,8 +1639,9 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
           Show All
         </ModeButton>
       </div>
+      {simple ? outlineButton("Show Mask Outline") : null}
       <div className="mt-3" data-remove-cleanup="panel">
-        {session.cleanupPhase === "idle" ? (
+        {simple ? null : session.cleanupPhase === "idle" ? (
           <button
             type="button"
             data-remove-cleanup="export"
@@ -1397,39 +1690,32 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
             ) : null}
           </div>
         )}
-        {session.cleanupError ? (
+        {simple || !session.cleanupError ? null : (
           <p className="mt-2 text-[11px] leading-relaxed text-red-300" role="alert" data-remove-cleanup="error">
             {session.cleanupError}
           </p>
-        ) : null}
+        )}
         <RemoveCleanupGeneration
+          key="remove-cleanup-generation"
           objectUi={session.objectUi}
           onHistoryAccepted={session.onCleanupHistoryAccepted}
+          onAcceptancePending={session.noteCleanupAcceptancePending}
+          onActivationBlocked={session.noteCleanupActivationBlocked}
         />
       </div>
-      <div data-remove-objects="expansion">
-        <BrushSlider
-          label="Mask Expansion"
-          ariaLabel="Mask Expansion"
-          min={0}
-          max={REMOVE_OBJECT_EXPANSION_MAX_PX}
-          value={session.objectExpansionPx}
-          onChange={session.setObjectExpansion}
-        />
-      </div>
-      <button
-        type="button"
-        aria-pressed={session.objectOutlinesVisible}
-        data-remove-objects="outlines"
-        onClick={() => session.setObjectOutlinesVisible(!session.objectOutlinesVisible)}
-        className={`mt-3 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
-          session.objectOutlinesVisible
-            ? "border-neutral-500 bg-neutral-800 text-neutral-50"
-            : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
-        }`}
-      >
-        Show Mask Outlines
-      </button>
+      {simple ? null : (
+        <div data-remove-objects="expansion">
+          <BrushSlider
+            label="Mask Expansion"
+            ariaLabel="Mask Expansion"
+            min={0}
+            max={REMOVE_OBJECT_EXPANSION_MAX_PX}
+            value={session.objectExpansionPx}
+            onChange={session.setObjectExpansion}
+          />
+        </div>
+      )}
+      {simple ? null : outlineButton("Show Mask Outlines")}
     </div>
   );
 }
@@ -1599,6 +1885,7 @@ export function RemoveAlignmentOverlay() {
             diameterPx={session.diameterPx}
             featherPx={session.featherPx}
             maskHoldRef={session.maskHoldRef}
+            revealMaskRef={session.revealMaskRef}
             onMaskSummary={session.noteMaskSummary}
             onDisplayedSize={session.noteDisplayedSize}
             keepImageUrl={session.keepImageUrl}
