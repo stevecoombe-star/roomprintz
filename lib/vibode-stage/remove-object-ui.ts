@@ -9,14 +9,15 @@
  * That union is undilated and ignores which objects are hidden.
  * Hide All, Show All, and object clicks change the selection only. Clear Mask
  * changes the brush buffer only. A session loads segmentation once for its
- * room, generation, ORIGINAL identity, and session serial. Mode switches do
- * not load again.
+ * room, generation, ORIGINAL identity, session serial, and vocabulary
+ * revision. The revision changes only after a confirmed vocabulary save.
+ * Mode switches do not load again.
  */
 
+import { decodeRemoveMaskTransport } from "@/lib/vibode-stage/remove-mask-transport";
 import {
   hideAllRemoveObjects,
   hitTestRemoveObjects,
-  packRemoveMask,
   paintRemoveEffectiveCoverage,
   paintRemoveObjectUnion,
   prepareRemoveObjectMasks,
@@ -39,6 +40,11 @@ const MAX_EDGE = 8192;
 const UNUSABLE = "Segmentation provider returned an unusable mask payload.";
 const MISMATCH = "Segmentation result did not match this room.";
 const NO_RESPONSE = "Segmentation provider did not respond.";
+export const REMOVE_SCAN_NO_OBJECTS = "No removable objects detected.";
+export const REMOVE_SCAN_NONE_USABLE = "Objects detected, but none produced usable selection masks.";
+export const REMOVE_SCAN_PAYLOAD_CEILING = "Segmentation provider returned an unbounded payload.";
+export const REMOVE_SCAN_IMAGE_LIMIT = "ORIGINAL image exceeds the segmentation limit.";
+export const REMOVE_SCAN_NOT_READY = "This room has no production-ready AFC generation.";
 
 const SUPPRESSION_REASONS = new Set(["higher_confidence", "equal_confidence_lesser_id"]);
 
@@ -61,6 +67,7 @@ export type RemoveObjectUiIdentity = Readonly<{
   originalWidth: number;
   originalHeight: number;
   sessionSerial: number;
+  vocabularyRevision: number;
 }>;
 
 export type RemoveObjectUiSuppressed = Readonly<{
@@ -76,6 +83,12 @@ export type RemoveObjectUiRejected = Readonly<{
   reasons: readonly string[];
 }>;
 
+export type RemoveObjectUiPredictionRejection = Readonly<{
+  concept: string;
+  ordinal: number;
+  reason: string;
+}>;
+
 export type RemoveObjectUiDiagnostics = Readonly<{
   provider: string;
   modelId: string;
@@ -83,6 +96,7 @@ export type RemoveObjectUiDiagnostics = Readonly<{
   eligibleCount: number;
   suppressed: readonly RemoveObjectUiSuppressed[];
   rejected: readonly RemoveObjectUiRejected[];
+  predictionRejections: readonly RemoveObjectUiPredictionRejection[];
   providerTimeSec: number | null;
   elapsedMs: number;
 }>;
@@ -126,6 +140,7 @@ export function removeObjectUiIdentityKey(identity: RemoveObjectUiIdentity): str
     identity.originalSha256,
     identity.originalWidth,
     identity.originalHeight,
+    identity.vocabularyRevision,
   ].join(":");
 }
 
@@ -690,6 +705,41 @@ export function formatRemoveObjectRejected(items: readonly RemoveObjectUiRejecte
   return items.map((item) => `${item.concept}: ${item.reasons.join(", ") || "rejected"}`).join("; ");
 }
 
+export function formatRemovePredictionRejections(
+  items: readonly RemoveObjectUiPredictionRejection[],
+): string {
+  if (items.length === 0) return "0";
+  return items.map((item) => `${item.concept} #${item.ordinal}: ${item.reason}`).join("; ");
+}
+
+export function formatRemoveScanStatus(input: Readonly<{
+  phase: RemoveObjectUiPhase;
+  error: string | null;
+  eligibleCount: number;
+  hiddenCount: number;
+  rejectedCount: number;
+  suppressedCount: number;
+  predictionRejectionCount: number;
+}>): string {
+  if (input.phase === "error") {
+    const reason = input.error?.trim() ?? "";
+    return reason.length > 0 ? reason : "Segmentation failed.";
+  }
+  if (input.phase !== "ready") return "Finding objects…";
+  if (input.eligibleCount <= 0) {
+    const detected = input.rejectedCount + input.suppressedCount + input.predictionRejectionCount;
+    return detected > 0 ? REMOVE_SCAN_NONE_USABLE : REMOVE_SCAN_NO_OBJECTS;
+  }
+  const base = input.hiddenCount > 0
+    ? `${input.eligibleCount} objects, ${input.hiddenCount} hidden`
+    : `${input.eligibleCount} objects`;
+  const notes: string[] = [];
+  if (input.suppressedCount > 0) notes.push(`${input.suppressedCount} suppressed`);
+  const rejected = input.rejectedCount + input.predictionRejectionCount;
+  if (rejected > 0) notes.push(`${rejected} rejected`);
+  return notes.length > 0 ? `${base} (${notes.join(", ")})` : base;
+}
+
 export async function requestRemoveObjects(input: Readonly<{
   identity: RemoveObjectUiIdentity;
   signal: AbortSignal;
@@ -764,10 +814,12 @@ export function readRemoveObjectUiPayload(
   }
   const suppressed: RemoveObjectUiSuppressed[] = [];
   for (const item of record.suppressed) {
-    const decoded = decodeSuppressed(item);
+    const decoded = decodeSuppressed(item, identity);
     if (!decoded) return { ok: false, reason: UNUSABLE };
     suppressed.push(decoded);
   }
+  const predictionRejections = decodePredictionRejections(record.predictionRejections);
+  if (!predictionRejections) return { ok: false, reason: UNUSABLE };
   const prepared = prepareRemoveObjectMasks({ candidates });
   for (const extra of prepared.suppressed) {
     if (suppressed.some((item) => item.suppressedId === extra.suppressedId)) continue;
@@ -789,6 +841,7 @@ export function readRemoveObjectUiPayload(
       eligibleCount: prepared.eligible.length,
       suppressed,
       rejected,
+      predictionRejections,
       providerTimeSec,
     },
   };
@@ -826,7 +879,8 @@ function sameIdentity(
     && left.originalSha256 === right.originalSha256
     && left.originalWidth === right.originalWidth
     && left.originalHeight === right.originalHeight
-    && left.sessionSerial === right.sessionSerial;
+    && left.sessionSerial === right.sessionSerial
+    && left.vocabularyRevision === right.vocabularyRevision;
 }
 
 function validIdentity(identity: RemoveObjectUiIdentity): boolean {
@@ -836,7 +890,9 @@ function validIdentity(identity: RemoveObjectUiIdentity): boolean {
     && positiveEdge(identity.originalWidth)
     && positiveEdge(identity.originalHeight)
     && Number.isInteger(identity.sessionSerial)
-    && identity.sessionSerial >= 0;
+    && identity.sessionSerial >= 0
+    && Number.isInteger(identity.vocabularyRevision)
+    && identity.vocabularyRevision >= 0;
 }
 
 function positiveEdge(value: number): boolean {
@@ -893,7 +949,10 @@ function decodeRejected(value: unknown, identity: RemoveObjectUiIdentity): Remov
   return { concept, reasons };
 }
 
-function decodeSuppressed(value: unknown): RemoveObjectUiSuppressed | null {
+function decodeSuppressed(
+  value: unknown,
+  identity: RemoveObjectUiIdentity,
+): RemoveObjectUiSuppressed | null {
   const record = objectRecord(value);
   if (!record) return null;
   const suppressedId = token(record.suppressedId, 80);
@@ -904,38 +963,32 @@ function decodeSuppressed(value: unknown): RemoveObjectUiSuppressed | null {
     : null;
   const iou = readUnit(record.iou);
   if (!suppressedId || !suppressedConcept || !retainedConcept || !reason || iou === null) return null;
+  if ("mask" in record && !decodeMask(record.mask, identity)) return null;
   return { suppressedId, suppressedConcept, retainedConcept, reason, iou };
 }
 
-function decodeMask(value: unknown, identity: RemoveObjectUiIdentity): RemovePackedMask | null {
-  const record = objectRecord(value);
-  if (!record) return null;
-  if (record.width !== identity.originalWidth || record.height !== identity.originalHeight) return null;
-  if (typeof record.bits !== "string") return null;
-  const bits = decodeBase64(record.bits);
-  if (!bits) return null;
-  const expected = Math.ceil((identity.originalWidth * identity.originalHeight) / 8);
-  if (bits.length !== expected) return null;
-  const coverage = new Uint8Array(identity.originalWidth * identity.originalHeight);
-  for (let index = 0; index < coverage.length; index += 1) {
-    const byte = bits[index >> 3] ?? 0;
-    if ((byte & (1 << (index & 7))) !== 0) coverage[index] = 255;
+function decodePredictionRejections(value: unknown): RemoveObjectUiPredictionRejection[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_MASKS) return null;
+  const items: RemoveObjectUiPredictionRejection[] = [];
+  for (const entry of value) {
+    const record = objectRecord(entry);
+    if (!record) return null;
+    const concept = label(record.concept);
+    const reason = reasonLabel(record.reason);
+    const ordinal = record.ordinal;
+    if (!concept || !reason || !Number.isInteger(ordinal)) return null;
+    if ((ordinal as number) < 0 || (ordinal as number) >= MAX_MASKS) return null;
+    items.push({ concept, ordinal: ordinal as number, reason });
   }
-  return packRemoveMask(coverage, identity.originalWidth, identity.originalHeight);
+  return items;
 }
 
-function decodeBase64(value: string): Uint8Array | null {
-  if (value.length === 0 || value.length > 4_000_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
-  try {
-    const binary = atob(value);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    return bytes;
-  } catch {
-    return null;
-  }
+function decodeMask(value: unknown, identity: RemoveObjectUiIdentity): RemovePackedMask | null {
+  return decodeRemoveMaskTransport(value, {
+    width: identity.originalWidth,
+    height: identity.originalHeight,
+  });
 }
 
 function readProviderTime(value: unknown): number | null | "invalid" {

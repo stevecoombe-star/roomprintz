@@ -797,6 +797,7 @@ test("instant REMOVE stays available to an authenticated owner without administr
       createStore: () => { throw new Error("store"); },
       createService: () => { throw new Error("service"); },
       loadOriginal: async () => { throw new Error("original"); },
+      readVocabularyProfile: async () => { throw new Error("profile"); },
       reserveSegmentation: async () => { throw new Error("reservation"); },
       provider: {
         id: "roboflow",
@@ -823,6 +824,7 @@ test("instant REMOVE stays available to an authenticated owner without administr
       }),
       createService: () => ({ service: true }),
       loadOriginal: async () => ({ ok: true, bytes: original }),
+      readVocabularyProfile: async () => ({ ok: true, profile: null, originalSha256: null }),
       reserveSegmentation: async (input) => {
         reserves += 1;
         assert.equal(input.userId, OWNER);

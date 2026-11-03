@@ -14,9 +14,10 @@ import {
   handleRemoveObjectsAdmin,
   type RemoveObjectsAdminDeps,
   type RemoveObjectsAdminStore,
+  type RemoveVocabularyProfileRead,
 } from "@/lib/vibode-stage/remove-segmentation-admin";
 import {
-  REMOVE_SEGMENTATION_CONCEPTS_V1,
+  REMOVE_SEGMENTATION_CONCEPTS_V2,
   ROBOFLOW_CONCEPT_SEGMENT_URL,
 } from "@/lib/vibode-stage/remove-segmentation";
 
@@ -119,7 +120,7 @@ function room(userId = ADMIN): AfcRoomPointer {
 function polygonResponse() {
   return {
     time: 0.4,
-    prompt_results: REMOVE_SEGMENTATION_CONCEPTS_V1.map((text, promptIndex) => ({
+    prompt_results: REMOVE_SEGMENTATION_CONCEPTS_V2.map((text, promptIndex) => ({
       prompt_index: promptIndex,
       echo: { prompt_index: promptIndex, type: "text", text, num_boxes: 0 },
       predictions: text === "chair"
@@ -152,6 +153,7 @@ function harness(patch: {
   fetchImpl?: typeof fetch;
   provider?: RemoveObjectsAdminDeps["provider"];
   quota?: "allow" | "user_limit" | "global_limit" | "unavailable";
+  profile?: RemoveVocabularyProfileRead;
 } = {}) {
   const calls = {
     admin: 0,
@@ -161,6 +163,7 @@ function harness(patch: {
     original: 0,
     fetch: 0,
     reserve: 0,
+    profile: 0,
   };
   const provider = patch.provider ?? createRoboflowRemoveSegmentationProvider({
     apiKey: API_KEY,
@@ -197,6 +200,10 @@ function harness(patch: {
       if (patch.originalBytes === null) return { ok: false };
       return { ok: true, bytes: patch.originalBytes ?? ORIGINAL_BYTES };
     },
+    readVocabularyProfile: async () => {
+      calls.profile += 1;
+      return patch.profile ?? { ok: true, profile: null, originalSha256: null };
+    },
     reserveSegmentation: async () => {
       calls.reserve += 1;
       if (patch.quota && patch.quota !== "allow") return { ok: false, code: patch.quota };
@@ -223,7 +230,8 @@ test("REMOVE object route is an admin POST with no browser image and no writes",
   assert.match(handler, /room\.userId !== admin\.id/);
   assert.match(handler, /assessRemoveAlignment/);
   assert.match(handler, /assertProductionPayloadPrivacy/);
-  assert.match(handler, /REMOVE_SEGMENTATION_CONCEPTS_V1/);
+  assert.match(handler, /selectRemoveScanVocabulary/);
+  assert.doesNotMatch(handler, /REMOVE_SEGMENTATION_CONCEPTS_V1|bookshelf|wall art/);
   assert.doesNotMatch(handler, /updateGeneration|activateGeneration|putArtifact|publishDurable|enqueue/);
   assert.equal(client.match(/fetchImpl\(/g)?.length, 1);
   assert.doesNotMatch(client, /retry|fallback|visual_segment|fal\.ai|api_key=/i);
@@ -474,11 +482,17 @@ test("a verified ORIGINAL is segmented once and the response keeps no path or cr
       assert.equal(headers.get("authorization"), `Bearer ${API_KEY}`);
       const body = JSON.parse(String(init?.body)) as {
         format: string;
+        output_prob_thresh: number;
         nms_iou_threshold?: number;
         api_key?: string;
         image: { type: string; value: string };
+        prompts: Array<{ type: string; text: string }>;
       };
       assert.equal(body.format, "polygon");
+      assert.equal(body.output_prob_thresh, 0.5);
+      assert.equal(body.prompts.length, 16);
+      assert.deepEqual(body.prompts.map((prompt) => prompt.text), [...REMOVE_SEGMENTATION_CONCEPTS_V2]);
+      assert.equal(body.prompts.some((prompt) => prompt.text === "bookshelf" || prompt.text === "wall art"), false);
       assert.equal(body.nms_iou_threshold, undefined);
       assert.equal(body.api_key, undefined);
       assert.equal(body.image.type, "base64");
@@ -545,7 +559,7 @@ test("provider failures stay classified and are not followed by another call", a
       fetches += 1;
       return Response.json({
         time: 0.2,
-        prompt_results: REMOVE_SEGMENTATION_CONCEPTS_V1.map((text, promptIndex) => ({
+        prompt_results: REMOVE_SEGMENTATION_CONCEPTS_V2.map((text, promptIndex) => ({
           prompt_index: promptIndex,
           predictions: text === "chair"
             ? [{ format: "rle", confidence: 0.9, masks: { size: [32, 32], counts: "synthetic" } }]
@@ -558,8 +572,19 @@ test("provider failures stay classified and are not followed by another call", a
     post({ roomId: ROOM, generationId: GENERATION }),
     rle.deps,
   );
-  assert.equal(unverified.status, 502);
-  assert.match((await unverified.json() as { reason: string }).reason, /unverified mask encoding/);
+  assert.equal(unverified.status, 200);
+  const isolated = await unverified.json() as {
+    usable: boolean;
+    objects: unknown[];
+    predictionRejections: Array<{ concept: string; reason: string }>;
+    reason?: string;
+  };
+  assert.equal(isolated.usable, true);
+  assert.equal(isolated.objects.length, 0);
+  assert.equal(isolated.predictionRejections.length, 1);
+  assert.equal(isolated.predictionRejections[0]?.concept, "chair");
+  assert.equal(isolated.predictionRejections[0]?.reason, "unsupported_rle");
+  assert.equal(JSON.stringify(isolated).includes("synthetic"), false);
   assert.equal(fetches, 2);
 
   let thrown = 0;

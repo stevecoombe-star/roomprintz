@@ -79,6 +79,8 @@ import {
   formatRemoveObjectInferenceTime,
   formatRemoveObjectRejected,
   formatRemoveObjectSuppressed,
+  formatRemovePredictionRejections,
+  formatRemoveScanStatus,
   hideAllRemoveObjectUi,
   highlightRemoveObject,
   initialRemoveObjectUiState,
@@ -92,6 +94,19 @@ import {
   type RemoveObjectUiIdentity,
   type RemoveObjectUiState,
 } from "@/lib/vibode-stage/remove-object-ui";
+import {
+  REMOVE_VOCABULARY_SAVE_ERROR,
+  REMOVE_VOCABULARY_SCAN_CONFIRMATION,
+  applyRemoveVocabularySave,
+  displayedRemoveVocabularyChoice,
+  initialRemoveVocabularyConfirmState,
+  requestRemoveVocabularyChange,
+  requestRemoveVocabularyProfile,
+  saveRemoveVocabularyProfile,
+  type RemoveVocabularyChoice,
+  type RemoveVocabularyConfirmState,
+  type RemoveVocabularyProfileResponse,
+} from "@/lib/vibode-stage/remove-vocabulary-profile";
 
 const FOCUS =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-400";
@@ -150,6 +165,13 @@ type RemoveAlignmentContextValue = Readonly<{
   saveRemoveEdits: () => void;
   removeSavePhase: "idle" | "saving" | "error";
   removeSaveError: string | null;
+  vocabularyChoice: RemoveVocabularyChoice;
+  vocabularyPhase: RemoveVocabularyConfirmState["phase"];
+  vocabularyRequested: RemoveVocabularyChoice | null;
+  vocabularyError: string | null;
+  requestVocabulary: (choice: RemoveVocabularyChoice) => void;
+  confirmVocabulary: () => void;
+  cancelVocabulary: () => void;
   keepImageUrl: string | null;
   keepAssetId: string | null;
   keepNotice: string | null;
@@ -216,11 +238,22 @@ export function RemoveAlignmentProvider({
   const [keepShaConflict, setKeepShaConflict] = useState(false);
   const [removeSavePhase, setRemoveSavePhase] = useState<"idle" | "saving" | "error">("idle");
   const [removeSaveError, setRemoveSaveError] = useState<string | null>(null);
+  const [vocabularyRevision, setVocabularyRevision] = useState(0);
+  const [vocabularyView, setVocabularyView] = useState<RemoveVocabularyProfileResponse | null>(null);
+  const [vocabularyConfirm, setVocabularyConfirm] = useState<RemoveVocabularyConfirmState>(
+    initialRemoveVocabularyConfirmState(),
+  );
+  const vocabularyTicket = useRef(0);
+  const vocabularyLock = useRef(false);
   const [trackedRoomId, setTrackedRoomId] = useState(roomId);
   if (trackedRoomId !== roomId) {
+    roomRef.current = roomId;
     setTrackedRoomId(roomId);
     setDisplayed({ original: null, empty: null });
     setLookup({ access: "hidden" });
+    setVocabularyRevision(0);
+    setVocabularyView(null);
+    setVocabularyConfirm(initialRemoveVocabularyConfirmState());
     dispatch({ type: "exit" });
   }
 
@@ -308,8 +341,9 @@ export function RemoveAlignmentProvider({
       originalWidth: report.original.decodedWidth,
       originalHeight: report.original.decodedHeight,
       sessionSerial: inspection.sessionSerial,
+      vocabularyRevision,
     };
-  }, [inspection.sessionSerial, report, roomId, sessionActive]);
+  }, [inspection.sessionSerial, report, roomId, sessionActive, vocabularyRevision]);
   const cleanupIdentityKey = objectIdentity
     ? removeObjectUiIdentityKey(objectIdentity)
     : "inactive";
@@ -383,6 +417,27 @@ export function RemoveAlignmentProvider({
   useEffect(() => {
     cleanupClaimRef.current = false;
   }, [cleanupIdentityKey]);
+
+  useEffect(() => {
+    if (!sessionActive || !roomId) return undefined;
+    const ticket = vocabularyTicket.current + 1;
+    vocabularyTicket.current = ticket;
+    const activeRoomId = roomId;
+    const controller = new AbortController();
+    void requestRemoveVocabularyProfile({
+      roomId: activeRoomId,
+      signal: controller.signal,
+    }).then((view) => {
+      if (ticket !== vocabularyTicket.current || roomRef.current !== activeRoomId || !view) return;
+      setVocabularyView(view);
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [roomId, sessionActive]);
+
+  useEffect(() => {
+    if (sessionActive) return;
+    setVocabularyConfirm(initialRemoveVocabularyConfirmState());
+  }, [sessionActive]);
 
   const enter = useCallback(() => {
     const requested = roomRef.current;
@@ -720,6 +775,41 @@ export function RemoveAlignmentProvider({
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [maskSummary, objectUi, sessionActive]);
 
+  const requestVocabulary = useCallback((requested: RemoveVocabularyChoice) => {
+    setVocabularyConfirm((current) => requestRemoveVocabularyChange(current, {
+      displayed: displayedRemoveVocabularyChoice(vocabularyView),
+      requested,
+    }));
+  }, [vocabularyView]);
+  const cancelVocabulary = useCallback(() => {
+    setVocabularyConfirm((current) => (current.phase === "saving" ? current : { phase: "idle" }));
+  }, []);
+  const confirmVocabulary = useCallback(() => {
+    if (vocabularyLock.current || !roomId || vocabularyConfirm.phase !== "confirming") return;
+    const requested = vocabularyConfirm.requested;
+    vocabularyLock.current = true;
+    setVocabularyConfirm({ phase: "saving", requested });
+    void saveRemoveVocabularyProfile({ roomId, profile: requested }).then((result) => {
+      if (roomRef.current !== roomId) return;
+      const outcome = applyRemoveVocabularySave({ requested, result });
+      if (!outcome.scan || !outcome.view) {
+        setVocabularyConfirm({
+          phase: "error",
+          message: result.ok ? REMOVE_VOCABULARY_SAVE_ERROR : result.reason,
+        });
+        return;
+      }
+      vocabularyTicket.current += 1;
+      setVocabularyView(outcome.view);
+      setVocabularyRevision((current) => current + 1);
+      setVocabularyConfirm({ phase: "idle" });
+    }).catch(() => {
+      setVocabularyConfirm({ phase: "error", message: REMOVE_VOCABULARY_SAVE_ERROR });
+    }).finally(() => {
+      vocabularyLock.current = false;
+    });
+  }, [roomId, vocabularyConfirm]);
+
   const value = useMemo<RemoveAlignmentContextValue>(() => ({
     roomId,
     active: sessionActive,
@@ -781,6 +871,15 @@ export function RemoveAlignmentProvider({
     saveRemoveEdits,
     removeSavePhase,
     removeSaveError,
+    vocabularyChoice: displayedRemoveVocabularyChoice(vocabularyView),
+    vocabularyPhase: vocabularyConfirm.phase,
+    vocabularyRequested: vocabularyConfirm.phase === "confirming" || vocabularyConfirm.phase === "saving"
+      ? vocabularyConfirm.requested
+      : null,
+    vocabularyError: vocabularyConfirm.phase === "error" ? vocabularyConfirm.message : null,
+    requestVocabulary,
+    confirmVocabulary,
+    cancelVocabulary,
     keepImageUrl,
     keepAssetId: frozenKeep?.assetId ?? null,
     keepNotice,
@@ -825,6 +924,11 @@ export function RemoveAlignmentProvider({
     originalDisagreement,
     removeSaveError,
     removeSavePhase,
+    requestVocabulary,
+    confirmVocabulary,
+    cancelVocabulary,
+    vocabularyConfirm,
+    vocabularyView,
     roomId,
     report,
     saveRemoveEdits,
@@ -1051,9 +1155,7 @@ function protectionControl(session: RemoveAlignmentContextValue): Readonly<{
   if (!available) {
     const title = session.objectUi.phase === "loading" || session.objectUi.phase === "idle"
       ? "Finding objects…"
-      : session.objectUi.phase === "error"
-        ? session.objectUi.error ?? "Object masks are unavailable."
-        : "No removable objects found.";
+      : scanStatus(session);
     return { available: false, pressed: false, status: "unavailable", label: "Unavailable", title };
   }
   const pressed = session.objectProtectionEnabled === true;
@@ -1166,7 +1268,62 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
   const reason = session.brushAdmission?.allowed === false ? session.brushAdmission.reason : undefined;
   return (
     <div className="mt-3">
-      <p className="text-[11px] text-neutral-300" role="status" data-remove-objects="status">
+      <div role="group" aria-label="Detection vocabulary" data-remove-vocabulary="choices">
+        <p className="text-[11px] text-neutral-400">Detection vocabulary</p>
+        <div className="mt-1 flex gap-1">
+          <ModeButton
+            pressed={session.vocabularyChoice === "default"}
+            disabled={session.vocabularyPhase === "saving"}
+            onClick={() => session.requestVocabulary("default")}
+          >
+            Default
+          </ModeButton>
+          <ModeButton
+            pressed={session.vocabularyChoice === "bedroom"}
+            disabled={session.vocabularyPhase === "saving"}
+            onClick={() => session.requestVocabulary("bedroom")}
+          >
+            Bedroom
+          </ModeButton>
+        </div>
+      </div>
+      {session.vocabularyPhase === "confirming" || session.vocabularyPhase === "saving" ? (
+        <div className="mt-2" data-remove-vocabulary="confirm">
+          <p className="text-[11px] leading-relaxed text-neutral-300">
+            {session.vocabularyRequested === "bedroom" ? "Bedroom" : "Default"}. {REMOVE_VOCABULARY_SCAN_CONFIRMATION}
+          </p>
+          <div className="mt-2 flex gap-1">
+            <button
+              type="button"
+              data-remove-vocabulary="confirm-scan"
+              disabled={session.vocabularyPhase === "saving"}
+              onClick={session.confirmVocabulary}
+              className={`rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+                session.vocabularyPhase === "saving"
+                  ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+                  : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+              }`}
+            >
+              {session.vocabularyPhase === "saving" ? "Saving…" : "Scan again"}
+            </button>
+            <button
+              type="button"
+              data-remove-vocabulary="cancel"
+              disabled={session.vocabularyPhase === "saving"}
+              onClick={session.cancelVocabulary}
+              className={`rounded-md border px-2 py-1 text-[11px] ${FOCUS} disabled:border-neutral-900 disabled:bg-neutral-950 disabled:text-neutral-600 border-neutral-700 text-neutral-300 hover:bg-neutral-800`}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {session.vocabularyError ? (
+        <p className="mt-2 text-[11px] leading-relaxed text-red-300" role="alert" data-remove-vocabulary="error">
+          {session.vocabularyError}
+        </p>
+      ) : null}
+      <p className="mt-3 text-[11px] text-neutral-300" role="status" data-remove-objects="status">
         {objectStatus(session)}
       </p>
       {reason ? (
@@ -1278,15 +1435,20 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
 }
 
 function objectStatus(session: RemoveAlignmentContextValue): string {
-  if (session.objectUi.phase === "error") {
-    return session.objectUi.error ?? "Segmentation failed.";
-  }
-  if (session.objectUi.phase !== "ready") return "Finding objects…";
-  if (session.objectUi.objects.length === 0) return "No removable objects found.";
-  const hidden = session.objectUi.selectedIds.size;
-  return hidden === 0
-    ? `${session.objectUi.objects.length} objects`
-    : `${session.objectUi.objects.length} objects, ${hidden} hidden`;
+  return scanStatus(session);
+}
+
+function scanStatus(session: RemoveAlignmentContextValue): string {
+  const diagnostics = session.objectUi.diagnostics;
+  return formatRemoveScanStatus({
+    phase: session.objectUi.phase,
+    error: session.objectUi.error,
+    eligibleCount: session.objectUi.objects.length,
+    hiddenCount: session.objectUi.selectedIds.size,
+    rejectedCount: diagnostics?.rejected.length ?? 0,
+    suppressedCount: diagnostics?.suppressed.length ?? 0,
+    predictionRejectionCount: diagnostics?.predictionRejections.length ?? 0,
+  });
 }
 
 function AlignmentDetails({ session }: { session: RemoveAlignmentContextValue }) {
@@ -1329,6 +1491,10 @@ function AlignmentDetails({ session }: { session: RemoveAlignmentContextValue })
               value={formatRemoveObjectRejected(session.objectUi.diagnostics.rejected)}
             />
             <Row
+              label="Prediction rejections"
+              value={formatRemovePredictionRejections(session.objectUi.diagnostics.predictionRejections)}
+            />
+            <Row
               label="Inference time"
               value={formatRemoveObjectInferenceTime(session.objectUi.diagnostics)}
             />
@@ -1364,7 +1530,7 @@ function AlignmentDetails({ session }: { session: RemoveAlignmentContextValue })
 
 function segmentationLabel(session: RemoveAlignmentContextValue): string {
   if (session.objectUi.phase === "error") return session.objectUi.error ?? "Segmentation failed.";
-  if (session.objectUi.phase === "ready") return "ready";
+  if (session.objectUi.phase === "ready") return scanStatus(session);
   return "Finding objects…";
 }
 

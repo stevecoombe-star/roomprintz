@@ -28,19 +28,19 @@ import {
   type RemoveImageDescriptor,
 } from "@/lib/vibode-stage/remove-alignment";
 import {
-  REMOVE_SEGMENTATION_CONCEPTS_V1,
   REMOVE_SEGMENTATION_MAX_EDGE,
   REMOVE_SEGMENTATION_MAX_IMAGE_BYTES,
   REMOVE_SEGMENTATION_MAX_PIXELS,
   REMOVE_SEGMENTATION_MAX_RESPONSE_BYTES,
+  selectRemoveScanVocabulary,
   type RemoveSegmentationFailure,
   type RemoveSegmentationProvider,
   type RemoveSegmentationResult,
   type RemoveSegmentationSuccess,
 } from "@/lib/vibode-stage/remove-segmentation";
+import { encodeRemoveMaskTransport } from "@/lib/vibode-stage/remove-mask-transport";
 import type {
   RemoveObjectRecord,
-  RemovePackedMask,
   RemoveSuppressedDuplicate,
 } from "@/lib/vibode-stage/remove-objects";
 
@@ -63,6 +63,10 @@ export type RemoveSegmentationReserve = (input: Readonly<{
   | Readonly<{ ok: false; code: "user_limit" | "global_limit" | "unavailable" | "not_found" }>
 >;
 
+export type RemoveVocabularyProfileRead =
+  | Readonly<{ ok: true; profile: string | null; originalSha256: string | null }>
+  | Readonly<{ ok: false; code: "unavailable" | "not_found" }>;
+
 export type RemoveObjectsAdminDeps = Readonly<{
   getAdmin: () => Promise<{ id: string } | null>;
   createStore: () => RemoveObjectsAdminStore | null;
@@ -71,6 +75,10 @@ export type RemoveObjectsAdminDeps = Readonly<{
     service: unknown,
     input: Readonly<{ userId: string; room: AfcRoomPointer }>,
   ) => Promise<RemoveObjectsOriginalLoad>;
+  readVocabularyProfile: (input: Readonly<{
+    userId: string;
+    roomId: string;
+  }>) => Promise<RemoveVocabularyProfileRead>;
   reserveSegmentation: RemoveSegmentationReserve;
   provider: RemoveSegmentationProvider;
 }>;
@@ -174,6 +182,20 @@ export async function handleRemoveObjectsAdmin(
     return jsonError("ORIGINAL image exceeds the segmentation limit.", 422);
   }
 
+  const profile = await deps.readVocabularyProfile({
+    userId: admin.id,
+    roomId: parsed.roomId,
+  });
+  if (!profile.ok) {
+    if (profile.code === "not_found") return jsonError("Room not found.", 404);
+    return jsonError("Remove object detection is unavailable.", 503);
+  }
+  const concepts = selectRemoveScanVocabulary({
+    profile: profile.profile,
+    originalSha256: profile.originalSha256,
+    verifiedOriginalSha256: original.sha256,
+  });
+
   const reserved = await deps.reserveSegmentation({
     userId: admin.id,
     roomId: parsed.roomId,
@@ -196,17 +218,19 @@ export async function handleRemoveObjectsAdmin(
       height: original.decodedHeight,
       sha256: original.sha256,
       mimeType: original.mimeType,
-    }, REMOVE_SEGMENTATION_CONCEPTS_V1);
+    }, concepts);
   } catch {
     return jsonError("Segmentation provider did not respond.", 502);
   }
   if (!result.ok) return jsonError(failureReason(result), failureStatus(result));
-  return successResponse({
+  const assembled = assembleRemoveSegmentationPayload({
     result,
     roomId: parsed.roomId,
     generationId: generation.id,
     original,
   });
+  if (!assembled.ok) return jsonError(failureReason(assembled.failure), failureStatus(assembled.failure));
+  return productionAfcJson(assembled.payload, 200);
 }
 
 function notReadyReason(generation: AfcGenerationRecord): string {
@@ -230,12 +254,20 @@ function notReadyReason(generation: AfcGenerationRecord): string {
     : assessment.reason;
 }
 
-function successResponse(input: Readonly<{
+export function assembleRemoveSegmentationPayload(input: Readonly<{
   result: RemoveSegmentationSuccess;
   roomId: string;
   generationId: string;
   original: RemoveImageDescriptor;
-}>): Response {
+}>):
+  | Readonly<{ ok: true; payload: unknown; serialized: string }>
+  | Readonly<{ ok: false; failure: RemoveSegmentationFailure }> {
+  const objects = compactRecords(input.result.preparation.eligible);
+  const rejected = compactRecords(input.result.preparation.rejected);
+  const suppressed = compactSuppressedList(input.result.preparation.suppressed);
+  if (!objects || !rejected || !suppressed) {
+    return { ok: false, failure: { ok: false, error: "response_invalid" } };
+  }
   const body = {
     usable: true as const,
     provider: input.result.provider,
@@ -254,52 +286,59 @@ function successResponse(input: Readonly<{
       decodedHeight: input.original.decodedHeight,
     },
     providerTimeSec: input.result.providerTimeSec,
-    objects: input.result.preparation.eligible.map(compactRecord),
-    rejected: input.result.preparation.rejected.map(compactRecord),
-    suppressed: input.result.preparation.suppressed.map(compactSuppressed),
+    objects,
+    rejected,
+    suppressed,
     nested: input.result.preparation.nested,
+    predictionRejections: input.result.predictionRejections.map((item) => ({
+      concept: item.concept,
+      ordinal: item.ordinal,
+      reason: item.reason,
+    })),
   };
   const serialized = JSON.stringify(body);
   if (serialized.length > REMOVE_SEGMENTATION_MAX_RESPONSE_BYTES) {
-    return jsonError("Segmentation provider returned an unbounded payload.", 502);
+    return { ok: false, failure: { ok: false, error: "response_unbounded" } };
   }
   assertProductionPayloadPrivacy(body);
-  return productionAfcJson(body, 200);
+  return { ok: true, payload: body, serialized };
 }
 
-function compactRecord(record: RemoveObjectRecord) {
-  return {
-    id: record.id,
-    concept: record.concept,
-    confidence: record.confidence,
-    mask: compactMask(record.mask),
-    eligibility: record.eligibility,
-  };
+function compactRecords(records: readonly RemoveObjectRecord[]) {
+  const compact = [];
+  for (const record of records) {
+    const mask = encodeRemoveMaskTransport(record.mask);
+    if (!mask) return null;
+    compact.push({
+      id: record.id,
+      concept: record.concept,
+      confidence: record.confidence,
+      mask,
+      eligibility: record.eligibility,
+    });
+  }
+  return compact;
 }
 
-function compactSuppressed(item: RemoveSuppressedDuplicate) {
-  return {
-    suppressedId: item.suppressedId,
-    suppressedConcept: item.suppressedConcept,
-    suppressedConfidence: item.suppressedConfidence,
-    retainedId: item.retainedId,
-    retainedConcept: item.retainedConcept,
-    retainedConfidence: item.retainedConfidence,
-    iou: item.iou,
-    containment: item.containment,
-    reason: item.reason,
-    mask: compactMask(item.object.mask),
-  };
-}
-
-function compactMask(mask: RemovePackedMask) {
-  return {
-    width: mask.width,
-    height: mask.height,
-    areaPx: mask.areaPx,
-    bounds: mask.bounds,
-    bits: Buffer.from(mask.bits).toString("base64"),
-  };
+function compactSuppressedList(items: readonly RemoveSuppressedDuplicate[]) {
+  const compact = [];
+  for (const item of items) {
+    const mask = encodeRemoveMaskTransport(item.object.mask);
+    if (!mask) return null;
+    compact.push({
+      suppressedId: item.suppressedId,
+      suppressedConcept: item.suppressedConcept,
+      suppressedConfidence: item.suppressedConfidence,
+      retainedId: item.retainedId,
+      retainedConcept: item.retainedConcept,
+      retainedConfidence: item.retainedConfidence,
+      iou: item.iou,
+      containment: item.containment,
+      reason: item.reason,
+      mask,
+    });
+  }
+  return compact;
 }
 
 function failureStatus(failure: RemoveSegmentationFailure): number {

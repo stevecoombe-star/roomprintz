@@ -13,6 +13,7 @@ import {
 import { createRoboflowRemoveSegmentationProvider } from "./remove-segmentation-roboflow.server";
 import {
   REMOVE_SEGMENTATION_CONCEPTS_V1,
+  REMOVE_SEGMENTATION_CONCEPTS_V2,
   REMOVE_SEGMENTATION_CONCEPT_SET,
   REMOVE_SEGMENTATION_MAX_CONCEPTS,
   REMOVE_SEGMENTATION_MAX_EDGE,
@@ -92,9 +93,11 @@ function normalize(input: Readonly<{
 }
 
 test("the versioned vocabulary is the 16-concept serverless maximum", () => {
+  assert.equal(REMOVE_SEGMENTATION_CONCEPTS_V2.length, 16);
+  assert.equal(REMOVE_SEGMENTATION_CONCEPTS_V2.length, REMOVE_SEGMENTATION_MAX_CONCEPTS);
   assert.equal(REMOVE_SEGMENTATION_CONCEPTS_V1.length, 16);
-  assert.equal(REMOVE_SEGMENTATION_CONCEPTS_V1.length, REMOVE_SEGMENTATION_MAX_CONCEPTS);
-  assert.equal(isRemoveSegmentationVocabulary(REMOVE_SEGMENTATION_CONCEPTS_V1), true);
+  assert.equal(isRemoveSegmentationVocabulary(REMOVE_SEGMENTATION_CONCEPTS_V2), true);
+  assert.equal(isRemoveSegmentationVocabulary(REMOVE_SEGMENTATION_CONCEPTS_V1), false);
   assert.equal(isRemoveSegmentationVocabulary(["chair"]), false);
   assert.equal(ROBOFLOW_SAM3_RLE_CONTRACT, "unverified");
   assert.equal(decodeRoboflowRleMask({ size: [4, 4], counts: "not-a-captured-fixture" }).error, "rle_contract_unverified");
@@ -103,7 +106,7 @@ test("the versioned vocabulary is the 16-concept serverless maximum", () => {
 test("the request is one bounded polygon call without provider NMS or a query key", () => {
   const built = buildRoboflowConceptSegmentRequest({
     image: image(),
-    concepts: REMOVE_SEGMENTATION_CONCEPTS_V1,
+    concepts: REMOVE_SEGMENTATION_CONCEPTS_V2,
     requestId: "request-1",
   });
   assert.equal(built.ok, true);
@@ -124,7 +127,10 @@ test("the request is one bounded polygon call without provider NMS or a query ke
   assert.equal(body.api_key, undefined);
   assert.equal(body.image.type, "base64");
   assert.equal(body.image.value, Buffer.from([1, 2, 3, 4]).toString("base64"));
-  assert.deepEqual(body.prompts.map((prompt) => prompt.text), [...REMOVE_SEGMENTATION_CONCEPTS_V1]);
+  assert.deepEqual(body.prompts.map((prompt) => prompt.text), [...REMOVE_SEGMENTATION_CONCEPTS_V2]);
+  assert.equal(body.prompts.some((prompt) => prompt.text === "bookshelf" || prompt.text === "wall art"), false);
+  assert.equal(body.prompts.some((prompt) => prompt.text === "bookcase"), true);
+  assert.equal(body.prompts.some((prompt) => prompt.text === "framed picture"), true);
   assert.equal(built.body.includes("roboflow-test-key"), false);
   assert.equal(ROBOFLOW_CONCEPT_SEGMENT_URL.includes("?"), false);
 });
@@ -359,29 +365,12 @@ test("eligibility, duplicate reports, and nested selection run on normalized mas
   );
 });
 
-test("malformed, contradictory, and unverified payloads do not become an empty object list", () => {
+test("structural response failures stay closed and are not an empty object list", () => {
   const missing = normalize({ payload: { time: 0.1 } });
   assert.equal(missing.ok, false);
   if (missing.ok) return;
   assert.equal(missing.error, "response_invalid");
 
-  const shortRing = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: { chair: [{ format: "polygon", confidence: 0.9, masks: [[[1, 1], [2, 2]]] }] },
-    }),
-  });
-  assert.equal(shortRing.ok, false);
-  if (shortRing.ok) return;
-  assert.equal(shortRing.error, "response_invalid");
-
-  const echo = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: { chair: [polygon(0.9, rect(1, 1, 21, 21))] },
-    }),
-  });
-  assert.equal(echo.ok, true);
   const mismatched = normalize({
     payload: {
       prompt_results: [{
@@ -392,56 +381,29 @@ test("malformed, contradictory, and unverified payloads do not become an empty o
     },
   });
   assert.equal(mismatched.ok, false);
+  if (mismatched.ok) return;
+  assert.equal(mismatched.error, "response_invalid");
 
-  const outside = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: { chair: [polygon(0.9, rect(0, 0, 80, 10))] },
-    }),
+  const duplicateIndex = normalize({
+    concepts: ["chair", "lamp"],
+    payload: {
+      prompt_results: [
+        { prompt_index: 0, predictions: [] },
+        { prompt_index: 0, predictions: [] },
+      ],
+    },
   });
-  assert.equal(outside.ok, false);
-  if (outside.ok) return;
-  assert.equal(outside.error, "mask_dimensions");
+  assert.equal(duplicateIndex.ok, false);
+  if (duplicateIndex.ok) return;
+  assert.equal(duplicateIndex.error, "response_invalid");
 
-  const jsonFormat = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: {
-        chair: [{ format: "json", confidence: 0.9, masks: [rect(1, 1, 21, 21)] }],
-      },
-    }),
+  const missingPrompt = normalize({
+    concepts: ["chair", "lamp"],
+    payload: { prompt_results: [{ prompt_index: 0, predictions: [] }] },
   });
-  assert.equal(jsonFormat.ok, false);
-  if (jsonFormat.ok) return;
-  assert.equal(jsonFormat.error, "response_invalid");
-
-  /**
-   * Not a captured serverless response. The public inference server names
-   * `size` and `counts`; this checkpoint refuses that object.
-   */
-  const rle = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: {
-        chair: [{ format: "rle", confidence: 0.9, masks: { size: [32, 32], counts: "synthetic" } }],
-      },
-    }),
-  });
-  assert.equal(rle.ok, false);
-  if (rle.ok) return;
-  assert.equal(rle.error, "rle_contract_unverified");
-
-  const unlabeledObject = normalize({
-    payload: documentedPolygonResponse({
-      concepts: ["chair"],
-      predictions: {
-        chair: [{ confidence: 0.9, masks: { size: [32, 32], counts: [4, 8] } }],
-      },
-    }),
-  });
-  assert.equal(unlabeledObject.ok, false);
-  if (unlabeledObject.ok) return;
-  assert.equal(unlabeledObject.error, "rle_contract_unverified");
+  assert.equal(missingPrompt.ok, false);
+  if (missingPrompt.ok) return;
+  assert.equal(missingPrompt.error, "response_invalid");
 
   const tooMany = normalize({
     payload: documentedPolygonResponse({
@@ -459,12 +421,18 @@ test("malformed, contradictory, and unverified payloads do not become an empty o
   if (tooMany.ok) return;
   assert.equal(tooMany.error, "response_unbounded");
 
+  const dimensions = normalize({ width: 0, height: 32, payload: { prompt_results: [] } });
+  assert.equal(dimensions.ok, false);
+  if (dimensions.ok) return;
+  assert.equal(dimensions.error, "mask_dimensions");
+
   const none = normalize({
     payload: documentedPolygonResponse({ concepts: ["chair"], predictions: { chair: [] } }),
   });
   assert.equal(none.ok, true);
   if (!none.ok) return;
   assert.equal(none.preparation.eligible.length, 0);
+  assert.equal(none.predictionRejections.length, 0);
   assert.equal(none.conceptSet, "remove-segmentation-concepts/unversioned");
 });
 
@@ -474,7 +442,7 @@ test("the Roboflow client sends one authenticated request and does not repeat it
     apiKey: "roboflow-test-key",
     fetch: async (url, init) => {
       calls.push({ url: String(url), init });
-      const concepts = REMOVE_SEGMENTATION_CONCEPTS_V1;
+      const concepts = REMOVE_SEGMENTATION_CONCEPTS_V2;
       return Response.json(documentedPolygonResponse({
         concepts,
         predictions: {
@@ -483,7 +451,7 @@ test("the Roboflow client sends one authenticated request and does not repeat it
       }));
     },
   });
-  const result = await provider.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const result = await provider.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.url, ROBOFLOW_CONCEPT_SEGMENT_URL);
   assert.equal(calls[0]?.init?.method, "POST");
@@ -513,7 +481,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
     fetch: counting,
   });
   assert.deepEqual(
-    await missing.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1),
+    await missing.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2),
     { ok: false, error: "credentials_missing" },
   );
   assert.equal(fetches, 0);
@@ -525,7 +493,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
       return new Response("", { status: 401 });
     },
   });
-  const denied = await unauthorized.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const denied = await unauthorized.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(denied.ok, false);
   if (denied.ok) return;
   assert.equal(denied.error, "provider_unauthorized");
@@ -535,7 +503,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
     apiKey: "roboflow-test-key",
     fetch: counting,
   });
-  const http = await failing.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const http = await failing.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(http.ok, false);
   if (http.ok) return;
   assert.equal(http.error, "provider_http");
@@ -553,7 +521,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
       });
     }),
   });
-  const timedOut = await stalled.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const timedOut = await stalled.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(timedOut.ok, false);
   if (timedOut.ok) return;
   assert.equal(timedOut.error, "provider_timeout");
@@ -565,7 +533,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
       throw new TypeError("socket closed");
     },
   });
-  const network = await offline.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const network = await offline.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(network.ok, false);
   if (network.ok) return;
   assert.equal(network.error, "provider_network");
@@ -580,7 +548,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
       });
     },
   });
-  const unbounded = await huge.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const unbounded = await huge.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(unbounded.ok, false);
   if (unbounded.ok) return;
   assert.equal(unbounded.error, "response_unbounded");
@@ -592,7 +560,7 @@ test("missing credentials, HTTP failures, timeouts, and bad bodies do not send a
       return new Response("not-json", { status: 200 });
     },
   });
-  const invalid = await garbage.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V1);
+  const invalid = await garbage.segment(image(), REMOVE_SEGMENTATION_CONCEPTS_V2);
   assert.equal(invalid.ok, false);
   if (invalid.ok) return;
   assert.equal(invalid.error, "response_invalid");
@@ -672,6 +640,7 @@ test("captured serverless polygon response normalizes onto the ORIGINAL grid", (
   assert.equal(removePackedBit(leftLamp.mask, 140, 400), true);
   assert.equal(removePackedBit(rug.mask, 500, 520), true);
   assert.equal(removePackedBit(pillow.mask, 230, 400), true);
+  assert.equal(result.predictionRejections.length, 0);
   assert.equal(result.preparation.suppressed.length, 1);
   const duplicate = result.preparation.suppressed[0];
   assert.ok(duplicate);

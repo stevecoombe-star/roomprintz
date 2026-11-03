@@ -27,11 +27,21 @@
  *
  * Polygon pixels use the image origin at the top-left, the same orientation
  * as Roboflow's top-left box coordinates. Rings are filled even-odd at pixel
- * centers. The packed mask is then owned by `packRemoveObjectMaskAtOriginal`.
+ * centers. A ring with fewer than three vertices is skipped. Sibling rings
+ * keep their coordinates and the same even-odd fill. If every provided ring
+ * was short, the prediction is still dropped as `degenerate_polygon`. An
+ * empty `masks` array is not a short ring. A ring that is not an array still
+ * drops that prediction. The packed mask is then owned by
+ * `packRemoveObjectMaskAtOriginal`.
+ *
+ * One malformed prediction is dropped and recorded. A broken response
+ * envelope, prompt association, aggregate prediction count, or transport
+ * byte ceiling still fails the whole response.
  */
 
 import { createHash } from "node:crypto";
 
+import { removeMaskTransportBytes } from "@/lib/vibode-stage/remove-mask-transport";
 import {
   packRemoveObjectMaskAtOriginal,
   prepareRemoveObjectMasks,
@@ -55,12 +65,14 @@ export const REMOVE_SEGMENTATION_MAX_RESPONSE_BYTES = 8_000_000;
 export const REMOVE_SEGMENTATION_MAX_PREDICTIONS = 48;
 export const REMOVE_SEGMENTATION_MAX_POLYGON_POINTS = 4_000;
 export const REMOVE_SEGMENTATION_MAX_RINGS = 64;
+/** Ceiling for the sum of bounded mask-transport bytes in one response. */
 export const REMOVE_SEGMENTATION_MAX_PACKED_BYTES = 3_000_000;
 export const REMOVE_SEGMENTATION_OUTPUT_PROB_THRESH = 0.5;
 
 export const ROBOFLOW_CONCEPT_SEGMENT_URL =
   "https://serverless.roboflow.com/sam3/concept_segment";
 
+/** Prompts echoed by the captured polygon fixture. A new scan does not send this list. */
 export const REMOVE_SEGMENTATION_CONCEPTS_V1 = Object.freeze([
   "chair",
   "sofa",
@@ -80,6 +92,65 @@ export const REMOVE_SEGMENTATION_CONCEPTS_V1 = Object.freeze([
   "bookshelf",
 ] as const);
 
+/** Active SAM 3 prompts. The scan handler sends this list. */
+export const REMOVE_SEGMENTATION_CONCEPTS_V2 = Object.freeze([
+  "chair",
+  "sofa",
+  "table",
+  "lamp",
+  "rug",
+  "curtain",
+  "plant",
+  "framed picture",
+  "bed",
+  "pillow",
+  "decoration",
+  "cabinet",
+  "television",
+  "mirror",
+  "stool",
+  "bookcase",
+] as const);
+
+/**
+ * Registered bedroom prompts. Same order as V2, with two in-place replacements.
+ * The scan handler does not select this list.
+ */
+export const REMOVE_SEGMENTATION_CONCEPTS_BEDROOM = Object.freeze([
+  "chair",
+  "sofa",
+  "nightstand",
+  "lamp",
+  "rug",
+  "curtain",
+  "plant",
+  "framed picture",
+  "bed",
+  "pillow",
+  "decoration",
+  "dresser",
+  "television",
+  "mirror",
+  "stool",
+  "bookcase",
+] as const);
+
+export const REMOVE_VOCABULARY_PROFILE_IDS = Object.freeze(["default", "bedroom"] as const);
+
+export type RemoveVocabularyProfileId = (typeof REMOVE_VOCABULARY_PROFILE_IDS)[number];
+
+/** `default` is the living-room list. Every other input resolves to it. */
+export const REMOVE_VOCABULARY_PROFILES = Object.freeze({
+  default: REMOVE_SEGMENTATION_CONCEPTS_V2,
+  bedroom: REMOVE_SEGMENTATION_CONCEPTS_BEDROOM,
+} as const);
+
+const EXPLICIT_REMOVE_VOCABULARY_PROFILES: Readonly<Record<string, RemoveVocabularyProfileId>> = Object.freeze({
+  default: "default",
+  living: "default",
+  bedroom: "bedroom",
+});
+
 export const REMOVE_SEGMENTATION_ERRORS = Object.freeze([
   "credentials_missing",
   "request_rejected",
@@ -94,6 +165,26 @@ export const REMOVE_SEGMENTATION_ERRORS = Object.freeze([
 ] as const);
 
 export type RemoveSegmentationError = (typeof REMOVE_SEGMENTATION_ERRORS)[number];
+
+export const REMOVE_PREDICTION_REJECTION_REASONS = Object.freeze([
+  "degenerate_polygon",
+  "invalid_polygon",
+  "unsupported_rle",
+  "unsupported_encoding",
+  "polygon_point_ceiling",
+  "polygon_ring_ceiling",
+  "invalid_rasterization",
+  "invalid_prediction",
+] as const);
+
+export type RemovePredictionRejectionReason = (typeof REMOVE_PREDICTION_REJECTION_REASONS)[number];
+
+export type RemovePredictionRejection = Readonly<{
+  concept: string;
+  conceptIndex: number;
+  ordinal: number;
+  reason: RemovePredictionRejectionReason;
+}>;
 
 export type RemoveSegmentationRejectDetail =
   | "concepts"
@@ -131,6 +222,7 @@ export type RemoveSegmentationSuccess = Readonly<{
   providerNms: "disabled";
   providerTimeSec: number | null;
   preparation: RemoveObjectPreparation;
+  predictionRejections: readonly RemovePredictionRejection[];
 }>;
 
 export type RemoveSegmentationResult = RemoveSegmentationSuccess | RemoveSegmentationFailure;
@@ -155,9 +247,54 @@ type DecodedPolygon = Readonly<{
   digest: string;
 }>;
 
+/**
+ * Explicit profile token only. Titles, upload hints, and staging tokens are
+ * not interpreted. Missing, stale, mixed, and untested values use V2.
+ */
+export function resolveRemoveVocabularyProfile(profile: unknown): RemoveVocabularyProfileId {
+  if (typeof profile !== "string") return "default";
+  return EXPLICIT_REMOVE_VOCABULARY_PROFILES[profile] ?? "default";
+}
+
+export function removeVocabularyForProfile(profile: unknown): readonly string[] {
+  return REMOVE_VOCABULARY_PROFILES[resolveRemoveVocabularyProfile(profile)];
+}
+
+/**
+ * Bedroom is used only when the saved profile is exactly `bedroom` and its
+ * hash is the verified ORIGINAL. Every other value stays on V2.
+ */
+export function selectRemoveScanVocabulary(input: Readonly<{
+  profile: unknown;
+  originalSha256: unknown;
+  verifiedOriginalSha256: string;
+}>): readonly string[] {
+  const verified = input.verifiedOriginalSha256.toLowerCase();
+  const stored = typeof input.originalSha256 === "string" ? input.originalSha256.toLowerCase() : "";
+  if (
+    input.profile === "bedroom"
+    && /^[0-9a-f]{64}$/.test(verified)
+    && stored === verified
+  ) {
+    return REMOVE_SEGMENTATION_CONCEPTS_BEDROOM;
+  }
+  return REMOVE_SEGMENTATION_CONCEPTS_V2;
+}
+
+/** Outgoing SAM 3 lists. V1 remains valid for fixture normalization only. */
 export function isRemoveSegmentationVocabulary(concepts: readonly string[]): boolean {
-  return concepts.length === REMOVE_SEGMENTATION_CONCEPTS_V1.length
-    && concepts.every((concept, index) => concept === REMOVE_SEGMENTATION_CONCEPTS_V1[index]);
+  return registeredRemoveVocabularies().some((profile) => sameConceptList(concepts, profile));
+}
+
+const RECOGNIZED_REMOVE_SEGMENTATION_CONCEPTS = new Set<string>([
+  ...REMOVE_SEGMENTATION_CONCEPTS_V1,
+  ...REMOVE_SEGMENTATION_CONCEPTS_V2,
+  ...REMOVE_SEGMENTATION_CONCEPTS_BEDROOM,
+]);
+
+/** Registered prompts, plus V1 labels already present on captured or in-session masks. */
+export function isRecognizedRemoveSegmentationConcept(concept: string): boolean {
+  return RECOGNIZED_REMOVE_SEGMENTATION_CONCEPTS.has(concept);
 }
 
 export function segmentationImageRejection(
@@ -274,6 +411,7 @@ export function normalizeRoboflowConceptSegment(input: Readonly<{
   }
 
   const decoded: DecodedPolygon[] = [];
+  const predictionRejections: RemovePredictionRejection[] = [];
   let predictionCount = 0;
   let packedBytes = 0;
   const coverage = new Uint8Array(input.originalWidth * input.originalHeight);
@@ -290,39 +428,32 @@ export function normalizeRoboflowConceptSegment(input: Readonly<{
       return { ok: false, error: "response_unbounded" };
     }
     for (let ordinal = 0; ordinal < prompt.predictions.length; ordinal += 1) {
-      const prediction = record(prompt.predictions[ordinal]);
-      if (!prediction) return { ok: false, error: "response_invalid" };
-      const confidence = readConfidence(prediction.confidence);
-      if (confidence === null) return { ok: false, error: "response_invalid" };
-      const encoding = polygonEncoding(prediction.format, prediction.masks);
-      if (encoding === "invalid") return { ok: false, error: "response_invalid" };
-      if (encoding === "rle") return decodeRoboflowRleMask(prediction.masks);
-      const rings = readRings(prediction.masks, input.originalWidth, input.originalHeight);
-      if (!rings.ok) return rings;
-      coverage.fill(0);
-      const filled = rasterizeRings(rings.rings, coverage, input.originalWidth, input.originalHeight);
-      if (filled === "invalid") return { ok: false, error: "response_invalid" };
-      const mask = packSegmentationCoverageAtOriginal({
-        source: coverage,
-        sourceWidth: input.originalWidth,
-        sourceHeight: input.originalHeight,
-        originalWidth: input.originalWidth,
-        originalHeight: input.originalHeight,
+      const isolated = isolatePrediction({
+        prediction: prompt.predictions[ordinal],
+        width: input.originalWidth,
+        height: input.originalHeight,
+        coverage,
       });
-      if (!mask) return { ok: false, error: "response_invalid" };
-      packedBytes += mask.bits.byteLength;
+      if (isolated.status === "fatal") return { ok: false, error: "response_invalid" };
+      if (isolated.status === "reject") {
+        predictionRejections.push({ concept, conceptIndex, ordinal, reason: isolated.reason });
+        continue;
+      }
+      const transportBytes = removeMaskTransportBytes(isolated.mask);
+      if (transportBytes === null) return { ok: false, error: "response_invalid" };
+      packedBytes += transportBytes;
       if (packedBytes > REMOVE_SEGMENTATION_MAX_PACKED_BYTES) {
         return { ok: false, error: "response_unbounded" };
       }
       decoded.push({
         concept,
         conceptIndex,
-        confidence,
+        confidence: isolated.confidence,
         sourceOrdinal: conceptIndex * REMOVE_SEGMENTATION_MAX_PREDICTIONS + ordinal,
-        mask,
+        mask: isolated.mask,
         digest: createHash("sha256")
-          .update(mask.bits)
-          .update(JSON.stringify(confidence))
+          .update(isolated.mask.bits)
+          .update(JSON.stringify(isolated.confidence))
           .digest("hex")
           .slice(0, 8),
       });
@@ -349,9 +480,7 @@ export function normalizeRoboflowConceptSegment(input: Readonly<{
     ok: true,
     provider: REMOVE_SEGMENTATION_PROVIDER_ID,
     modelId: REMOVE_SEGMENTATION_MODEL_ID,
-    conceptSet: isRemoveSegmentationVocabulary(input.concepts)
-      ? REMOVE_SEGMENTATION_CONCEPT_SET
-      : "remove-segmentation-concepts/unversioned",
+    conceptSet: conceptSetForConcepts(input.concepts),
     schema: ROBOFLOW_SAM3_POLYGON_SCHEMA,
     maskEncoding: "polygon",
     unverifiedEncodings: ["rle"],
@@ -359,7 +488,42 @@ export function normalizeRoboflowConceptSegment(input: Readonly<{
     providerNms: "disabled",
     providerTimeSec,
     preparation,
+    predictionRejections,
   };
+}
+
+type IsolatedPrediction =
+  | Readonly<{ status: "mask"; confidence: number; mask: RemovePackedMask }>
+  | Readonly<{ status: "reject"; reason: RemovePredictionRejectionReason }>
+  | Readonly<{ status: "fatal" }>;
+
+function isolatePrediction(input: Readonly<{
+  prediction: unknown;
+  width: number;
+  height: number;
+  coverage: Uint8Array;
+}>): IsolatedPrediction {
+  const prediction = record(input.prediction);
+  if (!prediction) return { status: "reject", reason: "invalid_prediction" };
+  const confidence = readConfidence(prediction.confidence);
+  if (confidence === null) return { status: "reject", reason: "invalid_prediction" };
+  const encoding = polygonEncoding(prediction.format, prediction.masks);
+  if (encoding === "invalid") return { status: "reject", reason: "unsupported_encoding" };
+  if (encoding === "rle") return { status: "reject", reason: "unsupported_rle" };
+  const rings = readRings(prediction.masks, input.width, input.height);
+  if (!rings.ok) return { status: "reject", reason: rings.reason };
+  input.coverage.fill(0);
+  const filled = rasterizeRings(rings.rings, input.coverage, input.width, input.height);
+  if (filled === "invalid") return { status: "reject", reason: "invalid_rasterization" };
+  const mask = packSegmentationCoverageAtOriginal({
+    source: input.coverage,
+    sourceWidth: input.width,
+    sourceHeight: input.height,
+    originalWidth: input.width,
+    originalHeight: input.height,
+  });
+  if (!mask) return { status: "fatal" };
+  return { status: "mask", confidence, mask };
 }
 
 function compareDecoded(left: DecodedPolygon, right: DecodedPolygon): number {
@@ -373,6 +537,26 @@ function compareDecoded(left: DecodedPolygon, right: DecodedPolygon): number {
   if (bounds.height !== other.height) return bounds.height - other.height;
   if (left.digest !== right.digest) return left.digest < right.digest ? -1 : 1;
   return left.sourceOrdinal - right.sourceOrdinal;
+}
+
+function sameConceptList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length
+    && left.every((concept, index) => concept === right[index]);
+}
+
+function registeredRemoveVocabularies(): readonly (readonly string[])[] {
+  return Object.values(REMOVE_VOCABULARY_PROFILES);
+}
+
+function conceptSetForConcepts(concepts: readonly string[]): string {
+  if (
+    sameConceptList(concepts, REMOVE_SEGMENTATION_CONCEPTS_V2)
+    || sameConceptList(concepts, REMOVE_SEGMENTATION_CONCEPTS_V1)
+    || sameConceptList(concepts, REMOVE_SEGMENTATION_CONCEPTS_BEDROOM)
+  ) {
+    return REMOVE_SEGMENTATION_CONCEPT_SET;
+  }
+  return "remove-segmentation-concepts/unversioned";
 }
 
 function originalGrid(width: number, height: number): boolean {
@@ -432,33 +616,37 @@ function readRings(
   masks: unknown,
   width: number,
   height: number,
-): { ok: true; rings: PolygonRing[] } | RemoveSegmentationFailure {
-  if (!Array.isArray(masks)) return { ok: false, error: "response_invalid" };
+): { ok: true; rings: PolygonRing[] } | { ok: false; reason: RemovePredictionRejectionReason } {
+  if (!Array.isArray(masks)) return { ok: false, reason: "invalid_polygon" };
   if (masks.length > REMOVE_SEGMENTATION_MAX_RINGS) {
-    return { ok: false, error: "response_unbounded" };
+    return { ok: false, reason: "polygon_ring_ceiling" };
   }
   const rings: PolygonRing[] = [];
   let points = 0;
   for (const ring of masks) {
-    if (!Array.isArray(ring) || ring.length < 3) return { ok: false, error: "response_invalid" };
+    if (!Array.isArray(ring)) return { ok: false, reason: "degenerate_polygon" };
+    if (ring.length < 3) continue;
     const parsed: Array<[number, number]> = [];
     for (const point of ring) {
-      if (!Array.isArray(point) || point.length !== 2) return { ok: false, error: "response_invalid" };
+      if (!Array.isArray(point) || point.length !== 2) return { ok: false, reason: "invalid_polygon" };
       const x = point[0];
       const y = point[1];
       if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) {
-        return { ok: false, error: "response_invalid" };
+        return { ok: false, reason: "invalid_polygon" };
       }
       if (x < -1 || y < -1 || x > width + 1 || y > height + 1) {
-        return { ok: false, error: "mask_dimensions" };
+        return { ok: false, reason: "invalid_rasterization" };
       }
       points += 1;
       if (points > REMOVE_SEGMENTATION_MAX_POLYGON_POINTS) {
-        return { ok: false, error: "response_unbounded" };
+        return { ok: false, reason: "polygon_point_ceiling" };
       }
       parsed.push([x, y]);
     }
     rings.push(parsed);
+  }
+  if (masks.length > 0 && rings.length === 0) {
+    return { ok: false, reason: "degenerate_polygon" };
   }
   return { ok: true, rings };
 }
