@@ -292,7 +292,8 @@ test("Objects panel exports the confirmed snapshot without segmentation or gener
   assert.match(session, /trackedCleanupKey/);
   assert.match(session, /cleanupController\?\.abort\(\)/);
   assert.match(session, /controller\.signal\.aborted/);
-  assert.equal(session.match(/requestRemoveObjects\(/g)?.length, 1);
+  assert.equal(session.match(/loadBringForwardScan\(/g)?.length, 1);
+  assert.equal(session.match(/requestRemoveObjects\(/g)?.length ?? 0, 0);
   assert.match(session, /requestRemoveCleanupExport/);
   assert.doesNotMatch(session, /remove-segmentation|serverless\.roboflow|generativelanguage|api\.openai|concept_segment/i);
   const download = session.slice(

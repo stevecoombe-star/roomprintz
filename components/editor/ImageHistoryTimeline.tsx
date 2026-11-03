@@ -5,6 +5,7 @@ import { useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import { HARMONIZE_AI_DISCLOSURE_TEXT, HARMONIZE_AI_LABEL, isHarmonizedHistoryAsset } from "@/lib/vibode-stage/harmonize-experience";
 import { CLEANUP_HISTORY_LABEL, cleanupHistoryFallbackVersions, isCleanupHistoryAsset } from "@/lib/vibode-stage/remove-cleanup-history-ui";
 import { isRemoveHistoryAsset, REMOVE_EDIT_LABEL, removeHistoryFallbackVersions } from "@/lib/vibode-stage/remove-edit";
+import { useBringForward } from "@/components/stage/BringForwardSession";
 import { removeInspectionAllowsHistorySelection } from "@/lib/vibode-stage/remove-alignment";
 import { getImageHistoryWorkflowGroups, type ImageHistoryTimelineKind } from "@/lib/vibode/image-history-timeline";
 import { getVibodeVersionKind, getWorkflowStepDisplayLabel } from "@/lib/vibode/version-kind";
@@ -146,8 +147,10 @@ export function ImageHistoryTimeline({
     [activeVersionId, versions]
   );
   const [expandedByKey, setExpandedByKey] = useState<Record<string, boolean>>({});
+  const removeActive = useRemoveAlignment()?.active === true;
+  const bringForwardEditing = useBringForward()?.editing === true;
   const historySelectionOpen = removeInspectionAllowsHistorySelection(
-    useRemoveAlignment()?.active === true,
+    removeActive || bringForwardEditing,
   );
   const selectVersion = historySelectionOpen ? onSelectVersion : undefined;
 

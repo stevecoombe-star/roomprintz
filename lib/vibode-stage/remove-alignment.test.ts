@@ -365,7 +365,7 @@ test("Remove is wired into the 3D header, overlay, and inspection gates", () => 
   const route = source("app/api/vibode/admin/remove-alignment/route.ts");
   const session = source("components/stage/RemoveAlignmentSession.tsx");
 
-  assert.match(header, /<RemoveAlignmentControl \/>\s*<HarmonizeButton \/>/);
+  assert.match(header, /<RemoveAlignmentControl blocked=\{bringForwardEditing\} \/>\s*<BringForwardControl \/>\s*<HarmonizeButton \/>/);
   assert.equal(header.match(/<HarmonizeButton \/>/g)?.length, 1);
   assert.match(header, /min-w-0/);
   const scrollRow = header.slice(

@@ -1,5 +1,6 @@
 "use client";
 
+import { BringForwardControl, useBringForward } from "@/components/stage/BringForwardSession";
 import { HarmonizeButton } from "@/components/stage/HarmonizeExperience";
 import { RemoveAlignmentControl, useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import { RoomScaleControl } from "@/components/stage/RoomScaleControl";
@@ -11,7 +12,10 @@ const FOCUS =
 
 export function StageEditorHeader() {
   const stage = useStageEditor();
-  const inspection = removeInspectionInteraction(useRemoveAlignment()?.active === true);
+  const bringForwardEditing = useBringForward()?.editing === true;
+  const inspection = removeInspectionInteraction(
+    useRemoveAlignment()?.active === true || bringForwardEditing,
+  );
   const undoEnabled = stage.canUndo && inspection.undo;
   return (
     <div
@@ -65,7 +69,8 @@ export function StageEditorHeader() {
             Summary →
           </button>
         </div>
-        <RemoveAlignmentControl />
+        <RemoveAlignmentControl blocked={bringForwardEditing} />
+        <BringForwardControl />
         <HarmonizeButton />
       </div>
     </div>

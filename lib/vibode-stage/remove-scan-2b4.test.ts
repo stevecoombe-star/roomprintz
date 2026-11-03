@@ -305,7 +305,8 @@ test("an open Remove session does not start another scan when the vocabulary cha
   assert.doesNotMatch(client, /retry|fallback|visual_segment/);
   assert.match(quota, /reserve_vibode_remove_segmentation/);
   assert.doesNotMatch(quota, /bookcase|framed picture|bookshelf|wall art/);
-  assert.equal(session.match(/requestRemoveObjects\(/g)?.length, 1);
+  assert.equal(session.match(/loadBringForwardScan\(/g)?.length, 1);
+  assert.equal(session.match(/requestRemoveObjects\(/g)?.length ?? 0, 0);
   assert.doesNotMatch(session, /REMOVE_SEGMENTATION_CONCEPTS|serverless\.roboflow/);
   assert.doesNotMatch(worker, /bookcase|framed picture|concept_segment/);
 });

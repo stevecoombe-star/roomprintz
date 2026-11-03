@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 
+import { useBringForward } from "@/components/stage/BringForwardSession";
 import { useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
 import {
@@ -20,7 +21,9 @@ const FOCUS =
 
 export function RoomScaleControl() {
   const stage = useStageEditor();
-  const roomScaleEnabled = removeInspectionInteraction(useRemoveAlignment()?.active === true).roomScale;
+  const removeActive = useRemoveAlignment()?.active === true;
+  const bringForwardEditing = useBringForward()?.editing === true;
+  const roomScaleEnabled = removeInspectionInteraction(removeActive || bringForwardEditing).roomScale;
   const [open, setOpen] = useState(false);
   const [trackedScaleEnabled, setTrackedScaleEnabled] = useState(roomScaleEnabled);
   if (trackedScaleEnabled !== roomScaleEnabled) {

@@ -14,6 +14,7 @@ import {
 import { AfcProductionRoomViewer } from "@/components/afc-3d/AfcProductionRoomViewer";
 import { useAfcSceneObjectCrudSession } from "@/components/afc-3d/AfcSceneObjectCrudSession";
 import { Prepare3dRoomControl } from "@/components/afc-3d/Prepare3dRoomControl";
+import { useBringForward } from "@/components/stage/BringForwardSession";
 import { RemoveAlignmentOverlay, useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import { StageFurnitureToolbar } from "@/components/stage/StageFurnitureToolbar";
 import { useOptionalStageEditor } from "@/components/stage/StageEditorContext";
@@ -116,6 +117,7 @@ export function AfcIntegratedEditorViewport({
   const showTransformGizmos = useStageTransformGizmos();
   const removeInspection = useRemoveAlignment();
   const removeActive = removeInspection?.active === true;
+  const bringForwardEditing = useBringForward()?.editing === true;
   const stage = useOptionalStageEditor();
   const harmonizeMaterialCatalog = stage
     ? harmonizeMaterialCatalogFromStage({
@@ -265,13 +267,14 @@ export function AfcIntegratedEditorViewport({
         harmonizeCertifiedCamera={runtime.certifiedFrozenCamera}
         harmonizeFlushScene={persistedScene.flushPersistedScene}
         harmonizeFlushRoomScale={stage?.flushRoomScale}
-        furnitureManipulationEnabled={removeInspectionAllowsFurnitureManipulation(removeActive)}
+        furnitureManipulationEnabled={removeInspectionAllowsFurnitureManipulation(removeActive) && !bringForwardEditing}
         furnitureRenderingVisible={removeFurnitureRenderingVisible({
           active: removeActive,
           furnitureHidden: removeInspection?.furnitureHidden === true,
         })}
         scenePointerEvents={
-          removeActive && (removeInspection?.mode === "brush" || removeInspection?.mode === "objects")
+          bringForwardEditing
+          || (removeActive && (removeInspection?.mode === "brush" || removeInspection?.mode === "objects"))
             ? "none"
             : "auto"
         }

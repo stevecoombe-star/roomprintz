@@ -5,14 +5,30 @@ import test from "node:test";
 import {
   assessBringForwardDisplay,
   bringForwardImageIdentity,
+  bringForwardScanKey,
+  bringForwardStatusMessage,
+  cancelBringForward,
   compositeBringForwardRgba,
-  emptyBringForwardSession,
-  initialBringForwardSelection,
-  retainBringForwardSession,
+  doneBringForward,
+  emptyBringForwardEditor,
+  enterBringForward,
+  installBringForwardScan,
+  loadBringForwardScan,
+  readBringForwardScan,
+  rememberBringForwardScan,
+  resetBringForwardScansForTests,
+  toggleBringForwardId,
+  visibleBringForwardIds,
   type BringForwardImageIdentity,
-  type BringForwardObservation,
+  type BringForwardScan,
   type BringForwardSnapshot,
 } from "./bring-forward-cutout";
+import {
+  initialRemoveObjectUiState,
+  reduceRemoveObjectSession,
+  reuseRemoveObjectScan,
+  type RemoveObjectUiIdentity,
+} from "./remove-object-ui";
 import {
   packRemoveMask,
   prepareRemoveObjectMasks,
@@ -92,18 +108,27 @@ function image(sha256 = SHA, width = 4, height = 4): BringForwardImageIdentity {
   return identity;
 }
 
-function observation(
-  objects: readonly RemoveObjectRecord[],
-  phase: BringForwardObservation["phase"] = "ready",
-): BringForwardObservation {
+function scan(objects: readonly RemoveObjectRecord[], conceptSet = "remove-segmentation-concepts/v2"): BringForwardScan {
   return {
-    phase,
+    roomId: ROOM,
+    generationId: GENERATION,
+    original: image(),
+    vocabularyRevision: 0,
+    conceptSet,
+    objects,
+    diagnostics: null,
+  };
+}
+
+function identity(sessionSerial = 1, vocabularyRevision = 0): RemoveObjectUiIdentity {
+  return {
     roomId: ROOM,
     generationId: GENERATION,
     originalSha256: SHA,
     originalWidth: 4,
     originalHeight: 4,
-    objects,
+    sessionSerial,
+    vocabularyRevision,
   };
 }
 
@@ -245,59 +270,108 @@ test("display is shown only for the verified original outside remove", () => {
   }), "hide");
 });
 
-test("a scan is retained after remove exits and selects only the first eligible object", () => {
-  const first = record("first", mustPack(4, 4, (x, y) => x < 2 && y < 2));
-  const second = record("second", mustPack(4, 4, (x, y) => x > 1 && y > 1));
-  const rejected = record("rejected", mustPack(4, 4, () => true), false);
-  const ready = retainBringForwardSession(emptyBringForwardSession(), {
-    roomId: ROOM,
-    generationId: GENERATION,
-    observed: observation([rejected, first, second]),
+test("selection starts empty and done and cancel keep their own sets", () => {
+  const chair = record("chair", mustPack(4, 4, (x, y) => x === 1 && y === 1));
+  const lamp = record("lamp", mustPack(4, 4, (x, y) => x === 3 && y === 2));
+  const installed = installBringForwardScan(emptyBringForwardEditor(), scan([chair, lamp]));
+  assert.equal(installed.committedIds.size, 0);
+  assert.equal(installed.draftIds.size, 0);
+  assert.equal(installed.scan?.objects.length, 2);
+  const editing = enterBringForward(installed);
+  assert.equal(editing.draftIds.size, 0);
+  const both = {
+    ...editing,
+    draftIds: toggleBringForwardId(toggleBringForwardId(editing.draftIds, "chair"), "lamp"),
+  };
+  assert.deepEqual([...both.draftIds].sort(), ["chair", "lamp"]);
+  const removed = { ...both, draftIds: toggleBringForwardId(both.draftIds, "chair") };
+  assert.deepEqual([...removed.draftIds], ["lamp"]);
+  const committed = doneBringForward(removed);
+  assert.equal(committed.editing, false);
+  assert.deepEqual([...visibleBringForwardIds(committed)], ["lamp"]);
+  const again = enterBringForward(committed);
+  const draft = { ...again, draftIds: toggleBringForwardId(again.draftIds, "chair") };
+  const cancelled = cancelBringForward(draft);
+  assert.equal(cancelled.editing, false);
+  assert.deepEqual([...visibleBringForwardIds(cancelled)], ["lamp"]);
+  const otherRoom = installBringForwardScan(cancelled, {
+    ...scan([chair]),
+    roomId: "33333333-3333-4333-8333-333333333333",
   });
-  assert.deepEqual([...ready.selectedIds], ["first"]);
-  assert.equal(ready.snapshot?.objects.length, 3);
-  const exited = retainBringForwardSession(ready, {
-    roomId: ROOM,
-    generationId: GENERATION,
-    observed: null,
-  });
-  assert.equal(exited, ready);
-  const loading = retainBringForwardSession(ready, {
-    roomId: ROOM,
-    generationId: GENERATION,
-    observed: observation([first], "loading"),
-  });
-  assert.equal(loading, ready);
-  const owned = retainBringForwardSession({
-    ...ready,
-    selectedIds: new Set(["second"]),
-  }, {
-    roomId: ROOM,
-    generationId: GENERATION,
-    observed: observation([rejected, first, second]),
-  });
-  assert.deepEqual([...owned.selectedIds], ["second"]);
-  const objects = [first];
-  const copied = retainBringForwardSession(emptyBringForwardSession(), {
-    roomId: ROOM,
-    generationId: GENERATION,
-    observed: observation(objects),
-  });
+  assert.equal(otherRoom.committedIds.size, 0);
+  const objects = [chair];
+  const copied = installBringForwardScan(emptyBringForwardEditor(), scan(objects));
   objects.pop();
-  assert.equal(copied.snapshot?.objects.length, 1);
-  assert.equal(retainBringForwardSession(copied, {
-    roomId: "other-room",
-    generationId: GENERATION,
-    observed: null,
-  }).snapshot, null);
-  assert.equal(initialBringForwardSelection([
-    record("wrong-size", mustPack(2, 2, () => true)),
-  ], 4, 4).size, 0);
+  assert.equal(copied.scan?.objects.length, 1);
+});
+
+test("a cached scan is shared across session serials and is not requested twice", async () => {
+  resetBringForwardScansForTests();
+  const chair = record("chair", mustPack(4, 4, (x) => x === 0));
+  const key = bringForwardScanKey(identity(1));
+  assert.equal(key, bringForwardScanKey(identity(2)));
+  assert.notEqual(key, bringForwardScanKey(identity(1, 1)));
+  rememberBringForwardScan(scan([chair]));
+  let calls = 0;
+  const fetchImpl: typeof fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ usable: false, reason: "unused" }), { status: 500 });
+  };
+  const first = await loadBringForwardScan({ identity: identity(1), fetchImpl });
+  const second = await loadBringForwardScan({ identity: identity(4), fetchImpl });
+  assert.equal(calls, 0);
+  assert.equal(first?.objects[0]?.id, "chair");
+  assert.equal(second, first);
+  assert.equal(readBringForwardScan(key ?? ""), first);
+  resetBringForwardScansForTests();
+  let posts = 0;
+  const failing: typeof fetch = async (input, init) => {
+    posts += 1;
+    assert.equal(String(input), "/api/vibode/admin/remove-objects");
+    assert.equal(init?.method, "POST");
+    return new Response(JSON.stringify({
+      usable: false,
+      reason: "Daily Remove detection limit reached.",
+    }), { status: 429 });
+  };
+  const [left, right] = await Promise.all([
+    loadBringForwardScan({ identity: identity(), fetchImpl: failing }),
+    loadBringForwardScan({ identity: identity(), fetchImpl: failing }),
+  ]);
+  assert.equal(posts, 1);
+  assert.equal(left, null);
+  assert.equal(right, null);
+  assert.equal(bringForwardStatusMessage({
+    display: "show",
+    scanReady: false,
+    objectCount: 0,
+    error: "Daily Remove detection limit reached.",
+  }), "Daily Remove detection limit reached.");
+  const loading = reduceRemoveObjectSession({
+    state: initialRemoveObjectUiState(),
+    active: true,
+    identity: identity(),
+  }).state;
+  const reused = reuseRemoveObjectScan({
+    state: loading,
+    requestSerial: loading.requestSerial,
+    identity: identity(),
+    objects: [chair],
+    diagnostics: null,
+  });
+  assert.equal(reused.phase, "ready");
+  assert.equal(reused.selectedIds.size, 0);
+  assert.equal(reused.objects[0]?.id, "chair");
+  resetBringForwardScansForTests();
 });
 
 test("the foreground canvas is mounted above the furniture frame without a second camera", () => {
   const viewer = readFileSync(new URL("../../components/afc-3d/AfcProductionRoomViewer.tsx", import.meta.url), "utf8");
   const layer = readFileSync(new URL("../../components/stage/BringForwardLayer.tsx", import.meta.url), "utf8");
+  const selection = readFileSync(new URL("../../components/stage/BringForwardSelection.tsx", import.meta.url), "utf8");
+  const header = readFileSync(new URL("../../components/stage/StageEditorHeader.tsx", import.meta.url), "utf8");
+  const controls = readFileSync(new URL("../../components/stage/BringForwardSession.tsx", import.meta.url), "utf8");
+  const route = readFileSync(new URL("../../app/api/vibode/admin/remove-objects/route.ts", import.meta.url), "utf8");
   const cutout = readFileSync(new URL("./bring-forward-cutout.ts", import.meta.url), "utf8");
   const mount = viewer.indexOf("ref={mountRef}");
   const foreground = viewer.indexOf("<BringForwardLayer", mount);
@@ -310,6 +384,18 @@ test("the foreground canvas is mounted above the furniture frame without a secon
   assert.match(layer, /width: "100%", height: "100%"/);
   assert.match(layer, /canvas\.width = width/);
   assert.doesNotMatch(layer, /objectUi\.selectedIds|devicePixelRatio|containFitRect|WebGLRenderer|remove-objects/);
+  assert.match(selection, /hitTestRemoveObjects/);
+  assert.match(selection, /mapRemovePointer/);
+  assert.match(selection, /RemoveObjectOutlines/);
+  assert.match(selection, /pointerEvents: "auto"/);
+  assert.match(header, /<BringForwardControl \/>/);
+  assert.match(controls, /aria-label="Bring Forward"/);
+  assert.match(controls, /data-bring-forward="done"/);
+  assert.match(controls, /data-bring-forward="cancel"/);
+  assert.equal(cutout.match(/requestRemoveObjects\(/g)?.length, 1);
+  assert.match(route, /readRemoveActor/);
+  assert.match(route, /reserveSegmentation/);
+  assert.doesNotMatch(route, /bringForward|bring-forward/);
   assert.match(cutout, /unpackRemoveMask/);
-  assert.doesNotMatch(cutout, /resampleCoverageToOriginal|dilateRemoveCoverage|roboflow|WebGLRenderer/);
+  assert.doesNotMatch(cutout, /initialBringForwardSelection|resampleCoverageToOriginal|dilateRemoveCoverage|roboflow|WebGLRenderer/);
 });

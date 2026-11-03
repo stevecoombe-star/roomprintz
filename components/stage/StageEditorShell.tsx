@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 
+import { BringForwardProvider } from "@/components/stage/BringForwardSession";
 import { HarmonizeExportProvider } from "@/components/stage/HarmonizeExportContext";
 import { RemoveAlignmentProvider } from "@/components/stage/RemoveAlignmentSession";
 import { StageCatalogDrawer } from "@/components/stage/StageCatalogDrawer";
@@ -45,6 +46,7 @@ export function StageEditorShell({
         onCleanupHistoryAccepted={onCleanupHistoryAccepted}
         onRemoveEditSaved={onRemoveEditSaved}
       >
+      <BringForwardProvider>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-stage-shell="true">
         <StageEditorHeader />
         <div
@@ -58,6 +60,7 @@ export function StageEditorShell({
           <StageSummaryDrawer />
         </div>
       </div>
+      </BringForwardProvider>
       </RemoveAlignmentProvider>
     </HarmonizeExportProvider>
   );

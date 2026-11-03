@@ -226,6 +226,25 @@ export function settleRemoveObjectLoad(input: Readonly<{
   };
 }
 
+export function reuseRemoveObjectScan(input: Readonly<{
+  state: RemoveObjectUiState;
+  requestSerial: number;
+  identity: RemoveObjectUiIdentity;
+  objects: readonly RemoveObjectRecord[];
+  diagnostics: RemoveObjectUiDiagnostics | null;
+}>): RemoveObjectUiState {
+  if (!acceptingLoad(input.state, input.requestSerial, input.identity)) return input.state;
+  return {
+    phase: "ready",
+    identity: input.identity,
+    requestSerial: input.state.requestSerial,
+    objects: input.objects,
+    selectedIds: EMPTY_SELECTION,
+    error: null,
+    diagnostics: input.diagnostics,
+  };
+}
+
 export function failRemoveObjectLoad(input: Readonly<{
   state: RemoveObjectUiState;
   requestSerial: number;

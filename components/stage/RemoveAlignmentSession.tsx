@@ -88,12 +88,17 @@ import {
   removeObjectProtectionAvailable,
   removeObjectProtectionEngaged,
   removeObjectUiIdentityKey,
-  requestRemoveObjects,
-  settleRemoveObjectLoad,
+  reuseRemoveObjectScan,
   showAllRemoveObjectUi,
   type RemoveObjectUiIdentity,
   type RemoveObjectUiState,
 } from "@/lib/vibode-stage/remove-object-ui";
+import {
+  bringForwardScanKey,
+  loadBringForwardScan,
+  readBringForwardScan,
+  readBringForwardScanError,
+} from "@/lib/vibode-stage/bring-forward-cutout";
 import {
   CLEANUP_HISTORY_ACTIVATION_ERROR,
   type CleanupFinalizeResult,
@@ -133,6 +138,7 @@ type RemoveAlignmentContextValue = Readonly<{
   featherPx: number;
   maskEpoch: number;
   sessionSerial: number;
+  vocabularyRevision: number;
   objectExpansionPx: number;
   objectOutlinesVisible: boolean;
   objectProtectionEnabled: boolean;
@@ -248,12 +254,6 @@ export function RemoveAlignmentProvider({
   const [cleanupSnapshot, setCleanupSnapshot] = useState<RemoveCleanupSnapshotObject[]>([]);
   const [cleanupController, setCleanupController] = useState<AbortController | null>(null);
   const cleanupClaimRef = useRef(false);
-  const loadRef = useRef<null | {
-    key: string;
-    serial: number;
-    controller: AbortController;
-    promise: Promise<Readonly<{ payload: unknown; elapsedMs: number }>>;
-  }>(null);
   const ticketRef = useRef(0);
   const saveLock = useRef(false);
   const cleanupFinalizingRef = useRef(false);
@@ -436,47 +436,44 @@ export function RemoveAlignmentProvider({
     });
     objectUiRef.current = decision.state;
     setObjectUi(decision.state);
-    if (decision.command === "abort") {
-      loadRef.current?.controller.abort();
-      loadRef.current = null;
-      return undefined;
-    }
-    if (!objectIdentity) return undefined;
-    const objectIdentityKey = removeObjectUiIdentityKey(objectIdentity);
+    if (decision.command === "abort" || !objectIdentity) return undefined;
+    const scanKey = bringForwardScanKey(objectIdentity);
     if (decision.command === "fetch") {
-      loadRef.current?.controller.abort();
-      const controller = new AbortController();
-      const serial = decision.state.requestSerial;
-      const promise = requestRemoveObjects({ identity: objectIdentity, signal: controller.signal });
-      loadRef.current = { key: objectIdentityKey, serial, controller, promise };
+      const cached = scanKey ? readBringForwardScan(scanKey) : null;
+      if (cached) {
+        const adopted = reuseRemoveObjectScan({
+          state: decision.state,
+          requestSerial: decision.state.requestSerial,
+          identity: objectIdentity,
+          objects: cached.objects,
+          diagnostics: cached.diagnostics,
+        });
+        objectUiRef.current = adopted;
+        setObjectUi(adopted);
+        return undefined;
+      }
     }
-    const entry = loadRef.current;
-    if (!entry || decision.state.phase !== "loading" || entry.key !== objectIdentityKey) return undefined;
+    if (decision.state.phase !== "loading") return undefined;
+    const serial = decision.state.requestSerial;
     const ticket = ticketRef.current + 1;
     ticketRef.current = ticket;
-    const serial = entry.serial;
-    void entry.promise.then((result) => {
+    void loadBringForwardScan({ identity: objectIdentity }).then((scan) => {
       if (ticketRef.current !== ticket) return;
       setObjectUi((current) => {
-        const next = settleRemoveObjectLoad({
-          state: current,
-          requestSerial: serial,
-          identity: objectIdentity,
-          payload: result.payload,
-          elapsedMs: result.elapsedMs,
-        });
-        objectUiRef.current = next;
-        return next;
-      });
-    }).catch(() => {
-      if (ticketRef.current !== ticket) return;
-      if (entry.controller.signal.aborted) return;
-      setObjectUi((current) => {
-        const next = failRemoveObjectLoad({
-          state: current,
-          requestSerial: serial,
-          identity: objectIdentity,
-        });
+        const next = scan
+          ? reuseRemoveObjectScan({
+            state: current,
+            requestSerial: serial,
+            identity: objectIdentity,
+            objects: scan.objects,
+            diagnostics: scan.diagnostics,
+          })
+          : failRemoveObjectLoad({
+            state: current,
+            requestSerial: serial,
+            identity: objectIdentity,
+            reason: scanKey ? readBringForwardScanError(scanKey) ?? undefined : undefined,
+          });
         objectUiRef.current = next;
         return next;
       });
@@ -977,6 +974,7 @@ export function RemoveAlignmentProvider({
     featherPx: inspection.featherPx,
     maskEpoch: inspection.maskEpoch,
     sessionSerial: inspection.sessionSerial,
+    vocabularyRevision,
     objectExpansionPx: inspection.objectExpansionPx,
     objectOutlinesVisible: inspection.objectOutlinesVisible,
     objectProtectionEnabled: inspection.objectProtectionEnabled,
@@ -1095,6 +1093,7 @@ export function RemoveAlignmentProvider({
     confirmVocabulary,
     cancelVocabulary,
     vocabularyConfirm,
+    vocabularyRevision,
     vocabularyView,
     roomId,
     report,
@@ -1124,10 +1123,16 @@ export function useRemoveAlignment(): RemoveAlignmentContextValue | null {
   return useContext(RemoveAlignmentContext);
 }
 
-export function RemoveAlignmentControl() {
+export function RemoveAlignmentControl({
+  blocked = false,
+  blockedTitle = "Exit Bring Forward before Remove.",
+}: {
+  blocked?: boolean;
+  blockedTitle?: string;
+} = {}) {
   const session = useRemoveAlignment();
   if (!session || session.access === "hidden") return null;
-  const disabled = session.access !== "ready";
+  const disabled = session.access !== "ready" || blocked;
   return (
     <div className="relative shrink-0" data-remove-alignment="control">
       <button
@@ -1136,7 +1141,9 @@ export function RemoveAlignmentControl() {
         aria-label="Remove"
         aria-pressed={session.active}
         disabled={disabled}
-        title={disabled
+        title={blocked
+          ? blockedTitle
+          : disabled
           ? session.disabledReason ?? "ORIGINAL and EMPTY are not ready."
           : session.active
             ? "Exit Remove inspection"

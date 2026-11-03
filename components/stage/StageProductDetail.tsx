@@ -15,6 +15,7 @@ import {
 import { resolveEffectiveModelDimensions } from "@/lib/vibode-stage/model-dimensions";
 import { stageAddLockKey } from "@/lib/vibode-stage/stage-runtime-placement";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
+import { useBringForward } from "@/components/stage/BringForwardSession";
 import { useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import { removeInspectionAllowsCatalogPlacement } from "@/lib/vibode-stage/remove-alignment";
 import type {
@@ -54,9 +55,9 @@ function resolveSelectedVariantId(
 
 export function StageProductDetail() {
   const stage = useStageEditor();
-  const placementOpen = removeInspectionAllowsCatalogPlacement(
-    useRemoveAlignment()?.active === true,
-  );
+  const removeActive = useRemoveAlignment()?.active === true;
+  const bringForwardEditing = useBringForward()?.editing === true;
+  const placementOpen = removeInspectionAllowsCatalogPlacement(removeActive || bringForwardEditing);
   const product = stage.detailProductId
     ? stageProductById(stage.detailProductId, stage.extraProducts, stage.catalog)
     : null;

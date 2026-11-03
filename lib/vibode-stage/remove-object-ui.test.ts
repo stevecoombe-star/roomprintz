@@ -1033,7 +1033,7 @@ test("Objects mode wiring keeps segmentation off the brush and the scene", () =>
   assert.match(session, /Show All/);
   assert.match(session, /Done/);
   assert.match(session, /\[objectIdentity\]/);
-  assert.match(session, /requestRemoveObjects/);
+  assert.match(session, /loadBringForwardScan/);
   assert.match(session, /reduceRemoveObjectSession/);
   assert.match(session, /controller\.abort\(\)/);
   assert.match(session, /type: "clear-mask"/);
@@ -1041,12 +1041,14 @@ test("Objects mode wiring keeps segmentation off the brush and the scene", () =>
   assert.match(session, /Show Mask Outlines/);
   assert.match(session, /Protect Objects/);
   assert.match(session, /onObjectClick=\{\(point\) => session\.clickObject\(point\.x, point\.y\)\}/);
-  assert.equal(session.match(/requestRemoveObjects\(/g)?.length, 1);
+  assert.equal(session.match(/loadBringForwardScan\(/g)?.length, 1);
+  assert.equal(session.match(/requestRemoveObjects\(/g)?.length ?? 0, 0);
   assert.equal(session.match(/\}, \[objectIdentity\]\);/g)?.length, 1);
   const effectStart = session.indexOf("useEffect(() => {\n    const decision = reduceRemoveObjectSession");
   const effectEnd = session.indexOf("}, [objectIdentity]);", effectStart);
   const effect = session.slice(effectStart, effectEnd);
-  assert.match(effect, /requestRemoveObjects/);
+  assert.match(effect, /readBringForwardScan/);
+  assert.match(effect, /loadBringForwardScan/);
   assert.equal(effect.includes("objectExpansionPx"), false);
   assert.equal(effect.includes("objectOutlinesVisible"), false);
   assert.equal(effect.includes("objectProtectionEnabled"), false);

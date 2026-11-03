@@ -1,6 +1,7 @@
 "use client";
 
 import { useAfcSceneObjectCrudSession } from "@/components/afc-3d/AfcSceneObjectCrudSession";
+import { useBringForward } from "@/components/stage/BringForwardSession";
 import { useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import { useOptionalStageEditor } from "@/components/stage/StageEditorContext";
 import { formatRotationDeg, snapRotationDegIfNear } from "@/lib/vibode-stage/rotate";
@@ -21,9 +22,11 @@ export function StageFurnitureToolbar() {
   const stage = useOptionalStageEditor();
   const session = useAfcSceneObjectCrudSession();
   const remove = useRemoveAlignment();
-  const manipulationEnabled = removeInspectionAllowsFurnitureManipulation(remove?.active === true);
-  const brushPointerIgnored = remove?.active === true
-    && (remove.mode === "brush" || remove.mode === "objects");
+  const bringForwardEditing = useBringForward()?.editing === true;
+  const manipulationEnabled = removeInspectionAllowsFurnitureManipulation(remove?.active === true)
+    && !bringForwardEditing;
+  const brushPointerIgnored = bringForwardEditing
+    || (remove?.active === true && (remove.mode === "brush" || remove.mode === "objects"));
   const selection = stage?.selection ?? null;
   if (!stage || !stage.active || !selection || !session?.selectedObjectId) return null;
   if (

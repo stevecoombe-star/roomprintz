@@ -1,18 +1,34 @@
 /**
- * Bring Forward cutouts.
+ * Bring Forward cutouts and session selection.
  *
  * A cutout is verified ORIGINAL pixels with mask coverage copied into alpha.
  * Selection belongs to Bring Forward. REMOVE's hidden-object set is not an input.
- * The first eligible object is selected when a new scan is retained. Later
- * selection can add ids without changing this composite.
+ * Nothing is selected until the user clicks an outline. Done keeps that set for
+ * this editor session. Cancel restores the set from before the edit.
  */
 
+import {
+  readRemoveObjectUiPayload,
+  requestRemoveObjects,
+  type RemoveObjectUiDiagnostics,
+  type RemoveObjectUiIdentity,
+} from "@/lib/vibode-stage/remove-object-ui";
 import {
   unpackRemoveMask,
   type RemoveObjectRecord,
 } from "@/lib/vibode-stage/remove-objects";
 
 const SHA256 = /^[0-9a-f]{64}$/;
+
+export const BRING_FORWARD_BACKGROUND_MESSAGE =
+  "Bring Forward works on the original room photo. This image is different, so nothing is brought forward.";
+export const BRING_FORWARD_CHECKING_MESSAGE = "Checking the room photo…";
+export const BRING_FORWARD_FINDING_MESSAGE = "Finding objects…";
+export const BRING_FORWARD_EMPTY_MESSAGE = "No objects were found in this photo.";
+export const BRING_FORWARD_READY_MESSAGE =
+  "Click a yellow outline to bring it forward. Click a blue outline to put it back.";
+export const BRING_FORWARD_UNUSABLE_MESSAGE = "Object detection returned an unusable result.";
+export const BRING_FORWARD_NO_RESPONSE_MESSAGE = "Object detection did not respond. The room is unchanged.";
 
 export type BringForwardImageIdentity = Readonly<{
   sha256: string;
@@ -27,30 +43,36 @@ export type BringForwardSnapshot = Readonly<{
   objects: readonly RemoveObjectRecord[];
 }>;
 
-export type BringForwardSession = Readonly<{
-  snapshot: BringForwardSnapshot | null;
-  selectedIds: ReadonlySet<string>;
-}>;
-
-export type BringForwardObservation = Readonly<{
-  phase: "idle" | "loading" | "ready" | "error";
+export type BringForwardScan = Readonly<{
   roomId: string;
   generationId: string;
-  originalSha256: string;
-  originalWidth: number;
-  originalHeight: number;
+  original: BringForwardImageIdentity;
+  vocabularyRevision: number;
+  conceptSet: string;
   objects: readonly RemoveObjectRecord[];
+  diagnostics: RemoveObjectUiDiagnostics | null;
 }>;
 
-const EMPTY_SELECTION: ReadonlySet<string> = new Set();
+export type BringForwardEditor = Readonly<{
+  editing: boolean;
+  committedIds: ReadonlySet<string>;
+  draftIds: ReadonlySet<string>;
+  scan: BringForwardScan | null;
+}>;
 
-const EMPTY_SESSION: BringForwardSession = Object.freeze({
-  snapshot: null,
-  selectedIds: EMPTY_SELECTION,
+export type BringForwardDisplayPhase = "idle" | "checking" | "show" | "hide";
+
+const EMPTY_IDS: ReadonlySet<string> = new Set();
+
+const EMPTY_EDITOR: BringForwardEditor = Object.freeze({
+  editing: false,
+  committedIds: EMPTY_IDS,
+  draftIds: EMPTY_IDS,
+  scan: null,
 });
 
-export function emptyBringForwardSession(): BringForwardSession {
-  return EMPTY_SESSION;
+export function emptyBringForwardEditor(): BringForwardEditor {
+  return EMPTY_EDITOR;
 }
 
 export function bringForwardImageIdentity(
@@ -89,68 +111,316 @@ export function assessBringForwardDisplay(input: Readonly<{
   return "show";
 }
 
-/**
- * Keep the last ready scan when REMOVE exits. A different room, generation,
- * ORIGINAL identity, or object list replaces it. An idle or loading observation
- * leaves the retained scan in place.
- */
-export function retainBringForwardSession(
-  session: BringForwardSession,
-  input: Readonly<{
-    roomId: string;
-    generationId: string;
-    observed: BringForwardObservation | null;
-  }>,
-): BringForwardSession {
-  const scoped = session.snapshot
-    && session.snapshot.roomId === input.roomId
-    && session.snapshot.generationId === input.generationId
-    ? session
-    : blank(session);
-  const observed = input.observed;
-  if (
-    !observed
-    || observed.phase !== "ready"
-    || observed.roomId !== input.roomId
-    || observed.generationId !== input.generationId
-  ) {
-    return scoped;
-  }
+export function bringForwardScanKey(input: Readonly<{
+  roomId: string;
+  generationId: string;
+  originalSha256: string;
+  originalWidth: number;
+  originalHeight: number;
+  vocabularyRevision: number;
+}>): string | null {
   const original = bringForwardImageIdentity({
-    sha256: observed.originalSha256,
-    width: observed.originalWidth,
-    height: observed.originalHeight,
+    sha256: input.originalSha256,
+    width: input.originalWidth,
+    height: input.originalHeight,
   });
-  if (!original) return scoped;
-  const snapshot = scoped.snapshot;
-  if (
-    snapshot
-    && sameImage(snapshot.original, original)
-    && sameObjectIds(snapshot.objects, observed.objects)
-  ) {
-    return scoped;
-  }
+  if (!original || !presentText(input.roomId) || !presentText(input.generationId)) return null;
+  if (!Number.isInteger(input.vocabularyRevision) || input.vocabularyRevision < 0) return null;
+  return [
+    input.roomId,
+    input.generationId,
+    original.sha256,
+    original.width,
+    original.height,
+    input.vocabularyRevision,
+  ].join("\0");
+}
+
+export function bringForwardDisplayKey(input: Readonly<{
+  roomId: string;
+  generationId: string;
+  backgroundUrl: string;
+  original: BringForwardImageIdentity;
+}>): string {
+  return [
+    input.roomId,
+    input.generationId,
+    input.backgroundUrl,
+    input.original.sha256,
+    input.original.width,
+    input.original.height,
+  ].join("\0");
+}
+
+export function toggleBringForwardId(ids: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  if (!presentText(id)) return ids;
+  const next = new Set(ids);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
+export function visibleBringForwardIds(editor: BringForwardEditor): ReadonlySet<string> {
+  return editor.editing ? editor.draftIds : editor.committedIds;
+}
+
+export function enterBringForward(editor: BringForwardEditor): BringForwardEditor {
+  if (editor.editing) return editor;
   return {
-    snapshot: {
-      roomId: input.roomId,
-      generationId: input.generationId,
-      original,
-      objects: observed.objects.slice(),
-    },
-    selectedIds: initialBringForwardSelection(observed.objects, original.width, original.height),
+    ...editor,
+    editing: true,
+    draftIds: new Set(editor.committedIds),
   };
 }
 
-export function initialBringForwardSelection(
-  objects: readonly RemoveObjectRecord[],
-  width: number,
-  height: number,
-): ReadonlySet<string> {
-  for (const object of objects) {
-    if (!object.eligibility.eligible || !maskFits(object.mask, width, height)) continue;
-    return new Set([object.id]);
+export function doneBringForward(editor: BringForwardEditor): BringForwardEditor {
+  if (!editor.editing) return editor;
+  return {
+    ...editor,
+    editing: false,
+    committedIds: editor.draftIds,
+  };
+}
+
+export function cancelBringForward(editor: BringForwardEditor): BringForwardEditor {
+  if (!editor.editing) return editor;
+  return {
+    ...editor,
+    editing: false,
+    draftIds: editor.committedIds,
+  };
+}
+
+export function scopeBringForwardEditor(
+  editor: BringForwardEditor,
+  scope: Readonly<{ roomId: string; generationId: string; vocabularyRevision: number }>,
+): BringForwardEditor {
+  const scan = editor.scan;
+  if (!scan) return editor;
+  if (
+    scan.roomId === scope.roomId
+    && scan.generationId === scope.generationId
+    && scan.vocabularyRevision === scope.vocabularyRevision
+  ) {
+    return editor;
   }
-  return EMPTY_SELECTION;
+  return EMPTY_EDITOR;
+}
+
+/**
+ * Keep a compatible scan without selecting anything. A new room, generation,
+ * ORIGINAL, vocabulary revision, or concept set drops the previous selection.
+ */
+export function installBringForwardScan(
+  editor: BringForwardEditor,
+  scan: BringForwardScan,
+): BringForwardEditor {
+  const current = editor.scan;
+  if (
+    current
+    && current.roomId === scan.roomId
+    && current.generationId === scan.generationId
+    && sameImage(current.original, scan.original)
+    && current.vocabularyRevision === scan.vocabularyRevision
+    && current.conceptSet === scan.conceptSet
+    && sameObjectIds(current.objects, scan.objects)
+  ) {
+    return editor;
+  }
+  const compatible = Boolean(
+    current
+    && current.roomId === scan.roomId
+    && current.generationId === scan.generationId
+    && sameImage(current.original, scan.original)
+    && current.vocabularyRevision === scan.vocabularyRevision
+    && current.conceptSet === scan.conceptSet,
+  );
+  const committedIds = compatible ? idsOnScan(editor.committedIds, scan) : EMPTY_IDS;
+  const draftIds = editor.editing
+    ? (compatible ? idsOnScan(editor.draftIds, scan) : EMPTY_IDS)
+    : committedIds;
+  return {
+    editing: editor.editing,
+    committedIds,
+    draftIds,
+    scan: {
+      ...scan,
+      objects: scan.objects.slice(),
+    },
+  };
+}
+
+export function bringForwardStatusMessage(input: Readonly<{
+  display: BringForwardDisplayPhase;
+  scanReady: boolean;
+  objectCount: number;
+  error: string | null;
+}>): string {
+  if (input.error) return input.error;
+  if (input.display === "hide") return BRING_FORWARD_BACKGROUND_MESSAGE;
+  if (input.display === "idle" || input.display === "checking") return BRING_FORWARD_CHECKING_MESSAGE;
+  if (!input.scanReady) return BRING_FORWARD_FINDING_MESSAGE;
+  if (input.objectCount === 0) return BRING_FORWARD_EMPTY_MESSAGE;
+  return BRING_FORWARD_READY_MESSAGE;
+}
+
+export function readBringForwardConceptSet(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const value = (payload as { conceptSet?: unknown }).conceptSet;
+  if (typeof value !== "string") return null;
+  const conceptSet = value.trim();
+  if (conceptSet.length < 1 || conceptSet.length > 80) return null;
+  return conceptSet;
+}
+
+const scans = new Map<string, BringForwardScan>();
+const failures = new Map<string, string>();
+const inflight = new Map<string, Promise<BringForwardScan | null>>();
+const listeners = new Set<() => void>();
+let scanVersion = 0;
+
+export function subscribeBringForwardScans(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+export function bringForwardScanVersion(): number {
+  return scanVersion;
+}
+
+export function readBringForwardScan(key: string): BringForwardScan | null {
+  return scans.get(key) ?? null;
+}
+
+export function readBringForwardScanError(key: string): string | null {
+  return failures.get(key) ?? null;
+}
+
+export function rememberBringForwardScan(scan: BringForwardScan): void {
+  const key = bringForwardScanKey({
+    roomId: scan.roomId,
+    generationId: scan.generationId,
+    originalSha256: scan.original.sha256,
+    originalWidth: scan.original.width,
+    originalHeight: scan.original.height,
+    vocabularyRevision: scan.vocabularyRevision,
+  });
+  if (!key || scan.conceptSet.trim().length === 0) return;
+  const existing = scans.get(key);
+  if (
+    existing
+    && existing.conceptSet === scan.conceptSet
+    && sameObjectIds(existing.objects, scan.objects)
+  ) {
+    return;
+  }
+  scans.set(key, { ...scan, objects: scan.objects.slice() });
+  failures.delete(key);
+  publishScans();
+}
+
+export function resetBringForwardScansForTests(): void {
+  scans.clear();
+  failures.clear();
+  inflight.clear();
+  scanVersion = 0;
+}
+
+/**
+ * One authorized segmentation request per room, generation, ORIGINAL, and
+ * vocabulary revision. A cached or in-flight result is reused. Failures retry
+ * on the next call. This does not bypass the route's sign-in, ownership, or
+ * quota checks.
+ */
+export function loadBringForwardScan(input: Readonly<{
+  identity: RemoveObjectUiIdentity;
+  fetchImpl?: typeof fetch;
+}>): Promise<BringForwardScan | null> {
+  const key = bringForwardScanKey(input.identity);
+  if (!key) return Promise.resolve(null);
+  const cached = scans.get(key);
+  if (cached) return Promise.resolve(cached);
+  const pending = inflight.get(key);
+  if (pending) return pending;
+  const promise = requestBringForwardScan(input.identity, key, input.fetchImpl).finally(() => {
+    inflight.delete(key);
+  });
+  inflight.set(key, promise);
+  return promise;
+}
+
+async function requestBringForwardScan(
+  identity: RemoveObjectUiIdentity,
+  key: string,
+  fetchImpl: typeof fetch | undefined,
+): Promise<BringForwardScan | null> {
+  failures.delete(key);
+  publishScans();
+  try {
+    const result = await requestRemoveObjects({
+      identity,
+      signal: new AbortController().signal,
+      fetchImpl,
+    });
+    const read = readRemoveObjectUiPayload(result.payload, identity);
+    if (!read.ok) {
+      failures.set(key, read.reason);
+      publishScans();
+      return null;
+    }
+    const conceptSet = readBringForwardConceptSet(result.payload);
+    if (!conceptSet) {
+      failures.set(key, BRING_FORWARD_UNUSABLE_MESSAGE);
+      publishScans();
+      return null;
+    }
+    const elapsedMs = Number.isFinite(result.elapsedMs) && result.elapsedMs >= 0
+      ? Math.round(result.elapsedMs)
+      : 0;
+    const scan: BringForwardScan = {
+      roomId: identity.roomId,
+      generationId: identity.generationId,
+      original: {
+        sha256: identity.originalSha256,
+        width: identity.originalWidth,
+        height: identity.originalHeight,
+      },
+      vocabularyRevision: identity.vocabularyRevision,
+      conceptSet,
+      objects: read.objects.slice(),
+      diagnostics: { ...read.diagnostics, elapsedMs },
+    };
+    scans.set(key, scan);
+    failures.delete(key);
+    publishScans();
+    return scan;
+  } catch {
+    failures.set(key, BRING_FORWARD_NO_RESPONSE_MESSAGE);
+    publishScans();
+    return null;
+  }
+}
+
+function publishScans(): void {
+  scanVersion += 1;
+  for (const listener of listeners) listener();
+}
+
+function idsOnScan(ids: ReadonlySet<string>, scan: BringForwardScan): ReadonlySet<string> {
+  let changed = false;
+  const next = new Set<string>();
+  for (const id of ids) {
+    const object = scan.objects.find((item) => item.id === id);
+    if (!object || !object.eligibility.eligible || !maskFits(object.mask, scan.original.width, scan.original.height)) {
+      changed = true;
+      continue;
+    }
+    next.add(id);
+  }
+  if (!changed && next.size === ids.size) return ids;
+  return next;
 }
 
 /**
@@ -198,11 +468,6 @@ export function compositeBringForwardRgba(input: Readonly<{
     }
   }
   return covered ? output : null;
-}
-
-function blank(session: BringForwardSession): BringForwardSession {
-  if (session.snapshot === null && session.selectedIds.size === 0) return session;
-  return EMPTY_SESSION;
 }
 
 function sameImage(left: BringForwardImageIdentity, right: BringForwardImageIdentity): boolean {

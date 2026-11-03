@@ -4,6 +4,7 @@ import { useCallback, useLayoutEffect, useRef } from "react";
 
 import { StageProductCard } from "@/components/stage/StageProductCard";
 import { StageProductDetail } from "@/components/stage/StageProductDetail";
+import { useBringForward } from "@/components/stage/BringForwardSession";
 import { useRemoveAlignment } from "@/components/stage/RemoveAlignmentSession";
 import {
   allStageProducts,
@@ -29,9 +30,9 @@ const FOCUS =
 
 export function StageCatalogDrawer() {
   const stage = useStageEditor();
-  const placementOpen = removeInspectionAllowsCatalogPlacement(
-    useRemoveAlignment()?.active === true,
-  );
+  const removeActive = useRemoveAlignment()?.active === true;
+  const bringForwardEditing = useBringForward()?.editing === true;
+  const placementOpen = removeInspectionAllowsCatalogPlacement(removeActive || bringForwardEditing);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const pendingScrollTopRef = useRef<number | null>(null);
   const products = allStageProducts(stage.extraProducts, stage.catalog);
