@@ -32,7 +32,11 @@ import {
   type CleanupCandidatePhase,
 } from "@/lib/vibode-stage/remove-cleanup-review";
 import type { CleanupStatusView } from "@/lib/vibode-stage/remove-cleanup-jobs/types";
-import { cleanupHistoryRoomToRefresh } from "@/lib/vibode-stage/remove-cleanup-history-ui";
+import {
+  CLEANUP_HISTORY_ACTIVATION_ERROR,
+  type CleanupFinalizeResult,
+  planCleanupAcceptance,
+} from "@/lib/vibode-stage/remove-readiness";
 import type { RemoveObjectUiState } from "@/lib/vibode-stage/remove-object-ui";
 
 const FOCUS =
@@ -45,9 +49,13 @@ const POLL_INTERVAL_MS = 2000;
 export function RemoveCleanupGeneration({
   objectUi,
   onHistoryAccepted,
+  onAcceptancePending,
+  onActivationBlocked,
 }: {
   objectUi: RemoveObjectUiState;
-  onHistoryAccepted?: (roomId: string) => void | Promise<void>;
+  onHistoryAccepted?: (roomId: string, assetId: string) => Promise<CleanupFinalizeResult>;
+  onAcceptancePending?: (pending: boolean) => void;
+  onActivationBlocked?: (assetId: string | null) => void;
 }) {
   const identity = objectUi.phase === "ready" ? objectUi.identity : null;
   const hidden = objectUi.phase === "ready"
@@ -64,6 +72,7 @@ export function RemoveCleanupGeneration({
   const [accepting, setAccepting] = useState(false);
   const acceptLock = useRef(false);
   const refreshedHistoryJobIds = useRef(new Set<string>());
+  const mountedRef = useRef(true);
   const [review, setReview] = useState<CleanupReviewMode>("compare");
   const [viewerOpen, setViewerOpen] = useState(false);
   const [loadedCandidate, setLoadedCandidate] = useState<{ jobId: string; attempt: number; url: string } | null>(null);
@@ -237,41 +246,69 @@ export function RemoveCleanupGeneration({
     }
   }
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   async function acceptIntoHistory() {
     if (!job || job.accepted || acceptLock.current) return;
     acceptLock.current = true;
     setAccepting(true);
     setError(null);
+    onAcceptancePending?.(true);
+    let handedOff = false;
     try {
       const response = await fetch(`/api/vibode/admin/remove-cleanup-jobs/${job.jobId}/accept`, {
         method: "POST",
         credentials: "same-origin",
         cache: "no-store",
       });
-      const payload = await response.json().catch(() => null) as { job?: CleanupStatusView; error?: string; activated?: boolean } | null;
-      const roomToRefresh = cleanupHistoryRoomToRefresh({
+      const payload = await response.json().catch(() => null) as {
+        job?: CleanupStatusView;
+        error?: string;
+        activated?: boolean;
+        assetId?: string;
+      } | null;
+      const decision = planCleanupAcceptance({
         responseOk: response.ok && Boolean(payload?.job),
         activated: payload?.activated === true,
         roomId: payload?.job?.roomId ?? null,
         jobId: payload?.job?.jobId ?? null,
+        assetId: payload?.assetId ?? payload?.job?.historyAssetId ?? null,
         refreshedJobIds: refreshedHistoryJobIds.current,
       });
-      if (!response.ok || !payload?.job || payload.activated === true) {
+      if (decision.type === "rejected" || decision.type === "activated-unexpected") {
         setError(typeof payload?.error === "string" ? payload.error : "Clean Up could not be saved to History.");
+        return;
+      }
+      if (!payload?.job) {
+        setError("Clean Up could not be saved to History.");
         return;
       }
       setConfirmingAccept(false);
       publishCleanupJob(payload.job, setJob, setPhase);
-      if (!roomToRefresh) return;
-      refreshedHistoryJobIds.current.add(payload.job.jobId);
+      if (decision.type === "already-refreshed") return;
+      if (decision.type === "missing-asset") {
+        onActivationBlocked?.(null);
+        setError(CLEANUP_HISTORY_ACTIVATION_ERROR);
+        return;
+      }
+      refreshedHistoryJobIds.current.add(decision.jobId);
+      handedOff = true;
       try {
-        await onHistoryAccepted?.(roomToRefresh);
+        const result = await onHistoryAccepted?.(decision.roomId, decision.assetId) ?? "failed";
+        if (mountedRef.current && result === "failed") setError(CLEANUP_HISTORY_ACTIVATION_ERROR);
       } catch {
-        // The asset is already accepted. A manual History reload can show it.
+        if (mountedRef.current) setError(CLEANUP_HISTORY_ACTIVATION_ERROR);
+        onActivationBlocked?.(decision.assetId);
       }
     } finally {
       acceptLock.current = false;
-      setAccepting(false);
+      if (mountedRef.current) setAccepting(false);
+      if (!handedOff) onAcceptancePending?.(false);
     }
   }
 

@@ -95,6 +95,11 @@ import {
   type RemoveObjectUiState,
 } from "@/lib/vibode-stage/remove-object-ui";
 import {
+  CLEANUP_HISTORY_ACTIVATION_ERROR,
+  type CleanupFinalizeResult,
+  shouldApplyRemoveAlignmentLookup,
+} from "@/lib/vibode-stage/remove-readiness";
+import {
   REMOVE_VOCABULARY_SAVE_ERROR,
   REMOVE_VOCABULARY_SCAN_CONFIRMATION,
   applyRemoveVocabularySave,
@@ -163,7 +168,14 @@ type RemoveAlignmentContextValue = Readonly<{
   downloadCleanupExport: () => void;
   noteDisplayedSize: (artifact: "original" | "empty", size: DisplayedSize) => void;
   noteMaskSummary: (summary: RemoveMaskSummary | null) => void;
-  onCleanupHistoryAccepted?: (roomId: string) => void | Promise<void>;
+  onCleanupHistoryAccepted: (roomId: string, assetId: string) => Promise<CleanupFinalizeResult>;
+  noteCleanupAcceptancePending: (pending: boolean) => void;
+  noteCleanupActivationBlocked: (assetId: string | null) => void;
+  cleanupFinalizing: boolean;
+  cleanupActivationBlocked: boolean;
+  cleanupActivationError: string | null;
+  cleanupActivationAssetId: string | null;
+  showSavedCleanupImage: () => void;
   saveRemoveEdits: () => void;
   removeSavePhase: "idle" | "saving" | "error";
   removeSaveError: string | null;
@@ -198,6 +210,7 @@ export function RemoveAlignmentProvider({
   roomId,
   activeHistoryAssetId = null,
   activeHistoryImageUrl = null,
+  alignmentGenerationId = null,
   onCleanupHistoryAccepted,
   onRemoveEditSaved,
   children,
@@ -205,7 +218,12 @@ export function RemoveAlignmentProvider({
   roomId: string | null;
   activeHistoryAssetId?: string | null;
   activeHistoryImageUrl?: string | null;
-  onCleanupHistoryAccepted?: (roomId: string) => void | Promise<void>;
+  alignmentGenerationId?: string | null;
+  onCleanupHistoryAccepted?: (
+    roomId: string,
+    assetId: string,
+    stillCurrent: () => boolean,
+  ) => Promise<void>;
   onRemoveEditSaved?: (roomId: string, assetId: string) => Promise<void>;
   children: ReactNode;
 }) {
@@ -215,6 +233,8 @@ export function RemoveAlignmentProvider({
     reduceRemoveInspection,
     initialRemoveInspectionState(),
   );
+  const inspectionRef = useRef(inspection);
+  inspectionRef.current = inspection;
   const [displayed, setDisplayed] = useState<Readonly<{
     original: DisplayedSize | null;
     empty: DisplayedSize | null;
@@ -236,12 +256,24 @@ export function RemoveAlignmentProvider({
   }>(null);
   const ticketRef = useRef(0);
   const saveLock = useRef(false);
+  const cleanupFinalizingRef = useRef(false);
+  const cleanupActivationRef = useRef<Readonly<{ roomId: string | null; assetId: string | null }> | null>(null);
+  const cleanupFinalizeLock = useRef(false);
+  const cleanupExitLock = useRef(false);
+  const alignmentRequestSerial = useRef(0);
+  const alignmentGenerationRef = useRef<string | null>(alignmentGenerationId);
+  const onCleanupHistoryAcceptedRef = useRef(onCleanupHistoryAccepted);
+  const exitRef = useRef<() => void>(() => {});
   const frozenKeepIdRef = useRef<string | null>(null);
   const [frozenKeep, setFrozenKeep] = useState<Readonly<{ assetId: string; imageUrl: string }> | null>(null);
   const [keepIdentity, setKeepIdentity] = useState<RemoveKeepIdentity | null>(null);
   const [keepShaConflict, setKeepShaConflict] = useState(false);
   const [removeSavePhase, setRemoveSavePhase] = useState<"idle" | "saving" | "error">("idle");
   const [removeSaveError, setRemoveSaveError] = useState<string | null>(null);
+  const [cleanupFinalizing, setCleanupFinalizing] = useState(false);
+  const [cleanupActivationBlocked, setCleanupActivationBlocked] = useState(false);
+  const [cleanupActivationError, setCleanupActivationError] = useState<string | null>(null);
+  const [cleanupActivationAssetId, setCleanupActivationAssetId] = useState<string | null>(null);
   const [vocabularyRevision, setVocabularyRevision] = useState(0);
   const [vocabularyView, setVocabularyView] = useState<RemoveVocabularyProfileResponse | null>(null);
   const [vocabularyConfirm, setVocabularyConfirm] = useState<RemoveVocabularyConfirmState>(
@@ -258,20 +290,51 @@ export function RemoveAlignmentProvider({
     setVocabularyRevision(0);
     setVocabularyView(null);
     setVocabularyConfirm(initialRemoveVocabularyConfirmState());
+    cleanupFinalizingRef.current = false;
+    cleanupActivationRef.current = null;
+    cleanupFinalizeLock.current = false;
+    cleanupExitLock.current = false;
+    setCleanupFinalizing(false);
+    setCleanupActivationBlocked(false);
+    setCleanupActivationError(null);
+    setCleanupActivationAssetId(null);
     dispatch({ type: "exit" });
   }
 
+  alignmentGenerationRef.current = alignmentGenerationId;
+  onCleanupHistoryAcceptedRef.current = onCleanupHistoryAccepted;
+
+  const commitLookup = useCallback((
+    next: RemoveAlignmentLookup,
+    request: Readonly<{ roomId: string; serial: number; generationId: string | null }>,
+  ) => {
+    const reportGenerationId = next.access === "ready" ? next.report.generationId : null;
+    if (!shouldApplyRemoveAlignmentLookup({
+      requestRoomId: request.roomId,
+      currentRoomId: roomRef.current,
+      requestSerial: request.serial,
+      currentSerial: alignmentRequestSerial.current,
+      requestedGenerationId: request.generationId,
+      reportGenerationId,
+      access: next.access,
+    })) return;
+    setLookup(next);
+  }, []);
+
   const refresh = useCallback(async (nextRoomId: string) => {
+    const serial = alignmentRequestSerial.current + 1;
+    alignmentRequestSerial.current = serial;
+    const generationId = alignmentGenerationRef.current;
     try {
       const next = await loadRemoveAlignment(nextRoomId);
-      if (roomRef.current === nextRoomId) setLookup(next);
+      commitLookup(next, { roomId: nextRoomId, serial, generationId });
       return next;
     } catch {
       const hidden: RemoveAlignmentLookup = { access: "hidden" };
-      if (roomRef.current === nextRoomId) setLookup(hidden);
+      commitLookup(hidden, { roomId: nextRoomId, serial, generationId });
       return hidden;
     }
-  }, []);
+  }, [commitLookup]);
 
   useEffect(() => {
     roomRef.current = roomId;
@@ -280,21 +343,26 @@ export function RemoveAlignmentProvider({
   useEffect(() => {
     if (!roomId) return undefined;
     const activeRoomId = roomId;
+    const serial = alignmentRequestSerial.current + 1;
+    alignmentRequestSerial.current = serial;
+    const requestedGenerationId = alignmentGenerationId;
     let cancelled = false;
     void loadRemoveAlignment(activeRoomId).then((next) => {
-      if (!cancelled && roomRef.current === activeRoomId) setLookup(next);
+      if (cancelled) return;
+      commitLookup(next, { roomId: activeRoomId, serial, generationId: requestedGenerationId });
     }).catch(() => {
-      if (!cancelled && roomRef.current === activeRoomId) setLookup({ access: "hidden" });
+      if (cancelled) return;
+      commitLookup({ access: "hidden" }, { roomId: activeRoomId, serial, generationId: requestedGenerationId });
     });
     return () => {
       cancelled = true;
     };
-  }, [roomId]);
+  }, [alignmentGenerationId, commitLookup, roomId]);
 
   useEffect(() => {
     if (!inspection.active) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !saveLock.current) dispatch({ type: "exit" });
+      if (event.key === "Escape" && !saveLock.current && !cleanupFinalizingRef.current) exitRef.current();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -446,12 +514,81 @@ export function RemoveAlignmentProvider({
   const enter = useCallback(() => {
     const requested = roomRef.current;
     if (!requested) return;
+    const serial = alignmentRequestSerial.current;
     void refresh(requested).then((next) => {
       if (roomRef.current !== requested || next.access !== "ready") return;
+      if (alignmentRequestSerial.current !== serial + 1) return;
+      cleanupExitLock.current = false;
       dispatch({ type: "enter" });
     });
   }, [refresh]);
-  const exit = useCallback(() => dispatch({ type: "exit" }), []);
+  const clearCleanupActivation = useCallback(() => {
+    cleanupFinalizingRef.current = false;
+    cleanupActivationRef.current = null;
+    cleanupFinalizeLock.current = false;
+    setCleanupFinalizing(false);
+    setCleanupActivationBlocked(false);
+    setCleanupActivationError(null);
+    setCleanupActivationAssetId(null);
+  }, []);
+  const exit = useCallback(() => {
+    clearCleanupActivation();
+    dispatch({ type: "exit" });
+  }, [clearCleanupActivation]);
+  exitRef.current = exit;
+  const blockCleanupPublication = useCallback((assetId: string | null) => {
+    cleanupActivationRef.current = { roomId: roomRef.current, assetId };
+    setCleanupActivationBlocked(true);
+    setCleanupActivationAssetId(assetId);
+    setCleanupActivationError(CLEANUP_HISTORY_ACTIVATION_ERROR);
+    setRemoveSaveError(CLEANUP_HISTORY_ACTIVATION_ERROR);
+    setRemoveSavePhase("error");
+  }, []);
+  const noteCleanupAcceptancePending = useCallback((pending: boolean) => {
+    cleanupFinalizingRef.current = pending;
+    setCleanupFinalizing(pending);
+  }, []);
+  const finalizeCleanupHistory = useCallback(async (
+    acceptedRoomId: string,
+    assetId: string,
+  ): Promise<CleanupFinalizeResult> => {
+    if (cleanupFinalizeLock.current) return "finalized";
+    const sessionSerial = inspectionRef.current.sessionSerial;
+    const stillCurrent = () =>
+      roomRef.current === acceptedRoomId
+      && inspectionRef.current.sessionSerial === sessionSerial
+      && inspectionRef.current.active;
+    if (!stillCurrent()) return "stale";
+    const activate = onCleanupHistoryAcceptedRef.current;
+    if (!activate) {
+      blockCleanupPublication(assetId);
+      return "failed";
+    }
+    cleanupFinalizeLock.current = true;
+    cleanupFinalizingRef.current = true;
+    setCleanupFinalizing(true);
+    try {
+      await activate(acceptedRoomId, assetId, stillCurrent);
+      if (!stillCurrent()) return "stale";
+      if (cleanupExitLock.current) return "finalized";
+      cleanupExitLock.current = true;
+      exit();
+      return "finalized";
+    } catch {
+      if (!stillCurrent()) return "stale";
+      blockCleanupPublication(assetId);
+      return "failed";
+    } finally {
+      cleanupFinalizeLock.current = false;
+      cleanupFinalizingRef.current = false;
+      setCleanupFinalizing(false);
+    }
+  }, [blockCleanupPublication, exit]);
+  const showSavedCleanupImage = useCallback(() => {
+    const pending = cleanupActivationRef.current;
+    if (!pending?.roomId || !pending.assetId) return;
+    void finalizeCleanupHistory(pending.roomId, pending.assetId);
+  }, [finalizeCleanupHistory]);
   const setOpacity = useCallback((opacity: number) => {
     dispatch({ type: "opacity", opacity });
   }, []);
@@ -643,6 +780,11 @@ export function RemoveAlignmentProvider({
 
   const saveRemoveEdits = useCallback(() => {
     if (saveLock.current) return;
+    if (cleanupFinalizingRef.current || cleanupActivationRef.current) {
+      setRemoveSaveError(CLEANUP_HISTORY_ACTIVATION_ERROR);
+      setRemoveSavePhase("error");
+      return;
+    }
     const report = lookup.access === "ready" ? lookup.report : null;
     const hold = maskHoldRef.current;
     if (
@@ -876,7 +1018,14 @@ export function RemoveAlignmentProvider({
     downloadCleanupExport,
     noteDisplayedSize,
     noteMaskSummary,
-    onCleanupHistoryAccepted,
+    onCleanupHistoryAccepted: finalizeCleanupHistory,
+    noteCleanupAcceptancePending,
+    noteCleanupActivationBlocked: blockCleanupPublication,
+    cleanupFinalizing,
+    cleanupActivationBlocked,
+    cleanupActivationError,
+    cleanupActivationAssetId,
+    showSavedCleanupImage,
     saveRemoveEdits,
     removeSavePhase,
     removeSaveError,
@@ -928,7 +1077,14 @@ export function RemoveAlignmentProvider({
     noteDisplayedSize,
     noteMaskSummary,
     objectUi,
-    onCleanupHistoryAccepted,
+    finalizeCleanupHistory,
+    noteCleanupAcceptancePending,
+    blockCleanupPublication,
+    cleanupFinalizing,
+    cleanupActivationBlocked,
+    cleanupActivationError,
+    cleanupActivationAssetId,
+    showSavedCleanupImage,
     openCleanupExport,
     originalDisagreement,
     removeSaveError,
@@ -1117,6 +1273,10 @@ function RemoveInspectionPanel({ session }: { session: RemoveAlignmentContextVal
 }
 
 function RemoveInspectionFooter({ session }: { session: RemoveAlignmentContextValue }) {
+  const doneBlocked = session.removeSavePhase === "saving"
+    || session.cleanupFinalizing
+    || session.cleanupActivationBlocked;
+  const cancelBlocked = session.removeSavePhase === "saving" || session.cleanupFinalizing;
   return (
     <div className="min-w-0 shrink-0 break-words border-t border-neutral-800 p-3" data-remove-footer="true">
       <button
@@ -1134,10 +1294,10 @@ function RemoveInspectionFooter({ session }: { session: RemoveAlignmentContextVa
       <button
         type="button"
         data-remove-objects="done"
-        disabled={session.removeSavePhase === "saving"}
+        disabled={doneBlocked}
         onClick={session.saveRemoveEdits}
         className={`mt-2 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
-          session.removeSavePhase === "saving"
+          doneBlocked
             ? "border-neutral-900 bg-neutral-950 text-neutral-600"
             : "border-neutral-200 bg-neutral-100 text-neutral-950 hover:bg-white"
         }`}
@@ -1147,13 +1307,34 @@ function RemoveInspectionFooter({ session }: { session: RemoveAlignmentContextVa
       <button
         type="button"
         data-remove-edit="cancel"
-        disabled={session.removeSavePhase === "saving"}
+        disabled={cancelBlocked}
         onClick={session.exit}
         className={`mt-2 ml-1 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:border-neutral-900 disabled:bg-neutral-950 disabled:text-neutral-600 ${FOCUS}`}
       >
         Cancel
       </button>
-      {session.removeSaveError ? (
+      {session.cleanupActivationError ? (
+        <div className="mt-2" data-remove-cleanup-activation="recovery">
+          <p className="text-[11px] leading-relaxed text-red-300" role="alert" data-remove-cleanup-activation="error">
+            {session.cleanupActivationError}
+          </p>
+          {session.cleanupActivationAssetId ? (
+            <button
+              type="button"
+              data-remove-cleanup-activation="show-saved"
+              disabled={session.cleanupFinalizing}
+              onClick={() => void session.showSavedCleanupImage()}
+              className={`mt-2 rounded-md border px-2 py-1 text-[11px] ${FOCUS} ${
+                session.cleanupFinalizing
+                  ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+                  : "border-neutral-500 text-neutral-100"
+              }`}
+            >
+              Show saved image
+            </button>
+          ) : null}
+        </div>
+      ) : session.removeSaveError ? (
         <p className="mt-2 text-[11px] leading-relaxed text-red-300" role="alert" data-remove-edit="error">
           {session.removeSaveError}
         </p>
@@ -1518,6 +1699,8 @@ function ObjectControls({ session }: { session: RemoveAlignmentContextValue }) {
           key="remove-cleanup-generation"
           objectUi={session.objectUi}
           onHistoryAccepted={session.onCleanupHistoryAccepted}
+          onAcceptancePending={session.noteCleanupAcceptancePending}
+          onActivationBlocked={session.noteCleanupActivationBlocked}
         />
       </div>
       {simple ? null : (
