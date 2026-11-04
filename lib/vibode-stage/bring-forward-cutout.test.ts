@@ -498,9 +498,16 @@ test("a cached scan is shared across session serials and is not requested twice"
   assert.equal(readBringForwardScan(key ?? ""), first);
   resetBringForwardScansForTests();
   let posts = 0;
+  let lookups = 0;
   const failing: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.startsWith("/api/vibode/bring-forward")) {
+      lookups += 1;
+      assert.equal(init?.method, "GET");
+      return new Response(JSON.stringify({ recovery: "empty" }), { status: 200 });
+    }
     posts += 1;
-    assert.equal(String(input), "/api/vibode/admin/remove-objects");
+    assert.equal(url, "/api/vibode/admin/remove-objects");
     assert.equal(init?.method, "POST");
     return new Response(JSON.stringify({
       usable: false,
@@ -512,6 +519,7 @@ test("a cached scan is shared across session serials and is not requested twice"
     loadBringForwardScan({ identity: identity(), fetchImpl: failing }),
   ]);
   assert.equal(posts, 1);
+  assert.equal(lookups, 1);
   assert.equal(left, null);
   assert.equal(right, null);
   assert.equal(bringForwardStatusMessage({
@@ -583,7 +591,9 @@ test("the foreground canvas is mounted above the furniture frame without a secon
   assert.doesNotMatch(assess, /requestRemoveObjects|loadBringForwardScan/);
   assert.match(route, /readRemoveActor/);
   assert.match(route, /reserveSegmentation/);
-  assert.doesNotMatch(route, /bringForward|bring-forward/);
+  assert.match(route, /handleRemoveObjectsAdmin/);
+  assert.match(route, /storeScan: persistValidatedSegmentationSnapshot/);
+  assert.doesNotMatch(route, /requestRemoveObjects/);
   assert.match(cutout, /unpackRemoveMask/);
   assert.doesNotMatch(cutout, /initialBringForwardSelection|resampleCoverageToOriginal|dilateRemoveCoverage|roboflow|WebGLRenderer/);
 });

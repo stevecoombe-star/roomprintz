@@ -334,3 +334,60 @@ test("the provider scene keeps the cutout and the result stamps it back on", asy
   });
   assert.equal(mismatched.ok, false);
 });
+
+test("Harmonize waits for a saved foreground and stays legacy when none is saved", () => {
+  const loading = readHarmonizeForegroundRequest({
+    session: {
+      editing: false,
+      recovery: "loading",
+      committedIds: new Set(),
+      verified: null,
+      scan: null,
+      display: "idle",
+    },
+    roomId: ROOM,
+    generationId: GENERATION,
+  });
+  assert.equal(loading.ok, false);
+  if (!loading.ok) {
+    assert.equal(loading.reason, "restoring");
+    assert.equal(
+      harmonizeForegroundFailureMessage(loading.reason),
+      "Bring Forward is still loading. Wait before Harmonize.",
+    );
+  }
+  const failed = readHarmonizeForegroundRequest({
+    session: {
+      editing: false,
+      recovery: "failed",
+      committedIds: new Set(["sofa"]),
+      verified: null,
+      scan: null,
+      display: "idle",
+    },
+    roomId: ROOM,
+    generationId: GENERATION,
+  });
+  assert.equal(failed.ok, false);
+  if (!failed.ok) {
+    assert.equal(failed.reason, "unrestored");
+    assert.equal(
+      harmonizeForegroundFailureMessage(failed.reason),
+      "Bring Forward could not be restored. Harmonize was not started.",
+    );
+  }
+  const empty = readHarmonizeForegroundRequest({
+    session: {
+      editing: false,
+      recovery: "ready",
+      committedIds: new Set(),
+      verified: null,
+      scan: null,
+      display: "idle",
+    },
+    roomId: ROOM,
+    generationId: GENERATION,
+  });
+  assert.equal(empty.ok, true);
+  if (empty.ok) assert.equal(empty.snapshot, null);
+});

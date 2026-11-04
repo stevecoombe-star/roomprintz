@@ -3,13 +3,15 @@
  *
  * A cutout is verified ORIGINAL pixels with mask coverage copied into alpha.
  * Selection belongs to Bring Forward. REMOVE's hidden-object set is not an input.
- * Nothing is selected until the user clicks an outline. Done keeps that set for
- * this editor session. Cancel restores the set from before the edit.
+ * Nothing is selected until the user clicks an outline. Done commits that set
+ * and the caller persists it. Cancel restores the set from before the edit
+ * and does not write. A saved set is bound to the snapshot it was made from.
  */
 
 import { classifyAfcR3cImagePairCompatibility } from "@/app/admin/3d-room-lab/research/afc-r3c-image-pair-compatibility";
 import { isCleanupHistoryAsset } from "@/lib/vibode-stage/remove-cleanup-history-ui";
 import { isRemoveHistoryAsset } from "@/lib/vibode-stage/remove-edit";
+import { requestStoredBringForwardScan } from "@/lib/vibode-stage/bring-forward-store";
 import {
   readRemoveObjectUiPayload,
   requestRemoveObjects,
@@ -32,6 +34,9 @@ export const BRING_FORWARD_READY_MESSAGE =
   "Click a yellow outline to bring it forward. Click a blue outline to put it back.";
 export const BRING_FORWARD_UNUSABLE_MESSAGE = "Object detection returned an unusable result.";
 export const BRING_FORWARD_NO_RESPONSE_MESSAGE = "Object detection did not respond. The room is unchanged.";
+export const BRING_FORWARD_SAVE_MESSAGE = "Bring Forward could not be saved. Your selection is still here.";
+export const BRING_FORWARD_SAVING_MESSAGE = "Saving Bring Forward…";
+export const BRING_FORWARD_RESTORE_MESSAGE = "Saved foreground objects could not be loaded. The room is unchanged.";
 
 export type BringForwardImageIdentity = Readonly<{
   sha256: string;
@@ -352,6 +357,7 @@ export function readBringForwardConceptSet(payload: unknown): string | null {
 const scans = new Map<string, BringForwardScan>();
 const failures = new Map<string, string>();
 const inflight = new Map<string, Promise<BringForwardScan | null>>();
+const selections = new Map<string, { revision: number; ids: ReadonlySet<string> }>();
 const listeners = new Set<() => void>();
 let scanVersion = 0;
 
@@ -397,18 +403,102 @@ export function rememberBringForwardScan(scan: BringForwardScan): void {
   publishScans();
 }
 
+export function rememberBringForwardSelection(
+  key: string,
+  revision: number,
+  ids: readonly string[],
+): void {
+  if (!key || !Number.isInteger(revision) || revision < 0) return;
+  const current = selections.get(key);
+  const next = new Set(ids);
+  if (current && current.revision > revision) return;
+  if (current && current.revision === revision && sameIdSet(current.ids, next)) return;
+  selections.set(key, { revision, ids: next });
+  publishScans();
+}
+
+export function readBringForwardSelection(key: string): Readonly<{
+  revision: number;
+  ids: ReadonlySet<string>;
+}> | null {
+  return selections.get(key) ?? null;
+}
+
 export function resetBringForwardScansForTests(): void {
   scans.clear();
   failures.clear();
   inflight.clear();
+  selections.clear();
   scanVersion = 0;
 }
 
 /**
- * One authorized segmentation request per room, generation, ORIGINAL, and
- * vocabulary revision. A cached or in-flight result is reused. Failures retry
- * on the next call. This does not bypass the route's sign-in, ownership, or
- * quota checks.
+ * Put a saved selection back on its own snapshot. A newer revision wins.
+ * An id that is not on this snapshot is refused, and the editor is left unchanged
+ * by the caller. Editing is never overwritten.
+ */
+export function restoreBringForwardSelection(
+  editor: BringForwardEditor,
+  scan: BringForwardScan,
+  ids: readonly string[],
+  incomingRevision: number,
+  retainedRevision: number,
+  scope: Readonly<{ roomId: string; generationId: string }>,
+): BringForwardEditor | null {
+  if (scan.roomId !== scope.roomId || scan.generationId !== scope.generationId) return null;
+  if (!Number.isInteger(incomingRevision) || incomingRevision < retainedRevision) return editor;
+  if (editor.editing) return editor;
+  const unique = [...new Set(ids)];
+  const bound = idsOnScan(new Set(unique), scan);
+  if (bound.size !== unique.length) return null;
+  if (sameIdSet(editor.committedIds, bound) && sameIdSet(editor.draftIds, bound) && editor.scan === scan) {
+    return editor;
+  }
+  const committed = new Set(bound);
+  return {
+    editing: false,
+    committedIds: committed,
+    draftIds: new Set(committed),
+    scan,
+  };
+}
+
+export function scanFromStoredBringForward(input: Readonly<{
+  identity: RemoveObjectUiIdentity;
+  conceptSet: string;
+  objects: readonly RemoveObjectRecord[];
+  provider: string;
+  modelId: string;
+}>): BringForwardScan {
+  return {
+    roomId: input.identity.roomId,
+    generationId: input.identity.generationId,
+    original: {
+      sha256: input.identity.originalSha256,
+      width: input.identity.originalWidth,
+      height: input.identity.originalHeight,
+    },
+    vocabularyRevision: input.identity.vocabularyRevision,
+    conceptSet: input.conceptSet,
+    objects: input.objects.slice(),
+    diagnostics: {
+      provider: input.provider,
+      modelId: input.modelId,
+      maskCount: input.objects.length,
+      eligibleCount: input.objects.length,
+      suppressed: [],
+      rejected: [],
+      predictionRejections: [],
+      providerTimeSec: null,
+      elapsedMs: 0,
+    },
+  };
+}
+
+/**
+ * Memory, then a saved snapshot, then one authorized segmentation request.
+ * A saved snapshot does not reserve a Roboflow quota. A miss still uses the
+ * route's sign-in, ownership, and quota checks. Failures retry on the next call.
  */
 export function loadBringForwardScan(input: Readonly<{
   identity: RemoveObjectUiIdentity;
@@ -420,11 +510,39 @@ export function loadBringForwardScan(input: Readonly<{
   if (cached) return Promise.resolve(cached);
   const pending = inflight.get(key);
   if (pending) return pending;
-  const promise = requestBringForwardScan(input.identity, key, input.fetchImpl).finally(() => {
+  const promise = resolveBringForwardScan(input.identity, key, input.fetchImpl).finally(() => {
     inflight.delete(key);
   });
   inflight.set(key, promise);
   return promise;
+}
+
+async function resolveBringForwardScan(
+  identity: RemoveObjectUiIdentity,
+  key: string,
+  fetchImpl: typeof fetch | undefined,
+): Promise<BringForwardScan | null> {
+  const stored = await requestStoredBringForwardScan({
+    roomId: identity.roomId,
+    generationId: identity.generationId,
+    originalSha256: identity.originalSha256,
+    originalWidth: identity.originalWidth,
+    originalHeight: identity.originalHeight,
+    fetchImpl,
+  });
+  if (stored.recovery === "ready") {
+    const scan = scanFromStoredBringForward({
+      identity,
+      conceptSet: stored.conceptSet,
+      objects: stored.objects,
+      provider: stored.provider,
+      modelId: stored.modelId,
+    });
+    rememberBringForwardScan(scan);
+    rememberBringForwardSelection(key, stored.revision, stored.selectedIds);
+    return scans.get(key) ?? scan;
+  }
+  return requestBringForwardScan(identity, key, fetchImpl);
 }
 
 async function requestBringForwardScan(
@@ -575,6 +693,12 @@ function record(value: unknown): Record<string, unknown> | null {
 
 function sameImage(left: BringForwardImageIdentity, right: BringForwardImageIdentity): boolean {
   return left.sha256 === right.sha256 && left.width === right.width && left.height === right.height;
+}
+
+function sameIdSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) return false;
+  for (const id of left) if (!right.has(id)) return false;
+  return true;
 }
 
 function sameObjectIds(

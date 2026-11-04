@@ -2302,6 +2302,7 @@ function harmonizeForegroundSnapshot(
     session: session
       ? {
         editing: session.editing,
+        recovery: session.recovery,
         committedIds: session.editor.committedIds,
         verified: session.verified,
         scan: session.scan,

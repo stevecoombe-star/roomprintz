@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -20,6 +21,9 @@ import {
   bringForwardDisplayKey,
   bringForwardImageIdentity,
   type BringForwardBackgroundClaim,
+  BRING_FORWARD_RESTORE_MESSAGE,
+  BRING_FORWARD_SAVE_MESSAGE,
+  BRING_FORWARD_SAVING_MESSAGE,
   bringForwardScanKey,
   bringForwardScanVersion,
   bringForwardStatusMessage,
@@ -31,6 +35,11 @@ import {
   loadBringForwardScan,
   readBringForwardScan,
   readBringForwardScanError,
+  readBringForwardSelection,
+  rememberBringForwardScan,
+  rememberBringForwardSelection,
+  restoreBringForwardSelection,
+  scanFromStoredBringForward,
   scopeBringForwardEditor,
   subscribeBringForwardScans,
   toggleBringForwardId,
@@ -39,6 +48,7 @@ import {
   type BringForwardEditor,
   type BringForwardScan,
 } from "@/lib/vibode-stage/bring-forward-cutout";
+import { requestBringForwardSave, requestStoredBringForwardScan } from "@/lib/vibode-stage/bring-forward-store";
 import type { RemoveObjectUiIdentity } from "@/lib/vibode-stage/remove-object-ui";
 
 const FOCUS =
@@ -51,8 +61,12 @@ type VerifiedOriginal = Readonly<{
   height: number;
 }>;
 
+type BringForwardRecovery = "loading" | "ready" | "failed";
+
 type BringForwardContextValue = Readonly<{
   editing: boolean;
+  recovery: BringForwardRecovery;
+  saving: boolean;
   editor: BringForwardEditor;
   scan: BringForwardScan | null;
   visibleIds: ReadonlySet<string>;
@@ -107,13 +121,42 @@ export function BringForwardProvider({
     })
     : null;
   const cached = scanKey ? readBringForwardScan(scanKey) : null;
+  const storedSelection = scanKey ? readBringForwardSelection(scanKey) : null;
   void scanVersion;
   const [editor, setEditor] = useState<BringForwardEditor>(emptyBringForwardEditor);
   let nextEditor = removeActive && editor.editing ? cancelBringForward(editor) : editor;
   nextEditor = scopeBringForwardEditor(nextEditor, { roomId, generationId, vocabularyRevision });
   if (cached) nextEditor = installBringForwardScan(nextEditor, cached);
+  if (storedSelection && cached) {
+    const restored = restoreBringForwardSelection(
+      nextEditor,
+      cached,
+      [...storedSelection.ids],
+      storedSelection.revision,
+      storedSelection.revision,
+      { roomId, generationId },
+    );
+    if (restored) nextEditor = restored;
+  }
   if (nextEditor !== editor) setEditor(nextEditor);
   const activeEditor = nextEditor;
+  const alignmentSettled = alignment?.alignmentSettled === true;
+  const [recoveryState, setRecoveryState] = useState<{
+    key: string | null;
+    status: BringForwardRecovery;
+  }>({ key: null, status: "loading" });
+  if (recoveryState.key !== scanKey) {
+    setRecoveryState({ key: scanKey, status: "loading" });
+  }
+  const recovery: BringForwardRecovery = !roomId || (alignmentSettled && !scanKey)
+    ? "ready"
+    : !alignmentSettled
+      ? "loading"
+      : storedSelection
+        ? "ready"
+        : recoveryState.key === scanKey
+          ? recoveryState.status
+          : "loading";
   const [backgroundUrl, setBackgroundUrl] = useState<string | null>(null);
   const [verified, setVerified] = useState<VerifiedOriginal | null>(null);
   const [displayNote, setDisplayNote] = useState<Readonly<{
@@ -149,6 +192,108 @@ export function BringForwardProvider({
       vocabularyRevision,
     };
   }, [generationId, original, roomId, vocabularyRevision]);
+  const identityRef = useRef(identity);
+  const revisionRef = useRef(0);
+  const scanKeyRef = useRef(scanKey);
+  const editorRef = useRef(activeEditor);
+  useEffect(() => {
+    editorRef.current = activeEditor;
+    identityRef.current = identity;
+    if (scanKeyRef.current !== scanKey) {
+      scanKeyRef.current = scanKey;
+      revisionRef.current = storedSelection?.revision ?? 0;
+      return;
+    }
+    if (storedSelection && revisionRef.current < storedSelection.revision) {
+      revisionRef.current = storedSelection.revision;
+    }
+  }, [activeEditor, identity, scanKey, storedSelection]);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!identity || !scanKey) return undefined;
+    const requestKey = scanKey;
+    const requestIdentity = identity;
+    let cancelled = false;
+    void (async () => {
+      const stored = await requestStoredBringForwardScan({
+        roomId: requestIdentity.roomId,
+        generationId: requestIdentity.generationId,
+        originalSha256: requestIdentity.originalSha256,
+        originalWidth: requestIdentity.originalWidth,
+        originalHeight: requestIdentity.originalHeight,
+      });
+      if (cancelled) return;
+      const currentIdentity = identityRef.current;
+      if (
+        !currentIdentity
+        || currentIdentity.roomId !== requestIdentity.roomId
+        || currentIdentity.generationId !== requestIdentity.generationId
+        || currentIdentity.originalSha256 !== requestIdentity.originalSha256
+        || currentIdentity.vocabularyRevision !== requestIdentity.vocabularyRevision
+      ) {
+        return;
+      }
+      if (stored.recovery === "failed" || stored.recovery === "corrupt") {
+        if (!readBringForwardSelection(requestKey)) {
+          setRecoveryState({ key: requestKey, status: "failed" });
+        }
+        return;
+      }
+      if (stored.recovery === "empty") {
+        const retained = readBringForwardSelection(requestKey);
+        if (retained && retained.revision > 0) {
+          setRecoveryState({ key: requestKey, status: "ready" });
+          return;
+        }
+        rememberBringForwardSelection(requestKey, 0, []);
+        setRecoveryState({ key: requestKey, status: "ready" });
+        setEditor((current) => {
+          if (current.editing) return current;
+          if (current.committedIds.size === 0 && current.draftIds.size === 0) return current;
+          return { ...current, committedIds: new Set(), draftIds: new Set() };
+        });
+        return;
+      }
+      const scan = scanFromStoredBringForward({
+        identity: requestIdentity,
+        conceptSet: stored.conceptSet,
+        objects: stored.objects,
+        provider: stored.provider,
+        modelId: stored.modelId,
+      });
+      const probe = restoreBringForwardSelection(
+        emptyBringForwardEditor(),
+        scan,
+        stored.selectedIds,
+        stored.revision,
+        0,
+        { roomId: requestIdentity.roomId, generationId: requestIdentity.generationId },
+      );
+      if (!probe) {
+        setRecoveryState({ key: requestKey, status: "failed" });
+        return;
+      }
+      rememberBringForwardScan(scan);
+      rememberBringForwardSelection(requestKey, stored.revision, stored.selectedIds);
+      setRecoveryState({ key: requestKey, status: "ready" });
+      setEditor((current) => {
+        const retained = readBringForwardSelection(requestKey)?.revision ?? stored.revision;
+        return restoreBringForwardSelection(
+          current,
+          scan,
+          stored.selectedIds,
+          stored.revision,
+          retained,
+          { roomId: requestIdentity.roomId, generationId: requestIdentity.generationId },
+        ) ?? current;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, scanKey]);
 
   useEffect(() => {
     if (!needsPixels || !displayKey || !original || !backgroundUrl || !roomId || !generationId) {
@@ -219,30 +364,94 @@ export function BringForwardProvider({
         : "checking";
   const error = display === "show" && scanKey ? readBringForwardScanError(scanKey) : null;
   const scan = activeEditor.scan;
-  const status = bringForwardStatusMessage({
-    display,
-    scanReady: scan !== null,
-    objectCount: scan?.objects.length ?? 0,
-    error: display === "show" ? error : null,
-  });
+  const status = saving
+    ? BRING_FORWARD_SAVING_MESSAGE
+    : saveError
+      ? saveError
+      : recovery === "failed" && !scan
+        ? BRING_FORWARD_RESTORE_MESSAGE
+        : bringForwardStatusMessage({
+          display,
+          scanReady: scan !== null,
+          objectCount: scan?.objects.length ?? 0,
+          error: display === "show" ? error : null,
+        });
   const enter = useCallback(() => {
     if (removeActive || alignment?.access !== "ready") return;
+    setSaveError(null);
     setEditor((current) => enterBringForward(current));
   }, [alignment?.access, removeActive, setEditor]);
   const done = useCallback(() => {
-    setEditor((current) => doneBringForward(current));
-  }, [setEditor]);
+    const current = editorRef.current;
+    if (!current.editing || saving || !identity || !scanKey) return;
+    const currentScan = current.scan;
+    const ids = [...current.draftIds];
+    if (!currentScan || currentScan.vocabularyRevision !== identity.vocabularyRevision) {
+      setSaveError(BRING_FORWARD_SAVE_MESSAGE);
+      return;
+    }
+    const expectedRevision = revisionRef.current;
+    const requestIdentity = identity;
+    const requestKey = scanKey;
+    setSaving(true);
+    setSaveError(null);
+    void (async () => {
+      const saved = await requestBringForwardSave({
+        identity: {
+          roomId: requestIdentity.roomId,
+          generationId: requestIdentity.generationId,
+          originalSha256: requestIdentity.originalSha256,
+          originalWidth: requestIdentity.originalWidth,
+          originalHeight: requestIdentity.originalHeight,
+        },
+        conceptSet: currentScan.conceptSet,
+        provider: currentScan.diagnostics?.provider ?? "stored",
+        modelId: currentScan.diagnostics?.modelId ?? "sam3",
+        objects: currentScan.objects,
+        selectedIds: ids,
+        expectedRevision,
+      });
+      const latest = identityRef.current;
+      if (
+        !latest
+        || latest.roomId !== requestIdentity.roomId
+        || latest.generationId !== requestIdentity.generationId
+        || latest.vocabularyRevision !== requestIdentity.vocabularyRevision
+      ) {
+        setSaving(false);
+        return;
+      }
+      setSaving(false);
+      if (!saved.ok) {
+        if (saved.revision !== null) revisionRef.current = Math.max(revisionRef.current, saved.revision);
+        setSaveError(BRING_FORWARD_SAVE_MESSAGE);
+        return;
+      }
+      revisionRef.current = saved.revision;
+      rememberBringForwardSelection(requestKey, saved.revision, ids);
+      setEditor((editor) => {
+        if (!editor.editing) return editor;
+        if (editor.draftIds.size !== ids.length) return editor;
+        for (const id of ids) if (!editor.draftIds.has(id)) return editor;
+        return doneBringForward(editor);
+      });
+    })();
+  }, [identity, saving, scanKey, setEditor]);
   const cancel = useCallback(() => {
+    setSaveError(null);
     setEditor((current) => cancelBringForward(current));
   }, [setEditor]);
   const toggle = useCallback((id: string) => {
+    if (saving) return;
     setEditor((current) => {
       if (!current.editing) return current;
       return { ...current, draftIds: toggleBringForwardId(current.draftIds, id) };
     });
-  }, [setEditor]);
+  }, [saving, setEditor]);
   const value = useMemo<BringForwardContextValue>(() => ({
     editing: activeEditor.editing,
+    recovery,
+    saving,
     editor: activeEditor,
     scan,
     visibleIds,
@@ -258,6 +467,8 @@ export function BringForwardProvider({
     toggle,
   }), [
     activeEditor,
+    recovery,
+    saving,
     backgroundUrl,
     cancel,
     display,
@@ -329,7 +540,7 @@ export function BringForwardControl() {
         >
           <p
             className="p-3 text-[11px] leading-relaxed text-neutral-300"
-            role={forward.error || forward.display === "hide" ? "alert" : "status"}
+            role={forward.error || forward.display === "hide" || forward.status === BRING_FORWARD_SAVE_MESSAGE || forward.status === BRING_FORWARD_RESTORE_MESSAGE ? "alert" : "status"}
             data-bring-forward="status"
           >
             {forward.status}
@@ -338,6 +549,8 @@ export function BringForwardControl() {
             <button
               type="button"
               data-bring-forward="done"
+              disabled={forward.saving}
+              aria-busy={forward.saving}
               onClick={forward.done}
               className={`rounded-md border border-neutral-200 bg-neutral-100 px-2 py-1 text-[11px] text-neutral-950 hover:bg-white ${FOCUS}`}
             >

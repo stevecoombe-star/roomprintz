@@ -4,7 +4,9 @@
  * The browser sends a room id and a generation id. This handler loads the
  * authoritative ORIGINAL only after the same ownership and readiness checks
  * as REMOVE alignment. A SAM 3 reservation is required before the provider
- * is contacted. It does not write History or the scene.
+ * is contacted. A successful scan may store its validated snapshot. It does
+ * not write History or the scene, and a storage failure does not change
+ * the scan response.
  */
 
 import { isAfcV2ArtifactLineageRecorded } from "@/lib/afc-v2-production/artifact-lineage-diagnostic";
@@ -32,6 +34,7 @@ import {
   REMOVE_SEGMENTATION_MAX_IMAGE_BYTES,
   REMOVE_SEGMENTATION_MAX_PIXELS,
   REMOVE_SEGMENTATION_MAX_RESPONSE_BYTES,
+  REMOVE_SEGMENTATION_CONCEPTS_BEDROOM,
   selectRemoveScanVocabulary,
   type RemoveSegmentationFailure,
   type RemoveSegmentationProvider,
@@ -81,6 +84,11 @@ export type RemoveObjectsAdminDeps = Readonly<{
   }>) => Promise<RemoveVocabularyProfileRead>;
   reserveSegmentation: RemoveSegmentationReserve;
   provider: RemoveSegmentationProvider;
+  storeScan?: (input: Readonly<{
+    userId: string;
+    vocabularyProfile: "default" | "bedroom";
+    payload: unknown;
+  }>) => Promise<void>;
 }>;
 
 const BODY_BYTES = 4096;
@@ -230,6 +238,17 @@ export async function handleRemoveObjectsAdmin(
     original,
   });
   if (!assembled.ok) return jsonError(failureReason(assembled.failure), failureStatus(assembled.failure));
+  if (deps.storeScan) {
+    try {
+      await deps.storeScan({
+        userId: admin.id,
+        vocabularyProfile: concepts === REMOVE_SEGMENTATION_CONCEPTS_BEDROOM ? "bedroom" : "default",
+        payload: assembled.payload,
+      });
+    } catch {
+      // The scan response stands. A later Done can store the same validated payload.
+    }
+  }
   return productionAfcJson(assembled.payload, 200);
 }
 

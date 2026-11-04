@@ -5,6 +5,7 @@ import {
 } from "@/lib/afc-v2-production/production-persistence.server";
 import { readRemoveActor } from "@/lib/vibode-stage/remove-access.server";
 import { handleRemoveObjectsAdmin } from "@/lib/vibode-stage/remove-segmentation-admin";
+import { persistValidatedSegmentationSnapshot } from "@/lib/vibode-stage/bring-forward-store.server";
 import { reserveRemoveSegmentation } from "@/lib/vibode-stage/remove-segmentation-quota.server";
 import { createRoboflowRemoveSegmentationProvider } from "@/lib/vibode-stage/remove-segmentation-roboflow.server";
 import { readStoredRemoveVocabularyProfile } from "@/lib/vibode-stage/remove-vocabulary-profile.server";
@@ -33,5 +34,6 @@ export async function POST(request: Request) {
     },
     reserveSegmentation: reserveRemoveSegmentation,
     provider: createRoboflowRemoveSegmentationProvider(),
+    storeScan: persistValidatedSegmentationSnapshot,
   });
 }

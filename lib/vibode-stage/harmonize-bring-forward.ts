@@ -29,7 +29,9 @@ export type HarmonizeForegroundFailure =
   | "unverified"
   | "identity"
   | "mask"
-  | "alignment";
+  | "alignment"
+  | "restoring"
+  | "unrestored";
 
 export type HarmonizeForegroundSnapshot = Readonly<{
   roomId: string;
@@ -52,6 +54,10 @@ export function harmonizeForegroundFailureMessage(reason: HarmonizeForegroundFai
       return "Bring Forward does not match this room.";
     case "alignment":
       return "Bring Forward isn't available for this room image.";
+    case "restoring":
+      return "Bring Forward is still loading. Wait before Harmonize.";
+    case "unrestored":
+      return "Bring Forward could not be restored. Harmonize was not started.";
     default:
       return "Bring Forward could not be captured for Harmonize.";
   }
@@ -60,6 +66,7 @@ export function harmonizeForegroundFailureMessage(reason: HarmonizeForegroundFai
 export function readHarmonizeForegroundRequest(input: Readonly<{
   session: Readonly<{
     editing: boolean;
+    recovery?: "loading" | "ready" | "failed";
     committedIds: ReadonlySet<string>;
     verified: Readonly<{ rgba: Uint8ClampedArray; width: number; height: number }> | null;
     scan: BringForwardScan | null;
@@ -73,6 +80,8 @@ export function readHarmonizeForegroundRequest(input: Readonly<{
 }> {
   const session = input.session;
   if (!session) return { ok: true, snapshot: null };
+  if (session.recovery === "loading") return { ok: false, reason: "restoring" };
+  if (session.recovery === "failed") return { ok: false, reason: "unrestored" };
   if (session.editing) return { ok: false, reason: "editing" };
   if (session.committedIds.size === 0) return { ok: true, snapshot: null };
   const scan = session.scan;

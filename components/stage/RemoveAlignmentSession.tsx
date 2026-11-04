@@ -127,6 +127,7 @@ type RemoveAlignmentContextValue = Readonly<{
   roomId: string | null;
   active: boolean;
   access: RemoveAlignmentLookup["access"];
+  alignmentSettled: boolean;
   report: RemoveAlignmentReport | null;
   opacity: number;
   furnitureHidden: boolean;
@@ -235,6 +236,7 @@ export function RemoveAlignmentProvider({
 }) {
   const roomRef = useRef(roomId);
   const [lookup, setLookup] = useState<RemoveAlignmentLookup>({ access: "hidden" });
+  const [alignmentSettled, setAlignmentSettled] = useState(false);
   const [inspection, dispatch] = useReducer(
     reduceRemoveInspection,
     initialRemoveInspectionState(),
@@ -287,6 +289,7 @@ export function RemoveAlignmentProvider({
     setTrackedRoomId(roomId);
     setDisplayed({ original: null, empty: null });
     setLookup({ access: "hidden" });
+    setAlignmentSettled(false);
     setVocabularyRevision(0);
     setVocabularyView(null);
     setVocabularyConfirm(initialRemoveVocabularyConfirmState());
@@ -319,6 +322,7 @@ export function RemoveAlignmentProvider({
       access: next.access,
     })) return;
     setLookup(next);
+    setAlignmentSettled(true);
   }, []);
 
   const refresh = useCallback(async (nextRoomId: string) => {
@@ -960,6 +964,7 @@ export function RemoveAlignmentProvider({
     roomId,
     active: sessionActive,
     access: lookup.access,
+    alignmentSettled,
     report,
     opacity: inspection.opacity,
     furnitureHidden: inspection.furnitureHidden,
@@ -1070,6 +1075,7 @@ export function RemoveAlignmentProvider({
     inspection.opacity,
     inspection.sessionSerial,
     inspection.tool,
+    alignmentSettled,
     lookup,
     maskSummary,
     noteDisplayedSize,
