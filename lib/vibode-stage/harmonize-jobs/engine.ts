@@ -456,7 +456,12 @@ function storedOutputFrame(width: number, height: number): boolean {
 }
 
 function terminalCode(code: string): string {
-  if (code === "provider_rejected" || code === "unexpected_output" || code === "provider_uncertain") {
+  if (
+    code === "provider_rejected"
+    || code === "unexpected_output"
+    || code === "provider_uncertain"
+    || code === "foreground_unaligned"
+  ) {
     return code;
   }
   return "provider_uncertain";

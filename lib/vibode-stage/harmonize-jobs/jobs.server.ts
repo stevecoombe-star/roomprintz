@@ -9,10 +9,12 @@ import { isHarmonizeJobId } from "./job-id";
 import { planHarmonizeEnqueue, readHarmonizeEnqueueIds } from "./plan";
 import {
   HARMONIZE_COMPOSITE_MAX_BYTES,
+  HARMONIZE_OUTPUT_MAX_BYTES,
   VIBODE_HARMONIZE_BUCKET,
   harmonizeCompositePath,
   harmonizeOutputPath,
   harmonizePromptPath,
+  harmonizeProviderDiagnosticPath,
 } from "./policy";
 import {
   publishHarmonizeGenerationHistory,
@@ -335,6 +337,39 @@ export async function completeHarmonizeGeneration(input: Readonly<{
     code: text(completed.row.code) || "completed",
     history: await historyAfterGeneration(supabase, input.jobId),
   };
+}
+
+/**
+ * Store the provider JPEG without publishing it. Used when foreground
+ * placement fails after the provider has already been paid.
+ */
+export async function preserveHarmonizeProviderOutput(input: Readonly<{
+  jobId: string;
+  claimNonce: string;
+  output: Uint8Array;
+}>): Promise<Readonly<{ ok: true; path: string }> | Readonly<{ ok: false; code: string }>> {
+  if (!isHarmonizeJobId(input.jobId) || input.output.byteLength === 0 || input.output.byteLength > HARMONIZE_OUTPUT_MAX_BYTES) {
+    return { ok: false, code: "unexpected_output" };
+  }
+  const supabase = getServiceRoleSupabaseClient();
+  if (!supabase) return { ok: false, code: "unavailable" };
+  const { data, error } = await supabase
+    .from("vibode_harmonize_generations")
+    .select("room_id")
+    .eq("id", input.jobId)
+    .eq("claim_nonce", input.claimNonce)
+    .eq("status", "running")
+    .maybeSingle();
+  if (error || !data || typeof data !== "object") return { ok: false, code: "stale_claim" };
+  const roomId = text((data as Record<string, unknown>).room_id);
+  if (!roomId) return { ok: false, code: "stale_claim" };
+  const path = harmonizeProviderDiagnosticPath(roomId, input.jobId, input.claimNonce);
+  const uploaded = await supabase.storage.from(VIBODE_HARMONIZE_BUCKET).upload(path, Buffer.from(input.output), {
+    contentType: "image/jpeg",
+    upsert: true,
+  });
+  if (uploaded.error) return { ok: false, code: "unavailable" };
+  return { ok: true, path };
 }
 
 /**

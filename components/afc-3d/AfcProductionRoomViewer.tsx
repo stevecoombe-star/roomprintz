@@ -79,6 +79,7 @@ import { ROOM_SCALE_DEFAULT } from "@/lib/vibode-stage/room-scale";
 import type { TrustedPathBaseline } from "@/lib/vibode-stage/trusted-path";
 import { createTrustedPathOverlay } from "@/lib/vibode-stage/trusted-path-overlay";
 import { BringForwardLayer } from "@/components/stage/BringForwardLayer";
+import { useBringForward } from "@/components/stage/BringForwardSession";
 import {
   useRegisterHarmonizeExport,
   useRegisterHarmonizeQa,
@@ -87,6 +88,11 @@ import {
   harmonizeCaptureBoundaryMessage,
   runHarmonizeCaptureBoundary,
 } from "@/lib/vibode-stage/harmonize-capture-boundary";
+import {
+  harmonizeForegroundFailureMessage,
+  readHarmonizeForegroundRequest,
+  type HarmonizeForegroundSnapshot,
+} from "@/lib/vibode-stage/harmonize-bring-forward";
 import {
   displayedHarmonizeBackgroundUrl,
   executeHarmonizeExport,
@@ -374,6 +380,9 @@ function AfcProductionRoomViewerReady({
   scenePointerEvents = "auto",
   inspectionOverlay = null,
 }: ReadyProps) {
+  const bringForward = useBringForward();
+  const bringForwardRef = useRef(bringForward);
+  bringForwardRef.current = bringForward;
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -2066,20 +2075,30 @@ function AfcProductionRoomViewerReady({
     };
     const backgroundImage = () => frameRef.current?.querySelector("img") ?? null;
     registerHarmonizeExport(() => {
-      const capture = begin();
-      if (capture instanceof Promise) return capture;
-      return executeHarmonizeExport({
-        roomId: harmonizeRoomIdRef.current,
-        authority: harmonizeAuthorityRef.current,
-        backgroundUrl: displayedHarmonizeBackgroundUrl({
-          image: backgroundImage(),
-          fallbackUrl: harmonizeBackgroundUrlRef.current,
-        }),
-        originalImageUrl: harmonizeOriginalUrlRef.current,
-        captureFurniture: capture,
-      }).finally(() => {
-        harmonizeInFlightRef.current = false;
-      });
+      try {
+        const foreground = harmonizeForegroundSnapshot(
+          bringForwardRef.current,
+          harmonizeRoomIdRef.current,
+          harmonizeAuthorityRef.current.generationId,
+        );
+        const capture = begin();
+        if (capture instanceof Promise) return capture;
+        return executeHarmonizeExport({
+          roomId: harmonizeRoomIdRef.current,
+          authority: harmonizeAuthorityRef.current,
+          backgroundUrl: displayedHarmonizeBackgroundUrl({
+            image: backgroundImage(),
+            fallbackUrl: harmonizeBackgroundUrlRef.current,
+          }),
+          originalImageUrl: harmonizeOriginalUrlRef.current,
+          captureFurniture: capture,
+          foreground,
+        }).finally(() => {
+          harmonizeInFlightRef.current = false;
+        });
+      } catch (error) {
+        return Promise.reject(error);
+      }
     });
     registerHarmonizeQa?.({
       roomId,
@@ -2088,6 +2107,11 @@ function AfcProductionRoomViewerReady({
         if (!sourceVersionId) {
           throw new HarmonizeExportError("Save this room version before testing Harmonize.");
         }
+        const foreground = harmonizeForegroundSnapshot(
+          bringForwardRef.current,
+          harmonizeRoomIdRef.current,
+          harmonizeAuthorityRef.current.generationId,
+        );
         const capture = begin();
         if (capture instanceof Promise) return capture;
         try {
@@ -2108,6 +2132,7 @@ function AfcProductionRoomViewerReady({
               }),
               originalImageUrl: harmonizeOriginalUrlRef.current,
               captureFurniture: capture,
+              foreground,
             }),
           });
           if (!prepared.ok) {
@@ -2266,4 +2291,28 @@ function AfcProductionRoomViewerReady({
       ) : null}
     </div>
   );
+}
+
+function harmonizeForegroundSnapshot(
+  session: ReturnType<typeof useBringForward>,
+  roomId: string,
+  generationId: string,
+): HarmonizeForegroundSnapshot | null {
+  const decision = readHarmonizeForegroundRequest({
+    session: session
+      ? {
+        editing: session.editing,
+        committedIds: session.editor.committedIds,
+        verified: session.verified,
+        scan: session.scan,
+        display: session.display,
+      }
+      : null,
+    roomId,
+    generationId,
+  });
+  if (!decision.ok) {
+    throw new HarmonizeExportError(harmonizeForegroundFailureMessage(decision.reason));
+  }
+  return decision.snapshot;
 }

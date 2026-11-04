@@ -17,6 +17,11 @@ import {
   type HarmonizeFurnitureCapture,
   type HarmonizeFurnitureCapturer,
 } from "@/lib/vibode-stage/harmonize-export";
+import {
+  buildHarmonizeForeground,
+  harmonizeForegroundFailureMessage,
+  type HarmonizeForegroundSnapshot,
+} from "@/lib/vibode-stage/harmonize-bring-forward";
 import { buildHarmonizeQaSubmission, type HarmonizeQaSubmission } from "@/lib/vibode-stage/harmonize-qa";
 
 export type DecodedHarmonizeBackground = Readonly<{
@@ -118,6 +123,7 @@ type HarmonizeCaptureInput = Readonly<{
   backgroundUrl: string;
   originalImageUrl?: string | null;
   captureFurniture: HarmonizeFurnitureCapturer;
+  foreground?: HarmonizeForegroundSnapshot | null;
   now?: () => Date;
   fetchBackground?: (url: string) => Promise<Uint8Array>;
   decodeBackground?: (bytes: Uint8Array) => Promise<DecodedHarmonizeBackground>;
@@ -138,6 +144,7 @@ type HarmonizePreparedCapture = Readonly<{
   }>;
   roomRgba: Uint8Array;
   capture: HarmonizeFurnitureCapture;
+  foregroundRgba: Uint8Array | null;
   alignment: HarmonizeFrameSuccess;
   referenceEmptyBytes: Uint8Array | null;
 }>;
@@ -167,6 +174,7 @@ export async function executeHarmonizeQaSubmission(input: HarmonizeCaptureInput 
     backgroundBytes: prepared.background.bytes,
     roomRgba: prepared.roomRgba,
     capture: prepared.capture,
+    foregroundRgba: prepared.foregroundRgba,
   });
 }
 
@@ -250,9 +258,31 @@ async function prepareHarmonizeCapture(input: HarmonizeCaptureInput): Promise<Ha
     },
     roomRgba: room.rgba,
     capture,
+    foregroundRgba: harmonizeForegroundForFrame({
+      snapshot: input.foreground ?? null,
+      roomId: input.roomId,
+      generationId: input.authority.generationId,
+      originalSha256: input.authority.original?.sha256 ?? null,
+      targetWidth: frame.width,
+      targetHeight: frame.height,
+    }),
     alignment: frame,
     referenceEmptyBytes,
   };
+}
+
+function harmonizeForegroundForFrame(input: Readonly<{
+  snapshot: HarmonizeForegroundSnapshot | null;
+  roomId: string;
+  generationId: string;
+  originalSha256: string | null;
+  targetWidth: number;
+  targetHeight: number;
+}>): Uint8Array | null {
+  if (!input.snapshot) return null;
+  const built = buildHarmonizeForeground({ ...input, snapshot: input.snapshot });
+  if (!built.ok) throw new HarmonizeExportError(harmonizeForegroundFailureMessage(built.reason));
+  return built.rgba;
 }
 
 function isUuid(value: string): boolean {

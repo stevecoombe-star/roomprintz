@@ -47,7 +47,7 @@ export const HARMONIZE_EXPORT_FILES = Object.freeze({
 });
 
 export const HARMONIZE_EXPORT_LIMITATIONS = Object.freeze([
-  "STAGE does not render room occluder meshes. Furniture hidden only by the photograph stays visible. Furniture-furniture depth occlusion is included.",
+  "STAGE does not render room occluder meshes. Furniture hidden only by the photograph stays visible, except selected Bring Forward objects, which are composited above the furniture in B and stamped onto the Harmonize result. Furniture-furniture depth occlusion is included. C and D stay furniture-only.",
   "Vibode contact shadows, selection outlines, transform gizmos, and the trusted-path overlay are excluded from B, C, and D.",
   "A is the active STAGE viewport background and is not resampled. B, C, and D are new PNGs on that same pixel grid. Uncovered pixels in B match those decoded samples.",
   "The certified camera keeps its frame aspect, vertical FOV, and pose. Normalized image coordinates map onto the viewport background grid. The live viewport is unchanged.",
@@ -906,6 +906,7 @@ export async function buildHarmonizeZip(input: Readonly<{
   capture: HarmonizeFurnitureCapture;
   alignment: HarmonizeFrameSuccess;
   referenceEmptyBytes?: Uint8Array | null;
+  foregroundRgba?: Uint8Array | null;
   /** Test hook. Production uses the verified universal prompt constant. */
   promptCore?: string;
 }>): Promise<Readonly<{ fileName: string; bytes: Uint8Array; manifest: HarmonizeManifest }>> {
@@ -941,7 +942,12 @@ export async function buildHarmonizeZip(input: Readonly<{
       "Viewport background image cannot be read. Export stopped instead of scaling.",
     );
   }
-  const composite = compositeFurnitureOverRoom(input.roomRgba, input.capture.rgba);
+  const furnitureScene = compositeFurnitureOverRoom(input.roomRgba, input.capture.rgba);
+  const foreground = input.foregroundRgba ?? null;
+  if (foreground && foreground.length !== furnitureScene.length) {
+    throw new HarmonizeExportError("Photographed foreground does not match the Harmonize image.");
+  }
+  const composite = foreground ? compositeFurnitureOverRoom(furnitureScene, foreground) : furnitureScene;
   const matte = furnitureMatteRgba(input.capture.rgba);
   const [compositePng, furniturePng, mattePng] = await Promise.all([
     encodeRgbaPng(composite, width, height),

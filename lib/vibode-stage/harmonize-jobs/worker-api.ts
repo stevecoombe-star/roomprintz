@@ -43,6 +43,8 @@ export type HarmonizeWorkerApi = Readonly<{
     | Readonly<{ ok: false; code: string }>
   >;
   heartbeat: (claim: HarmonizeWorkerClaim) => Promise<boolean>;
+  /** Keeps an unpublished provider JPEG when foreground placement fails. */
+  preserveProviderOutput?: (claim: HarmonizeWorkerClaim, jpeg: Uint8Array) => Promise<string | null>;
   complete: (claim: HarmonizeWorkerClaim, completion: HarmonizeWorkerCompletion) => Promise<
     | Readonly<{ ok: true; code: string; history?: HarmonizeHistoryWorkerView }>
     | Readonly<{ ok: false; code: string }>

@@ -87,6 +87,11 @@ export function harmonizeOutputPath(roomId: string, jobId: string, claimNonce: s
   return `rooms/${roomId}/jobs/${jobId}/output-${claimNonce}.jpg`;
 }
 
+/** Unpublished provider JPEG kept when foreground placement fails after payment. */
+export function harmonizeProviderDiagnosticPath(roomId: string, jobId: string, claimNonce: string): string {
+  return `rooms/${roomId}/jobs/${jobId}/provider-${claimNonce}.jpg`;
+}
+
 export function harmonizeHistoryObjectPath(roomId: string, jobId: string): string {
   return `rooms/${roomId}/harmonize/${jobId}.jpg`;
 }

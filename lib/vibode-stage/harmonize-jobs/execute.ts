@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 
+import { decodePngRgba } from "@/lib/vibode-stage/harmonize-export";
+import { prepareHarmonizeProviderPng } from "@/lib/vibode-stage/harmonize-bring-forward";
+import { compositeHarmonizeForegroundOntoJpeg } from "@/lib/vibode-stage/harmonize-bring-forward-output";
+
 import { HARMONIZE_HEARTBEAT_INTERVAL_MS } from "./policy";
 import { assessHarmonizeJobOutput } from "./output";
 import { classifyHarmonizeProviderFailure, type HarmonizeProvider } from "./provider";
@@ -101,11 +105,55 @@ export async function executeHarmonizeClaim(input: Readonly<{
       });
       return { outcome: "failed", code: "unexpected_output", jobId: claim.jobId };
     }
+    let output = generated.output;
+    if (ready.foreground) {
+      const finished = await compositeHarmonizeForegroundOntoJpeg({
+        jpeg: generated.output,
+        foregroundPng: ready.foreground,
+        inputWidth: claim.compositeWidth,
+        inputHeight: claim.compositeHeight,
+      });
+      if (!finished.ok) {
+        const preserved = await preserveProviderOutput(input.api, claim, generated.output);
+        await input.api.fail(claim, {
+          code: "foreground_unaligned",
+          message: preserved
+            ? `${finished.message} Provider output kept at ${preserved}.`
+            : finished.message,
+          retryable: false,
+          providerStatus: boundedToken(generated.providerStatus),
+          providerHttpStatus: generated.httpStatus,
+          latencyMs: generated.latencyMs,
+        });
+        return { outcome: "failed", code: "foreground_unaligned", jobId: claim.jobId };
+      }
+      const restamped = await assessHarmonizeJobOutput(
+        finished.jpeg,
+        claim.compositeWidth,
+        claim.compositeHeight,
+        "image/jpeg",
+      );
+      if (!restamped.ok) {
+        const preserved = await preserveProviderOutput(input.api, claim, generated.output);
+        await input.api.fail(claim, {
+          code: "foreground_unaligned",
+          message: preserved
+            ? `Harmonize result could not keep the photographed foreground. Provider output kept at ${preserved}.`
+            : "Harmonize result could not keep the photographed foreground.",
+          retryable: false,
+          providerStatus: boundedToken(generated.providerStatus),
+          providerHttpStatus: generated.httpStatus,
+          latencyMs: generated.latencyMs,
+        });
+        return { outcome: "failed", code: "foreground_unaligned", jobId: claim.jobId };
+      }
+      output = finished.jpeg;
+    }
     if (lost || !(await input.api.heartbeat(claim))) {
       return { outcome: "stale", code: "stale_claim", jobId: claim.jobId };
     }
     const completed = await input.api.complete(claim, {
-      output: generated.output,
+      output,
       returnedModelId: boundedToken(generated.returnedModel),
       providerStatus: boundedToken(generated.providerStatus),
       providerHttpStatus: generated.httpStatus,
@@ -129,7 +177,7 @@ async function readJobInputs(
   api: HarmonizeWorkerApi,
   claim: HarmonizeWorkerClaim,
 ): Promise<
-  | Readonly<{ ok: true; png: Uint8Array }>
+  | Readonly<{ ok: true; png: Uint8Array; foreground: Uint8Array | null }>
   | Readonly<{ ok: false; code: string; message: string; retryable: boolean }>
 > {
   const promptHash = createHash("sha256").update(claim.prompt).digest("hex");
@@ -161,7 +209,33 @@ async function readJobInputs(
       retryable: false,
     };
   }
-  return { ok: true, png };
+  const prepared = await prepareHarmonizeProviderPng(
+    png,
+    { width: claim.compositeWidth, height: claim.compositeHeight },
+    decodePngRgba,
+  );
+  if (!prepared.ok) {
+    return {
+      ok: false,
+      code: "foreground_unaligned",
+      message: prepared.message,
+      retryable: false,
+    };
+  }
+  return { ok: true, png: prepared.png, foreground: prepared.foreground };
+}
+
+async function preserveProviderOutput(
+  api: HarmonizeWorkerApi,
+  claim: HarmonizeWorkerClaim,
+  jpeg: Uint8Array,
+): Promise<string | null> {
+  if (!api.preserveProviderOutput) return null;
+  try {
+    return await api.preserveProviderOutput(claim, jpeg);
+  } catch {
+    return null;
+  }
 }
 
 function boundedToken(value: string | null): string | null {

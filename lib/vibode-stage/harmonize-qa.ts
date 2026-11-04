@@ -6,7 +6,6 @@
 import type { SceneObjectDefinition } from "@/lib/afc-v2-runtime/types";
 import {
   HarmonizeExportError,
-  compositeFurnitureOverRoom,
   encodeRgbaPng,
   harmonizeExportObject,
   harmonizeSceneCanonical,
@@ -20,6 +19,10 @@ import {
   resolveHarmonizeMaterials,
   type HarmonizeMaterialProvenance,
 } from "@/lib/vibode-stage/harmonize-materials";
+import {
+  composeHarmonizeScene,
+  embedHarmonizeForeground,
+} from "@/lib/vibode-stage/harmonize-bring-forward";
 import { assembleHarmonizePrompt } from "@/lib/vibode-stage/harmonize-prompt";
 
 export const HARMONIZE_QA_POLL_MS = 2_000;
@@ -133,6 +136,7 @@ export async function buildHarmonizeQaSubmission(input: Readonly<{
   backgroundBytes: Uint8Array;
   roomRgba: Uint8Array;
   capture: HarmonizeFurnitureCapture;
+  foregroundRgba?: Uint8Array | null;
 }>): Promise<Readonly<{ composite: Uint8Array; submission: HarmonizeQaSubmission }>> {
   if (!input.capture.sceneObjects) {
     throw new HarmonizeExportError("Saved scene is not available for Harmonize testing.");
@@ -175,8 +179,15 @@ export async function buildHarmonizeQaSubmission(input: Readonly<{
   if (!assembled.text) {
     throw new HarmonizeExportError("Harmonize prompt could not be assembled.");
   }
-  const compositeRgba = compositeFurnitureOverRoom(input.roomRgba, input.capture.rgba);
-  const composite = await encodeRgbaPng(compositeRgba, input.capture.width, input.capture.height);
+  const foreground = input.foregroundRgba ?? null;
+  const compositeRgba = composeHarmonizeScene(input.roomRgba, input.capture.rgba, foreground);
+  const compositePng = await encodeRgbaPng(compositeRgba, input.capture.width, input.capture.height);
+  const composite = foreground
+    ? embedHarmonizeForeground(
+      compositePng,
+      await encodeRgbaPng(foreground, input.capture.width, input.capture.height),
+    )
+    : compositePng;
   const sceneSnapshotSha256 = await sha256HexBytes(new TextEncoder().encode(harmonizeSceneCanonical({
     generationId: input.capture.generationId,
     roomScaleMultiplier: input.capture.roomScaleMultiplier,

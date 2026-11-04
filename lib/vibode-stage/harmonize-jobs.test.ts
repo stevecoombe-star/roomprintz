@@ -15,6 +15,7 @@ import { classifyNanoBananaProAspectRatio } from "@/lib/afc-image-models";
 import {
   HARMONIZE_ASPECT_RELATIVE_TOLERANCE,
   decideHarmonizeExportFrame,
+  encodeRgbaPng,
   harmonizeExportObject,
   harmonizeSceneCanonical,
   sha256HexBytes,
@@ -27,6 +28,7 @@ import {
 } from "@/lib/vibode-stage/harmonize-materials";
 import { HARMONIZE_NBP_OUTPUT_MAX_EDGE, HarmonizeNbpProofError } from "@/lib/vibode-stage/harmonize-nbp-proof";
 import { assembleHarmonizePrompt } from "@/lib/vibode-stage/harmonize-prompt";
+import { embedHarmonizeForeground, splitHarmonizeForeground } from "@/lib/vibode-stage/harmonize-bring-forward";
 import { effectiveMetricScale } from "@/lib/vibode-stage/room-scale";
 
 import {
@@ -590,6 +592,113 @@ test("a queued job survives enqueue and one fake provider call finishes it", asy
   });
   assert.equal(again.ok && again.code, "already_complete");
   assert.notEqual(db.jobs[0]?.outputSha256, "cd".repeat(32));
+});
+
+test("a photographed foreground is stamped onto the Harmonize result and a bad one is not sent", async () => {
+  const width = 8;
+  const height = 6;
+  const room = new Uint8Array(width * height * 4);
+  for (let index = 0; index < room.length; index += 4) {
+    room[index + 2] = 255;
+    room[index + 3] = 255;
+  }
+  const foreground = new Uint8Array(room.length);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (x >= width / 2) continue;
+      const offset = (y * width + x) * 4;
+      foreground[offset + 1] = 255;
+      foreground[offset + 3] = 255;
+    }
+  }
+  const scene = new Uint8Array(room);
+  for (let index = 0; index < scene.length; index += 4) {
+    if (foreground[index + 3] === 0) continue;
+    scene[index] = foreground[index] ?? 0;
+    scene[index + 1] = foreground[index + 1] ?? 0;
+    scene[index + 2] = foreground[index + 2] ?? 0;
+    scene[index + 3] = 255;
+  }
+  const packed = embedHarmonizeForeground(
+    await encodeRgbaPng(scene, width, height),
+    await encodeRgbaPng(foreground, width, height),
+  );
+  const { db, job } = await queuedJob();
+  const row = db.jobs[0];
+  assert.ok(row);
+  row.compositeWidth = width;
+  row.compositeHeight = height;
+  row.compositeByteLength = packed.byteLength;
+  row.compositeSha256 = await sha256HexBytes(packed);
+  const clock = { nowMs: 0 };
+  const composites = new Map([[job.id, packed]]);
+  const outputs = new Map<string, Uint8Array>();
+  let providerPng: Uint8Array | null = null;
+  const result = await executeHarmonizeClaim({
+    api: createMemoryHarmonizeWorkerApi({ db, composites, outputs, clock }),
+    provider: async ({ png }) => {
+      providerPng = png;
+      return {
+        output: await createHarmonizeFakeJpeg(),
+        outputMime: "image/jpeg",
+        returnedModel: "fake-harmonize",
+        providerStatus: "FAKE",
+        httpStatus: 200,
+        latencyMs: 1,
+      };
+    },
+    heartbeatIntervalMs: 60_000,
+  });
+  assert.equal(result.outcome, "succeeded");
+  assert.ok(providerPng);
+  const sent = splitHarmonizeForeground(providerPng ?? new Uint8Array());
+  assert.equal(sent.ok, true);
+  if (sent.ok) assert.equal(sent.foreground, null);
+  const shown = await sharp(providerPng ?? new Uint8Array()).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  assert.ok((shown.data[1] ?? 0) > 200);
+  const saved = [...outputs.values()][0];
+  assert.ok(saved);
+  const output = await sharp(saved).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const left = output.data[1] ?? 0;
+  const rightOffset = (900 * output.info.width + 2000) * 4;
+  assert.ok(left > 200);
+  assert.ok((output.data[rightOffset + 1] ?? 255) < 80);
+
+  const rejected = await queuedJob();
+  const bad = embedHarmonizeForeground(
+    await encodeRgbaPng(scene, width, height),
+    await encodeRgbaPng(new Uint8Array(16), 2, 2),
+  );
+  const badRow = rejected.db.jobs[0];
+  assert.ok(badRow);
+  badRow.compositeWidth = width;
+  badRow.compositeHeight = height;
+  badRow.compositeSha256 = await sha256HexBytes(bad);
+  let calls = 0;
+  const failed = await executeHarmonizeClaim({
+    api: createMemoryHarmonizeWorkerApi({
+      db: rejected.db,
+      composites: new Map([[rejected.job.id, bad]]),
+      outputs,
+      clock: { nowMs: 0 },
+    }),
+    provider: async () => {
+      calls += 1;
+      return {
+        output: await createHarmonizeFakeJpeg(),
+        outputMime: "image/jpeg",
+        returnedModel: "fake-harmonize",
+        providerStatus: "FAKE",
+        httpStatus: 200,
+        latencyMs: 1,
+      };
+    },
+    heartbeatIntervalMs: 60_000,
+  });
+  assert.equal(calls, 0);
+  assert.equal(failed.outcome, "failed");
+  assert.equal(failed.code, "foreground_unaligned");
+  assert.equal(rejected.db.jobs[0]?.providerStartedAtMs ?? null, null);
 });
 
 test("a crash before provider contact can run once later, and a crash after cannot", async () => {

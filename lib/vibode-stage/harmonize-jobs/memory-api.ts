@@ -14,7 +14,7 @@ import {
   publishPreparedHarmonizeHistory,
   type HarmonizeHistoryPublishResult,
 } from "./history-publication";
-import { VIBODE_HARMONIZE_BUCKET, VIBODE_HISTORY_BUCKET, harmonizeHistoryObjectPath, harmonizeOutputPath } from "./policy";
+import { VIBODE_HARMONIZE_BUCKET, VIBODE_HISTORY_BUCKET, harmonizeHistoryObjectPath, harmonizeOutputPath, harmonizeProviderDiagnosticPath } from "./policy";
 import { assessHarmonizeJobOutput } from "./output";
 import type {
   HarmonizeHistoryWorkerView,
@@ -67,6 +67,11 @@ export function createMemoryHarmonizeWorkerApi(input: Readonly<{
         claimNonce: claim.claimNonce,
         nowMs: input.clock.nowMs,
       });
+    },
+    async preserveProviderOutput(claim, jpeg) {
+      const path = harmonizeProviderDiagnosticPath(claim.roomId, claim.jobId, claim.claimNonce);
+      input.outputs.set(path, jpeg);
+      return path;
     },
     async complete(claim, completion) {
       const completed = await completeFromMemory(input, claim, completion);

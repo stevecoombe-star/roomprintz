@@ -9,6 +9,7 @@ import {
   contactHarmonizeGeneration,
   failHarmonizeGeneration,
   heartbeatHarmonizeGeneration,
+  preserveHarmonizeProviderOutput,
   readHarmonizeComposite,
   readHarmonizeWorkerOperations,
 } from "@/lib/vibode-stage/harmonize-jobs/jobs.server";
@@ -100,6 +101,20 @@ export async function PUT(request: Request) {
   const denied = deny(request);
   if (denied) return denied;
   const url = new URL(request.url);
+  if (url.searchParams.get("action") === "preserve-output") {
+    const jobId = request.headers.get(HARMONIZE_JOB_HEADER) ?? "";
+    const claimNonce = request.headers.get(HARMONIZE_NONCE_HEADER) ?? "";
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.byteLength > HARMONIZE_OUTPUT_MAX_BYTES) {
+      return harmonizeJson({ ok: false, code: "unexpected_output" }, 413);
+    }
+    const preserved = await preserveHarmonizeProviderOutput({
+      jobId,
+      claimNonce,
+      output: bytes,
+    });
+    return harmonizeJson(preserved, preserved.ok ? 200 : 409);
+  }
   if (url.searchParams.get("action") !== "complete") {
     return harmonizeJson({ ok: false, code: "invalid_submission" }, 400);
   }

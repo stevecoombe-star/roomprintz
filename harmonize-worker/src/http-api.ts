@@ -87,6 +87,19 @@ export function createHttpHarmonizeWorkerApi(
       const response = await postJson(fetchImpl, env, "heartbeat", claim);
       return response.ok;
     },
+    async preserveProviderOutput(claim, jpeg) {
+      const response = await fetchImpl(`${env.appBaseUrl}/api/internal/vibode-harmonize-jobs?action=preserve-output`, {
+        method: "PUT",
+        headers: {
+          ...claimHeaders(env.workerSecret, claim),
+          "content-type": "image/jpeg",
+        },
+        body: Buffer.from(jpeg),
+      });
+      const body = await response.json() as { ok?: boolean; path?: unknown };
+      if (!response.ok || !body.ok || typeof body.path !== "string") return null;
+      return body.path;
+    },
     async complete(claim, completion) {
       const response = await fetchImpl(`${env.appBaseUrl}/api/internal/vibode-harmonize-jobs?action=complete`, {
         method: "PUT",
