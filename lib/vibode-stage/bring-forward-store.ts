@@ -70,7 +70,7 @@ export type BringForwardReadResult =
     payload: string;
     payloadSha256: string;
   }>
-  | Readonly<{ ok: false; code: "unavailable" }>;
+  | Readonly<{ ok: false; code: "unavailable" | "missing" }>;
 
 export type BringForwardRepository = Readonly<{
   putSnapshot: (
@@ -102,6 +102,16 @@ type AcceptedSnapshot = Readonly<{
 }>;
 
 type RejectedSnapshot = Readonly<{ ok: false; reason: "identity" | "mask" }>;
+
+export function readStoredSelectedIds(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > BRING_FORWARD_SELECTION_MAX_IDS) return null;
+  const ids: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") return null;
+    ids.push(item);
+  }
+  return ids;
+}
 
 export function bringForwardPayloadBytes(payload: string): number {
   return new TextEncoder().encode(payload).byteLength;
@@ -458,6 +468,7 @@ export async function handleBringForwardState(
     authorize: BringForwardAuthority;
     store: BringForwardRepository;
     hash: (text: string) => string;
+    afterCommit?: (input: Readonly<{ userId: string; roomId: string; generationId: string }>) => Promise<void>;
   }>,
 ): Promise<Response> {
   const actor = await deps.getActor();
@@ -532,6 +543,13 @@ export async function handleBringForwardState(
   if (!written.ok) {
     const status = written.code === "conflict" ? 409 : written.code === "unavailable" ? 503 : 422;
     return json({ ok: false, reason: "Bring Forward could not be saved.", code: written.code, revision: written.revision }, status);
+  }
+  if (deps.afterCommit) {
+    try {
+      await deps.afterCommit({ userId: actor.id, roomId, generationId });
+    } catch {
+      // The selection is already stored. A thumbnail refresh can run again.
+    }
   }
   return json({ ok: true, revision: written.revision, snapshotId: written.snapshotId }, 200);
 }

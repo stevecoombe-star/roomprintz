@@ -10,6 +10,7 @@ import {
   bringForwardSelectionBinds,
   BRING_FORWARD_SNAPSHOT_FORMAT,
   planBringForwardSelectionWrite,
+  readStoredSelectedIds,
   type BringForwardAuthority,
   type BringForwardReadResult,
   type BringForwardRepository,
@@ -246,17 +247,18 @@ export class SupabaseBringForwardRepository implements BringForwardRepository {
         .eq("original_height", input.identity.originalHeight)
         .eq("vocabulary_profile", input.identity.vocabularyProfile)
         .maybeSingle();
-      if (error) return { ok: false, code: "unavailable" };
+      if (error) return { ok: false, code: missingRelation(error) };
       if (selection) {
+        const selectedIds = readStoredSelectedIds(selection.selected_ids);
         const snapshot = await this.snapshot(input.userId, String(selection.snapshot_id));
-        if (!snapshot || !sameIdentity(snapshot, input.identity) || !Array.isArray(selection.selected_ids)) {
+        if (!snapshot || !sameIdentity(snapshot, input.identity) || !selectedIds) {
           return { ok: true, recovery: "unreadable" };
         }
         return {
           ok: true,
           recovery: "ready",
           revision: Number(selection.revision),
-          selectedIds: selection.selected_ids.filter((id: unknown): id is string => typeof id === "string"),
+          selectedIds,
           snapshotId: snapshot.id,
           payload: snapshot.payload,
           payloadSha256: snapshot.payload_sha256,
@@ -276,7 +278,7 @@ export class SupabaseBringForwardRepository implements BringForwardRepository {
         .order("id", { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (scanError) return { ok: false, code: "unavailable" };
+      if (scanError) return { ok: false, code: missingRelation(scanError) };
       if (!newest) return { ok: true, recovery: "empty" };
       return {
         ok: true,
@@ -353,4 +355,16 @@ function sameIdentity(snapshot: SnapshotRow, identity: BringForwardStoredIdentit
 
 function isUnique(error: { code?: string | number } | null): boolean {
   return error?.code === "23505" || error?.code === 23505;
+}
+
+export function isMissingBringForwardRelation(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  if (error.code === "42P01" || error.code === "PGRST205") return true;
+  const message = error.message ?? "";
+  return /vibode_bring_forward_(snapshots|selections)/.test(message)
+    && /does not exist|could not find the table/i.test(message);
+}
+
+function missingRelation(error: { code?: string; message?: string } | null): "missing" | "unavailable" {
+  return isMissingBringForwardRelation(error) ? "missing" : "unavailable";
 }

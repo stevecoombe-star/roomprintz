@@ -38,6 +38,7 @@ const PAGE_CODES = new Set<string>([
   "signed_url_failed",
   "glb_load_failed",
   "render_page_error",
+  "foreground_unrestored",
 ]);
 
 export type WorkerFailure = Readonly<{

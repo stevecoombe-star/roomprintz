@@ -20,6 +20,8 @@ import { furnitureAssetDefinition } from "@/lib/afc-v2-runtime/furniture-assets"
 import { authoritativeFurnitureScale } from "@/lib/vibode-stage/furniture-model-scale";
 import { PARTNER_INTAKE_ASSET_SOURCE } from "@/lib/vibode-stage/partner-runtime-asset-id";
 import type { DynamicRuntimeLookupRow } from "@/lib/vibode-stage/partner-runtime-assets";
+import { canonicalBringForwardSnapshot } from "@/lib/vibode-stage/bring-forward-store";
+import { packRemoveMask, type RemoveObjectRecord } from "@/lib/vibode-stage/remove-objects";
 
 import { resetThumbnailRenderAccessForTests } from "./access.server";
 import { VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION } from "./contract";
@@ -832,4 +834,154 @@ test("dimension and room-scale lookup failures do not publish an identity-scale 
   }));
   assert.equal(noVariant.ok, true);
   assert.equal(dimensionCalls, 0);
+});
+
+const FOREGROUND_SHA = "ab".repeat(32);
+const FOREGROUND_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+function foregroundScan() {
+  const coverage = new Uint8Array(32 * 32);
+  for (let index = 0; index < coverage.length; index += 1) {
+    if (index % 32 < 16) coverage[index] = 255;
+  }
+  const mask = packRemoveMask(coverage, 32, 32);
+  if (!mask) throw new Error("mask");
+  const object: RemoveObjectRecord = {
+    id: "sofa",
+    concept: "sofa",
+    confidence: 0.9,
+    mask,
+    eligibility: {
+      eligible: true,
+      reasons: [],
+      notices: [],
+      confidence: 0.9,
+      areaPx: mask.areaPx,
+      areaFraction: mask.areaPx / (32 * 32),
+      edgeTouches: 0,
+      bounds: mask.bounds,
+    },
+  };
+  const canonical = canonicalBringForwardSnapshot({
+    identity: {
+      roomId: PI3A_ROOM_ID,
+      generationId: PI3A_GENERATION_A,
+      originalSha256: FOREGROUND_SHA,
+      originalWidth: 32,
+      originalHeight: 32,
+    },
+    conceptSet: "remove-segmentation-concepts/v1",
+    provider: "stored",
+    modelId: "sam3",
+    objects: [object],
+  });
+  if (!canonical) throw new Error("scan");
+  return JSON.parse(canonical) as unknown;
+}
+
+test("a committed foreground changes the thumbnail token and leaves the camera alone", async () => {
+  const legacy = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source());
+  const selected = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    async loadBringForwardForThumbnail() {
+      return {
+        state: "committed",
+        token: {
+          snapshotId: "44444444-4444-4444-8444-444444444444",
+          payloadSha256: "cd".repeat(32),
+          selectedIds: ["sofa"],
+          originalSha256: FOREGROUND_SHA,
+          originalWidth: 32,
+          originalHeight: 32,
+        },
+        paint: {
+          imageUrl: FOREGROUND_PNG,
+          originalSha256: FOREGROUND_SHA,
+          originalWidth: 32,
+          originalHeight: 32,
+          backgroundIsOriginal: true,
+          backgroundClaim: null,
+          scan: foregroundScan(),
+        },
+      };
+    },
+  }));
+  const cleared = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    async loadBringForwardForThumbnail() {
+      return { state: "none" };
+    },
+  }));
+  const missing = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    async loadBringForwardForThumbnail() {
+      return { state: "missing" };
+    },
+  }));
+  assert.equal(legacy.ok && selected.ok && cleared.ok && missing.ok, true);
+  if (!legacy.ok || !selected.ok || !cleared.ok || !missing.ok) return;
+  assert.notEqual(selected.payload.job.contentToken, legacy.payload.job.contentToken);
+  assert.equal(cleared.payload.job.contentToken, legacy.payload.job.contentToken);
+  assert.equal(missing.payload.job.contentToken, legacy.payload.job.contentToken);
+  assert.equal(selected.payload.camera.metricScale, legacy.payload.camera.metricScale);
+  assert.deepEqual(selected.payload.camera, legacy.payload.camera);
+  assert.deepEqual(selected.payload.frame, legacy.payload.frame);
+  assert.equal(selected.payload.foreground?.originalSha256, FOREGROUND_SHA);
+  assert.equal(legacy.payload.foreground, undefined);
+  const invalid = await buildVibodeThumbnailRenderPayload({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    async loadBringForwardForThumbnail() {
+      return { state: "invalid" };
+    },
+  }));
+  assert.equal(invalid.ok, false);
+  if (invalid.ok) return;
+  assert.equal(invalid.code, "foreground_unrestored");
+  assert.equal(invalid.retryable, false);
+  const inspected = await inspectVibodeThumbnailContent({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    async loadSceneUpdatedAt() {
+      return "2026-11-04T00:00:00.000Z";
+    },
+    async loadBringForwardForThumbnail(input) {
+      assert.equal(input.includeImage, false);
+      return {
+        state: "committed",
+        token: {
+          snapshotId: "44444444-4444-4444-8444-444444444444",
+          payloadSha256: "cd".repeat(32),
+          selectedIds: ["sofa"],
+          originalSha256: FOREGROUND_SHA,
+          originalWidth: 32,
+          originalHeight: 32,
+        },
+        paint: null,
+      };
+    },
+  }));
+  const inspectedLegacy = await inspectVibodeThumbnailContent({
+    roomId: PI3A_ROOM_ID,
+    versionId: VERSION_ID,
+  }, source({
+    async loadSceneUpdatedAt() {
+      return "2026-11-04T00:00:00.000Z";
+    },
+  }));
+  assert.equal(inspected.ok && inspectedLegacy.ok, true);
+  if (!inspected.ok || !inspectedLegacy.ok || inspected.empty || inspectedLegacy.empty) return;
+  assert.equal(inspected.contentToken, selected.payload.job.contentToken);
+  assert.notEqual(inspected.contentToken, inspectedLegacy.contentToken);
 });

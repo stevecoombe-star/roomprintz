@@ -1,5 +1,6 @@
 import { sha256Hex } from "@/lib/afc-v2-production/production-artifact-integrity";
 import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import { scheduleThumbnailAfterBringForwardCommit } from "@/lib/vibode-room-preview/schedule-bring-forward-thumbnail.server";
 import { readRemoveActor } from "@/lib/vibode-stage/remove-access.server";
 import {
   handleBringForwardState,
@@ -15,6 +16,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * Owner read and compare-and-swap write for Bring Forward.
+ * A successful write schedules the existing thumbnail job.
  * This route does not call Roboflow and does not reserve a segmentation quota.
  */
 export async function GET(request: Request) {
@@ -32,6 +34,8 @@ function liveDeps() {
     authorize: authorizeBringForwardIdentity,
     store: service ? new SupabaseBringForwardRepository(service) : UNAVAILABLE_STORE,
     hash: (text: string) => sha256Hex(new TextEncoder().encode(text)),
+    afterCommit: (input: { userId: string; roomId: string; generationId: string }) =>
+      scheduleThumbnailAfterBringForwardCommit(input),
   };
 }
 

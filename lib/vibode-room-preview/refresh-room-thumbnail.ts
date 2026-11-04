@@ -172,7 +172,7 @@ export function roomThumbnailRefreshHttpStatus(code: string): number {
   if (code === "not_found") return 404;
   if (code === "invalid_room") return 400;
   if (code === "no_version" || code === "scene_missing" || code === "scene_empty") return 409;
-  if (code === "thumbnail_not_ready") return 503;
+  if (code === "thumbnail_not_ready" || code === "foreground_unrestored") return 503;
   return 500;
 }
 

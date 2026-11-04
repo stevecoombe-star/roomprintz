@@ -46,6 +46,12 @@ import {
   VIBODE_PRODUCTION_LIGHT_COLOR,
   VIBODE_THUMBNAIL_RENDERER_DPR,
 } from "@/lib/vibode-thumbnail-render/still-renderer";
+import { loadBringForwardImage } from "@/lib/vibode-stage/bring-forward-image";
+import {
+  compositeBringForwardRgba,
+} from "@/lib/vibode-stage/bring-forward-cutout";
+import { readRemoveObjectUiPayload } from "@/lib/vibode-stage/remove-object-ui";
+import { decideThumbnailForegroundPaint } from "@/lib/vibode-thumbnail-render/foreground";
 
 declare global {
   interface Window {
@@ -142,6 +148,8 @@ export function ThumbnailRenderFrame() {
     let cancelled = false;
     let renderer: THREE.WebGLRenderer | null = null;
     let contactResources: StageContactResources | null = null;
+    let foregroundCanvas: HTMLCanvasElement | null = null;
+    const pixels = new AbortController();
     const fail = (code: VibodeThumbnailRenderErrorCode, message: string) => {
       if (cancelled) return;
       publish({
@@ -289,6 +297,65 @@ export function ThumbnailRenderFrame() {
       await nextFrame();
       await nextFrame();
       if (cancelled) return;
+      if (payload.foreground) {
+        const foreground = payload.foreground;
+        const loaded = await loadBringForwardImage(foreground.imageUrl, pixels.signal, true);
+        if (cancelled) return;
+        if (
+          !loaded?.rgba
+          || loaded.sha256 !== foreground.originalSha256
+          || loaded.width !== foreground.originalWidth
+          || loaded.height !== foreground.originalHeight
+        ) {
+          fail("render_page_error", "Verified ORIGINAL could not be read.");
+          return;
+        }
+        const displayedWidth = image.naturalWidth;
+        const displayedHeight = image.naturalHeight;
+        const decision = decideThumbnailForegroundPaint({
+          roomId: payload.room.roomId,
+          generationId: payload.room.afcGenerationId,
+          originalSha256: foreground.originalSha256,
+          originalWidth: foreground.originalWidth,
+          originalHeight: foreground.originalHeight,
+          displayedWidth,
+          displayedHeight,
+          backgroundIsOriginal: foreground.backgroundIsOriginal,
+          backgroundClaim: foreground.backgroundClaim,
+        });
+        if (decision === "unmeasured") {
+          fail("render_page_error", "Room photo could not be measured.");
+          return;
+        }
+        if (decision === "paint") {
+          const masks = readRemoveObjectUiPayload(foreground.scan, {
+            roomId: payload.room.roomId,
+            generationId: payload.room.afcGenerationId,
+            originalSha256: foreground.originalSha256,
+            originalWidth: foreground.originalWidth,
+            originalHeight: foreground.originalHeight,
+            sessionSerial: 0,
+            vocabularyRevision: 0,
+          });
+          const selectedIds = new Set(masks.ok ? masks.objects.map((object) => object.id) : []);
+          const cutout = masks.ok
+            ? compositeBringForwardRgba({
+              rgba: loaded.rgba,
+              width: loaded.width,
+              height: loaded.height,
+              objects: masks.objects,
+              selectedIds,
+            })
+            : null;
+          if (!cutout || !frame) {
+            fail("foreground_unrestored", "Saved foreground masks could not be read.");
+            return;
+          }
+          foregroundCanvas = mountForegroundCanvas(frame, cutout, loaded.width, loaded.height);
+          await nextFrame();
+          if (cancelled) return;
+        }
+      }
       publish({
         status: "ready",
         jobId: payload.job.jobId,
@@ -303,6 +370,8 @@ export function ThumbnailRenderFrame() {
     void run().catch(() => fail("render_page_error", "Render page failed."));
     return () => {
       cancelled = true;
+      pixels.abort();
+      foregroundCanvas?.remove();
       contactResources?.geometry.dispose();
       contactResources?.material.dispose();
       contactResources?.texture.dispose();
@@ -348,6 +417,34 @@ export function ThumbnailRenderFrame() {
       />
     </div>
   );
+}
+
+function mountForegroundCanvas(
+  frame: Element,
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+): HTMLCanvasElement | null {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.setAttribute("data-bring-forward-canvas", "true");
+  canvas.setAttribute("aria-hidden", "true");
+  canvas.style.position = "absolute";
+  canvas.style.inset = "0";
+  canvas.style.width = "100%";
+  canvas.style.height = "100%";
+  canvas.style.margin = "0";
+  canvas.style.padding = "0";
+  canvas.style.pointerEvents = "none";
+  canvas.style.zIndex = "2";
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+  const image = context.createImageData(width, height);
+  image.data.set(rgba);
+  context.putImageData(image, 0, 0);
+  frame.appendChild(canvas);
+  return canvas;
 }
 
 function dynamicOverlay(

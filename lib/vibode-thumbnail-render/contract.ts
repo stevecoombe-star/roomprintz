@@ -25,6 +25,10 @@ import {
   VIBODE_PRODUCTION_DIRECTIONAL_INTENSITY,
   VIBODE_PRODUCTION_DIRECTIONAL_POSITION,
 } from "./still-renderer";
+import {
+  validateThumbnailForegroundPaint,
+  type ThumbnailForegroundPaint,
+} from "./foreground";
 
 export const VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION =
   "vibode-thumbnail-render/v1" as const;
@@ -60,6 +64,7 @@ export const VIBODE_THUMBNAIL_RENDER_ERROR_CODES = Object.freeze([
   "signed_url_failed",
   "glb_load_failed",
   "render_page_error",
+  "foreground_unrestored",
 ] as const);
 
 export type VibodeThumbnailRenderErrorCode =
@@ -104,6 +109,7 @@ export type VibodeThumbnailRenderPayload = Readonly<{
     directionalIntensity: number;
     directionalPosition: VibodeThumbnailVec3;
   }>;
+  foreground?: ThumbnailForegroundPaint;
 }>;
 
 export type VibodeThumbnailRenderObject = Readonly<{
@@ -330,6 +336,16 @@ export function validateVibodeThumbnailRenderPayload(
   if (!objects.ok) return objects;
   const lighting = readLighting(value.lighting);
   if (!lighting.ok) return lighting;
+  let foreground: ThumbnailForegroundPaint | undefined;
+  if ("foreground" in value && value.foreground != null) {
+    const paint = validateThumbnailForegroundPaint(value.foreground, {
+      roomId,
+      versionId,
+      afcGenerationId,
+    });
+    if (!paint.ok) return paint;
+    foreground = paint.paint;
+  }
   return {
     ok: true,
     payload: {
@@ -341,6 +357,7 @@ export function validateVibodeThumbnailRenderPayload(
       camera: camera.camera,
       objects: objects.objects,
       lighting: lighting.lighting,
+      ...(foreground ? { foreground } : {}),
     },
   };
 }

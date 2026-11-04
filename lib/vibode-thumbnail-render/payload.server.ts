@@ -67,6 +67,14 @@ import {
   type VibodeThumbnailRenderPayload,
 } from "./contract";
 import {
+  THUMBNAIL_FOREGROUND_UNRESTORED,
+  thumbnailForegroundTokenField,
+  type ThumbnailForegroundLoad,
+  type ThumbnailForegroundPaint,
+  type ThumbnailForegroundToken,
+} from "./foreground";
+import { loadProductionThumbnailForeground } from "./foreground.server";
+import {
   VIBODE_PRODUCTION_AMBIENT_INTENSITY,
   VIBODE_PRODUCTION_DIRECTIONAL_INTENSITY,
   VIBODE_PRODUCTION_DIRECTIONAL_POSITION,
@@ -89,6 +97,8 @@ type VersionRecord = Readonly<{
   imageUrl: string | null;
   storageBucket: string | null;
   storagePath: string | null;
+  metadata?: unknown;
+  cleanupJobId?: string | null;
 }>;
 
 type GenerationRecord = Readonly<{
@@ -132,6 +142,17 @@ export type ThumbnailRenderSource = Readonly<{
     }>
     | Readonly<{ ok: false }>
   >;
+  /**
+   * Absent in tests, which keeps the legacy furniture still.
+   * Production reads the committed Bring Forward selection.
+   */
+  loadBringForwardForThumbnail?: (input: Readonly<{
+    userId: string;
+    roomId: string;
+    generationId: string;
+    version: VersionRecord;
+    includeImage: boolean;
+  }>) => Promise<ThumbnailForegroundLoad>;
 }>;
 
 export type ThumbnailRenderBuildResult =
@@ -248,6 +269,17 @@ export async function buildVibodeThumbnailRenderPayload(
     placed.scene.objects,
   );
   if (!scaled.ok) return scaled;
+  if (!room || !version) {
+    return thumbnailRenderError("render_access_denied", "Render access denied.", false);
+  }
+  const foreground = await resolveThumbnailForeground(source, {
+    userId: room.userId,
+    roomId: input.roomId,
+    generationId: placed.authority.generationId,
+    version,
+    includeImage: true,
+  });
+  if (!foreground.ok) return foreground.failure;
 
   const payload = assemblePayload({
     jobId: input.jobId ?? randomUUID(),
@@ -258,9 +290,16 @@ export async function buildVibodeThumbnailRenderPayload(
     policy: source.policy,
     metricScale: scaled.metricScale,
     modelAxisScales: scaled.modelAxisScales,
+    foregroundToken: foreground.token,
+    foregroundPaint: foreground.paint,
   });
   if (!payload.ok) {
-    return thumbnailRenderError("glb_identity_missing", payload.reason, false);
+    const foregroundFailure = payload.reason.startsWith("foreground");
+    return thumbnailRenderError(
+      foregroundFailure ? "foreground_unrestored" : "glb_identity_missing",
+      foregroundFailure ? THUMBNAIL_FOREGROUND_UNRESTORED : payload.reason,
+      false,
+    );
   }
   return { ok: true, payload: payload.payload };
 }
@@ -396,8 +435,10 @@ export function thumbnailSceneContentToken(input: Readonly<{
     userSizeMultiplier: number;
     modelAxisScale?: ModelAxisScale;
   }>[];
+  foreground?: ThumbnailForegroundToken | null;
 }>): string {
   const camera = input.authority.frozenCamera;
+  const foreground = thumbnailForegroundTokenField(input.foreground);
   return thumbnailContentToken({
     renderContract: VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION,
     contactShadows: {
@@ -424,6 +465,7 @@ export function thumbnailSceneContentToken(input: Readonly<{
       bucket: input.background.bucket,
       objectPath: input.background.objectPath,
     },
+    ...(foreground ? { foreground } : {}),
     objects: input.objects.map((object) => {
       const modelAxisScale = furnitureAxisScaleOrUndefined(object.modelAxisScale);
       return {
@@ -560,6 +602,8 @@ function assemblePayload(input: Readonly<{
   policy: ThumbnailRenderUrlPolicy;
   metricScale: number;
   modelAxisScales: ReadonlyMap<string, ModelAxisScale>;
+  foregroundToken: ThumbnailForegroundToken | null;
+  foregroundPaint: ThumbnailForegroundPaint | null;
 }>):
   | Readonly<{ ok: true; payload: VibodeThumbnailRenderPayload }>
   | Readonly<{ ok: false; reason: string }> {
@@ -596,6 +640,7 @@ function assemblePayload(input: Readonly<{
         metricScale: input.metricScale,
         background: input.background,
         objects,
+        foreground: input.foregroundToken,
       }),
     },
     room: {
@@ -618,6 +663,7 @@ function assemblePayload(input: Readonly<{
       far: AFC_V2_RUNTIME_CAMERA_FAR,
     },
     objects,
+    ...(input.foregroundPaint ? { foreground: input.foregroundPaint } : {}),
     lighting: {
       ambientIntensity: VIBODE_PRODUCTION_AMBIENT_INTENSITY,
       directionalIntensity: VIBODE_PRODUCTION_DIRECTIONAL_INTENSITY,
@@ -913,6 +959,17 @@ export async function inspectVibodeThumbnailContent(
     placed.scene.objects,
   );
   if (!scaled.ok) return scaled;
+  if (!room || !version) {
+    return thumbnailRenderError("render_access_denied", "Render access denied.", false);
+  }
+  const foreground = await resolveThumbnailForeground(source, {
+    userId: room.userId,
+    roomId: input.roomId,
+    generationId: placed.authority.generationId,
+    version,
+    includeImage: false,
+  });
+  if (!foreground.ok) return foreground.failure;
   const objects = placed.scene.objects.map((object) => {
     const modelAxisScale = furnitureAxisScaleOrUndefined(
       scaled.modelAxisScales.get(object.objectId),
@@ -935,6 +992,7 @@ export async function inspectVibodeThumbnailContent(
       metricScale: scaled.metricScale,
       background,
       objects,
+      foreground: foreground.token,
     }),
     roomId: placed.scene.roomId,
     versionId: placed.scene.versionId,
@@ -980,7 +1038,7 @@ export function createProductionThumbnailRenderSource(): ThumbnailRenderSource {
       if (!supabase) return null;
       const { data, error } = await supabase
         .from("vibode_room_assets")
-        .select("id, room_id, user_id, image_url, storage_bucket, storage_path")
+        .select("id, room_id, user_id, image_url, storage_bucket, storage_path, metadata, cleanup_job_id")
         .eq("id", versionId)
         .maybeSingle();
       if (error || !data || typeof data !== "object") return null;
@@ -992,6 +1050,8 @@ export function createProductionThumbnailRenderSource(): ThumbnailRenderSource {
         imageUrl: typeof row.image_url === "string" ? row.image_url : null,
         storageBucket: typeof row.storage_bucket === "string" ? row.storage_bucket : null,
         storagePath: typeof row.storage_path === "string" ? row.storage_path : null,
+        metadata: row.metadata ?? {},
+        cleanupJobId: typeof row.cleanup_job_id === "string" ? row.cleanup_job_id : null,
       };
     },
     async loadGeneration(generationId) {
@@ -1121,7 +1181,52 @@ export function createProductionThumbnailRenderSource(): ThumbnailRenderSource {
         return { ok: false };
       }
     },
+    loadBringForwardForThumbnail(input) {
+      return loadProductionThumbnailForeground(input);
+    },
   };
+}
+
+async function resolveThumbnailForeground(
+  source: ThumbnailRenderSource,
+  input: Readonly<{
+    userId: string;
+    roomId: string;
+    generationId: string;
+    version: VersionRecord;
+    includeImage: boolean;
+  }>,
+): Promise<
+  | Readonly<{ ok: true; token: ThumbnailForegroundToken | null; paint: ThumbnailForegroundPaint | null }>
+  | Readonly<{ ok: false; failure: VibodeThumbnailRenderFailure }>
+> {
+  if (!source.loadBringForwardForThumbnail) return { ok: true, token: null, paint: null };
+  let loaded: ThumbnailForegroundLoad;
+  try {
+    loaded = await source.loadBringForwardForThumbnail(input);
+  } catch {
+    return {
+      ok: false,
+      failure: thumbnailRenderError("foreground_unrestored", THUMBNAIL_FOREGROUND_UNRESTORED, false),
+    };
+  }
+  if (loaded.state === "none" || loaded.state === "missing") {
+    return { ok: true, token: null, paint: null };
+  }
+  if (loaded.state !== "committed") {
+    return {
+      ok: false,
+      failure: thumbnailRenderError("foreground_unrestored", THUMBNAIL_FOREGROUND_UNRESTORED, false),
+    };
+  }
+  const token = thumbnailForegroundTokenField(loaded.token);
+  if (!token || (input.includeImage && !loaded.paint)) {
+    return {
+      ok: false,
+      failure: thumbnailRenderError("foreground_unrestored", THUMBNAIL_FOREGROUND_UNRESTORED, false),
+    };
+  }
+  return { ok: true, token, paint: input.includeImage ? loaded.paint : null };
 }
 
 async function selectModelDimensionRows<T>(
