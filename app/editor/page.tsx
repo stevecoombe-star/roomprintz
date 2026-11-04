@@ -91,6 +91,7 @@ import {
   nextRemoveReadinessGenerationId,
   uploadedRoomUrlSync,
 } from "@/lib/vibode-stage/remove-readiness";
+import { readBringForwardBackgroundClaim } from "@/lib/vibode-stage/bring-forward-cutout";
 import { isRemoveHistoryAsset, REMOVE_EDIT_LABEL } from "@/lib/vibode-stage/remove-edit";
 
 import {
@@ -5382,6 +5383,23 @@ function EditorPageInner() {
     versions,
   ]);
   const integratedViewerBackgroundImageUrl = harmonizePresentation.backgroundImageUrl;
+  const bringForwardBackground = useMemo(() => {
+    if (!integratedViewerBackgroundImageUrl || !editorRoomId || !afcRuntime.generationId) return null;
+    const asset = selectedVersion?.image_url === integratedViewerBackgroundImageUrl
+      ? selectedVersion
+      : versions.find((item) => item.image_url === integratedViewerBackgroundImageUrl) ?? null;
+    return readBringForwardBackgroundClaim({
+      asset,
+      roomId: editorRoomId,
+      generationId: afcRuntime.generationId,
+    });
+  }, [
+    afcRuntime.generationId,
+    editorRoomId,
+    integratedViewerBackgroundImageUrl,
+    selectedVersion,
+    versions,
+  ]);
   const integratedSceneVersionId = harmonizePresentation.sceneVersionId;
   const settleHarmonizePublication = useCallback((
     job: HarmonizeExperienceJob,
@@ -12303,6 +12321,7 @@ function EditorPageInner() {
             activeHistoryAssetId={activeAssetId}
             activeHistoryImageUrl={versions.find((asset) => asset.id === activeAssetId)?.image_url ?? null}
             alignmentGenerationId={removeReadinessGenerationId}
+            bringForwardBackground={bringForwardBackground}
             onCleanupHistoryAccepted={refreshCleanupHistory}
             onRemoveEditSaved={activateSavedRemoveEdit}
           >

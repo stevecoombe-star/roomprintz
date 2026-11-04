@@ -3,10 +3,12 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  BRING_FORWARD_BACKGROUND_MESSAGE,
   assessBringForwardDisplay,
   bringForwardImageIdentity,
   bringForwardScanKey,
   bringForwardStatusMessage,
+  readBringForwardBackgroundClaim,
   cancelBringForward,
   compositeBringForwardRgba,
   doneBringForward,
@@ -270,6 +272,177 @@ test("display is shown only for the verified original outside remove", () => {
   }), "hide");
 });
 
+test("compatible room backgrounds keep the original cutout and reject unknown images", () => {
+  const snapshot: BringForwardSnapshot = {
+    roomId: ROOM,
+    generationId: GENERATION,
+    original: image(),
+    objects: [],
+  };
+  const source = image();
+  const removed = image("cd".repeat(32));
+  const cleaned = image("ef".repeat(32), 400, 401);
+  const base = {
+    snapshot,
+    roomId: ROOM,
+    generationId: GENERATION,
+    source,
+    removeActive: false,
+  };
+  const remove = readBringForwardBackgroundClaim({
+    roomId: ROOM,
+    generationId: GENERATION,
+    asset: {
+      room_id: ROOM,
+      image_url: "https://example.test/remove.png",
+      metadata: {
+        removeEditFingerprint: "12".repeat(32),
+        sourceRoomId: ROOM,
+        sourceAfcGenerationId: GENERATION,
+        originalSha256: SHA.toUpperCase(),
+      },
+    },
+  });
+  const cleanup = readBringForwardBackgroundClaim({
+    roomId: ROOM,
+    generationId: GENERATION,
+    asset: {
+      room_id: ROOM,
+      image_url: "https://example.test/cleanup.png",
+      metadata: {
+        cleanupJobId: "33333333-3333-4333-8333-333333333333",
+        sourceRoomId: ROOM,
+        sourceAfcGenerationId: GENERATION,
+        originalSha256: SHA,
+      },
+    },
+  });
+  const history = readBringForwardBackgroundClaim({
+    roomId: ROOM,
+    generationId: GENERATION,
+    asset: {
+      room_id: ROOM,
+      image_url: "https://example.test/history.png",
+      metadata: {},
+    },
+  });
+  assert.equal(remove?.kind, "remove");
+  assert.equal(remove?.originalSha256, SHA);
+  assert.equal(cleanup?.kind, "cleanup");
+  assert.equal(history?.kind, "history");
+  assert.equal(history?.generationId, GENERATION);
+  assert.equal(assessBringForwardDisplay({ ...base, displayed: image(), background: null }), "show");
+  assert.equal(assessBringForwardDisplay({ ...base, displayed: removed, background: remove }), "show");
+  assert.equal(assessBringForwardDisplay({ ...base, displayed: cleaned, background: cleanup }), "show");
+  assert.equal(assessBringForwardDisplay({ ...base, displayed: removed, background: history }), "show");
+  assert.equal(assessBringForwardDisplay({ ...base, displayed: removed, background: null }), "hide");
+  assert.equal(assessBringForwardDisplay({
+    ...base,
+    displayed: image("cd".repeat(32), 5, 4),
+    background: history,
+  }), "hide");
+  assert.equal(assessBringForwardDisplay({
+    ...base,
+    displayed: removed,
+    background: remove ? { ...remove, roomId: "other-room" } : null,
+  }), "hide");
+  assert.equal(assessBringForwardDisplay({
+    ...base,
+    displayed: removed,
+    background: remove ? { ...remove, generationId: "other-generation" } : null,
+  }), "hide");
+  assert.equal(assessBringForwardDisplay({
+    ...base,
+    displayed: removed,
+    source: image("cd".repeat(32)),
+    background: remove,
+  }), "hide");
+  assert.equal(assessBringForwardDisplay({
+    ...base,
+    displayed: removed,
+    background: remove ? { ...remove, originalSha256: "cd".repeat(32) } : null,
+  }), "hide");
+  assert.equal(readBringForwardBackgroundClaim({
+    roomId: ROOM,
+    generationId: GENERATION,
+    asset: {
+      room_id: "other-room",
+      image_url: "https://example.test/remove.png",
+      metadata: {
+        removeEditFingerprint: "12".repeat(32),
+        sourceAfcGenerationId: GENERATION,
+        originalSha256: SHA,
+      },
+    },
+  }), null);
+  assert.equal(readBringForwardBackgroundClaim({
+    roomId: ROOM,
+    generationId: GENERATION,
+    asset: {
+      room_id: ROOM,
+      image_url: "https://example.test/remove.png",
+      metadata: {
+        removeEditFingerprint: "12".repeat(32),
+        sourceAfcGenerationId: "other-generation",
+        originalSha256: SHA,
+      },
+    },
+  }), null);
+  assert.equal(readBringForwardBackgroundClaim({
+    roomId: ROOM,
+    generationId: GENERATION,
+    asset: {
+      room_id: ROOM,
+      image_url: "https://example.test/history.png",
+      metadata: { sourceAfcGenerationId: "other-generation" },
+    },
+  }), null);
+  assert.equal(readBringForwardBackgroundClaim({
+    roomId: ROOM,
+    generationId: GENERATION,
+    asset: { image_url: "https://example.test/external.png" },
+  }), null);
+
+  const chair = record("chair", mustPack(4, 4, (x, y) => x === 1 && y === 1));
+  const originalPixels = rgba(4, 4, (x, y) => (x === 1 && y === 1 ? [10, 20, 30] : [1, 1, 1]));
+  const cutout = compositeBringForwardRgba({
+    rgba: originalPixels,
+    width: 4,
+    height: 4,
+    objects: [chair],
+    selectedIds: new Set(["chair"]),
+  });
+  assert.ok(cutout);
+  assert.deepEqual(pixel(cutout, 4, 1, 1), [10, 20, 30, 255]);
+  assert.equal(compositeBringForwardRgba({
+    rgba: originalPixels,
+    width: 4,
+    height: 3,
+    objects: [chair],
+    selectedIds: new Set(["chair"]),
+  }), null);
+  assert.equal(bringForwardScanKey({
+    roomId: ROOM,
+    generationId: GENERATION,
+    originalSha256: SHA,
+    originalWidth: 4,
+    originalHeight: 4,
+    vocabularyRevision: 0,
+  }), bringForwardScanKey({
+    roomId: ROOM,
+    generationId: GENERATION,
+    originalSha256: SHA.toUpperCase(),
+    originalWidth: 4,
+    originalHeight: 4,
+    vocabularyRevision: 0,
+  }));
+  assert.equal(
+    bringForwardStatusMessage({ display: "hide", scanReady: true, objectCount: 1, error: null }),
+    BRING_FORWARD_BACKGROUND_MESSAGE,
+  );
+  assert.equal(BRING_FORWARD_BACKGROUND_MESSAGE, "Bring Forward isn't available for this room image.");
+});
+
 test("selection starts empty and done and cancel keep their own sets", () => {
   const chair = record("chair", mustPack(4, 4, (x, y) => x === 1 && y === 1));
   const lamp = record("lamp", mustPack(4, 4, (x, y) => x === 3 && y === 2));
@@ -373,6 +546,8 @@ test("the foreground canvas is mounted above the furniture frame without a secon
   const controls = readFileSync(new URL("../../components/stage/BringForwardSession.tsx", import.meta.url), "utf8");
   const route = readFileSync(new URL("../../app/api/vibode/admin/remove-objects/route.ts", import.meta.url), "utf8");
   const cutout = readFileSync(new URL("./bring-forward-cutout.ts", import.meta.url), "utf8");
+  const editor = readFileSync(new URL("../../app/editor/page.tsx", import.meta.url), "utf8");
+  const shell = readFileSync(new URL("../../components/stage/StageEditorShell.tsx", import.meta.url), "utf8");
   const mount = viewer.indexOf("ref={mountRef}");
   const foreground = viewer.indexOf("<BringForwardLayer", mount);
   const loading = viewer.indexOf('furniturePhase === "loading"', foreground);
@@ -392,7 +567,20 @@ test("the foreground canvas is mounted above the furniture frame without a secon
   assert.match(controls, /aria-label="Bring Forward"/);
   assert.match(controls, /data-bring-forward="done"/);
   assert.match(controls, /data-bring-forward="cancel"/);
+  assert.match(controls, /background: activeClaim/);
+  assert.match(editor, /readBringForwardBackgroundClaim/);
+  assert.match(shell, /background=\{bringForwardBackground\}/);
   assert.equal(cutout.match(/requestRemoveObjects\(/g)?.length, 1);
+  const scanKey = cutout.slice(
+    cutout.indexOf("export function bringForwardScanKey"),
+    cutout.indexOf("export function bringForwardDisplayKey"),
+  );
+  assert.doesNotMatch(scanKey, /backgroundUrl|displayed/);
+  const assess = cutout.slice(
+    cutout.indexOf("export function assessBringForwardDisplay"),
+    cutout.indexOf("export function readBringForwardBackgroundClaim"),
+  );
+  assert.doesNotMatch(assess, /requestRemoveObjects|loadBringForwardScan/);
   assert.match(route, /readRemoveActor/);
   assert.match(route, /reserveSegmentation/);
   assert.doesNotMatch(route, /bringForward|bring-forward/);

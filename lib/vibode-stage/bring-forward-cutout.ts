@@ -7,6 +7,9 @@
  * this editor session. Cancel restores the set from before the edit.
  */
 
+import { classifyAfcR3cImagePairCompatibility } from "@/app/admin/3d-room-lab/research/afc-r3c-image-pair-compatibility";
+import { isCleanupHistoryAsset } from "@/lib/vibode-stage/remove-cleanup-history-ui";
+import { isRemoveHistoryAsset } from "@/lib/vibode-stage/remove-edit";
 import {
   readRemoveObjectUiPayload,
   requestRemoveObjects,
@@ -21,7 +24,7 @@ import {
 const SHA256 = /^[0-9a-f]{64}$/;
 
 export const BRING_FORWARD_BACKGROUND_MESSAGE =
-  "Bring Forward works on the original room photo. This image is different, so nothing is brought forward.";
+  "Bring Forward isn't available for this room image.";
 export const BRING_FORWARD_CHECKING_MESSAGE = "Checking the room photo…";
 export const BRING_FORWARD_FINDING_MESSAGE = "Finding objects…";
 export const BRING_FORWARD_EMPTY_MESSAGE = "No objects were found in this photo.";
@@ -41,6 +44,21 @@ export type BringForwardSnapshot = Readonly<{
   generationId: string;
   original: BringForwardImageIdentity;
   objects: readonly RemoveObjectRecord[];
+}>;
+
+export type BringForwardBackgroundKind = "remove" | "cleanup" | "history";
+
+/**
+ * A room History image the certified viewer is actually showing.
+ * REMOVE and CLEAN UP must name this generation and ORIGINAL. Other History
+ * images must belong to this room. A declared generation that differs is not a claim.
+ */
+export type BringForwardBackgroundClaim = Readonly<{
+  imageUrl: string;
+  roomId: string;
+  generationId: string;
+  kind: BringForwardBackgroundKind;
+  originalSha256: string | null;
 }>;
 
 export type BringForwardScan = Readonly<{
@@ -86,8 +104,13 @@ export function bringForwardImageIdentity(
 }
 
 /**
- * Show only when the displayed background and the ORIGINAL pixel source are
- * the same verified image as the retained scan. REMOVE editing hides the cutout.
+ * The cutout always uses verified ORIGINAL pixels. The displayed photo may be
+ * that ORIGINAL, or a room History image the certified frame already accepts.
+ * Byte equality is required for the ORIGINAL artifact, not for the displayed
+ * photo. An unknown URL is rejected even when its aspect matches.
+ * REMOVE editing hides the cutout. Exact pixel registration is proven only
+ * when the displayed bytes are the ORIGINAL. Other admitted photos share the
+ * certified frame's existing exact-grid or aspect-compatible stretch.
  */
 export function assessBringForwardDisplay(input: Readonly<{
   snapshot: BringForwardSnapshot | null;
@@ -96,6 +119,7 @@ export function assessBringForwardDisplay(input: Readonly<{
   displayed: BringForwardImageIdentity | null;
   source: BringForwardImageIdentity | null;
   removeActive: boolean;
+  background?: BringForwardBackgroundClaim | null;
 }>): "show" | "hide" {
   if (input.removeActive) return "hide";
   if (!presentText(input.roomId) || !presentText(input.generationId)) return "hide";
@@ -107,8 +131,57 @@ export function assessBringForwardDisplay(input: Readonly<{
   const displayed = bringForwardImageIdentity(input.displayed);
   const source = bringForwardImageIdentity(input.source);
   if (!original || !displayed || !source) return "hide";
-  if (!sameImage(original, displayed) || !sameImage(original, source)) return "hide";
-  return "show";
+  if (!sameImage(original, source)) return "hide";
+  if (sameImage(original, displayed)) return "show";
+  const claim = input.background ?? null;
+  if (!claim || claim.roomId !== input.roomId || claim.generationId !== input.generationId) return "hide";
+  if (claim.kind !== "remove" && claim.kind !== "cleanup" && claim.kind !== "history") return "hide";
+  if (claim.originalSha256) {
+    const bound = claim.originalSha256.trim().toLowerCase();
+    if (bound !== original.sha256) return "hide";
+  } else if (claim.kind === "remove" || claim.kind === "cleanup") {
+    return "hide";
+  }
+  return certifiedFrameAllows(original, displayed) ? "show" : "hide";
+}
+
+export function readBringForwardBackgroundClaim(input: Readonly<{
+  asset: unknown;
+  roomId: string;
+  generationId: string;
+}>): BringForwardBackgroundClaim | null {
+  const row = record(input.asset);
+  if (!row || !presentText(input.roomId) || !presentText(input.generationId)) return null;
+  const imageUrl = typeof row.image_url === "string" ? row.image_url.trim() : "";
+  if (!imageUrl) return null;
+  const metadata = record(row.metadata) ?? {};
+  const assetRoom = typeof row.room_id === "string" ? row.room_id : null;
+  const sourceRoom = typeof metadata.sourceRoomId === "string" ? metadata.sourceRoomId : null;
+  if (assetRoom && assetRoom !== input.roomId) return null;
+  if (sourceRoom && sourceRoom !== input.roomId) return null;
+  if (!assetRoom && !sourceRoom) return null;
+  const kind: BringForwardBackgroundKind = isCleanupHistoryAsset(row)
+    ? "cleanup"
+    : isRemoveHistoryAsset(row)
+      ? "remove"
+      : "history";
+  const declaredGeneration = typeof metadata.sourceAfcGenerationId === "string"
+    ? metadata.sourceAfcGenerationId
+    : null;
+  if (declaredGeneration && declaredGeneration !== input.generationId) return null;
+  if ((kind === "remove" || kind === "cleanup") && declaredGeneration !== input.generationId) return null;
+  const declaredOriginal = typeof metadata.originalSha256 === "string"
+    ? metadata.originalSha256.trim().toLowerCase()
+    : null;
+  if (declaredOriginal && !SHA256.test(declaredOriginal)) return null;
+  if ((kind === "remove" || kind === "cleanup") && !declaredOriginal) return null;
+  return {
+    imageUrl,
+    roomId: input.roomId,
+    generationId: declaredGeneration ?? input.generationId,
+    kind,
+    originalSha256: declaredOriginal,
+  };
 }
 
 export function bringForwardScanKey(input: Readonly<{
@@ -141,7 +214,9 @@ export function bringForwardDisplayKey(input: Readonly<{
   generationId: string;
   backgroundUrl: string;
   original: BringForwardImageIdentity;
+  background?: BringForwardBackgroundClaim | null;
 }>): string {
+  const claim = input.background;
   return [
     input.roomId,
     input.generationId,
@@ -149,6 +224,7 @@ export function bringForwardDisplayKey(input: Readonly<{
     input.original.sha256,
     input.original.width,
     input.original.height,
+    claim ? [claim.kind, claim.roomId, claim.generationId, claim.originalSha256 ?? ""].join(":") : "",
   ].join("\0");
 }
 
@@ -468,6 +544,33 @@ export function compositeBringForwardRgba(input: Readonly<{
     }
   }
   return covered ? output : null;
+}
+
+function certifiedFrameAllows(
+  original: BringForwardImageIdentity,
+  displayed: BringForwardImageIdentity,
+): boolean {
+  const compatibility = classifyAfcR3cImagePairCompatibility(
+    {
+      fingerprint: original.sha256,
+      decodedWidth: original.width,
+      decodedHeight: original.height,
+      orientation: 1,
+    },
+    {
+      fingerprint: displayed.sha256,
+      decodedWidth: displayed.width,
+      decodedHeight: displayed.height,
+      orientation: 1,
+    },
+  );
+  return compatibility.tier === "exact_grid_compatible"
+    || compatibility.tier === "aspect_compatible_rescaled";
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
 function sameImage(left: BringForwardImageIdentity, right: BringForwardImageIdentity): boolean {

@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 
 import { BringForwardProvider } from "@/components/stage/BringForwardSession";
+import type { BringForwardBackgroundClaim } from "@/lib/vibode-stage/bring-forward-cutout";
 import { HarmonizeExportProvider } from "@/components/stage/HarmonizeExportContext";
 import { RemoveAlignmentProvider } from "@/components/stage/RemoveAlignmentSession";
 import { StageCatalogDrawer } from "@/components/stage/StageCatalogDrawer";
@@ -16,6 +17,7 @@ export function StageEditorShell({
   activeHistoryAssetId = null,
   activeHistoryImageUrl = null,
   alignmentGenerationId = null,
+  bringForwardBackground = null,
   onCleanupHistoryAccepted,
   onRemoveEditSaved,
   children,
@@ -25,6 +27,7 @@ export function StageEditorShell({
   activeHistoryAssetId?: string | null;
   activeHistoryImageUrl?: string | null;
   alignmentGenerationId?: string | null;
+  bringForwardBackground?: BringForwardBackgroundClaim | null;
   onCleanupHistoryAccepted?: (
     roomId: string,
     assetId: string,
@@ -46,7 +49,7 @@ export function StageEditorShell({
         onCleanupHistoryAccepted={onCleanupHistoryAccepted}
         onRemoveEditSaved={onRemoveEditSaved}
       >
-      <BringForwardProvider>
+      <BringForwardProvider background={bringForwardBackground}>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-stage-shell="true">
         <StageEditorHeader />
         <div

@@ -19,6 +19,7 @@ import {
   assessBringForwardDisplay,
   bringForwardDisplayKey,
   bringForwardImageIdentity,
+  type BringForwardBackgroundClaim,
   bringForwardScanKey,
   bringForwardScanVersion,
   bringForwardStatusMessage,
@@ -69,7 +70,13 @@ type BringForwardContextValue = Readonly<{
 
 const BringForwardContext = createContext<BringForwardContextValue | null>(null);
 
-export function BringForwardProvider({ children }: { children: ReactNode }) {
+export function BringForwardProvider({
+  children,
+  background = null,
+}: {
+  children: ReactNode;
+  background?: BringForwardBackgroundClaim | null;
+}) {
   const alignment = useRemoveAlignment();
   const roomId = alignment?.roomId ?? "";
   const generationId = alignment?.report?.generationId ?? "";
@@ -116,12 +123,16 @@ export function BringForwardProvider({ children }: { children: ReactNode }) {
   const noteBackgroundUrl = useCallback((url: string | null) => {
     setBackgroundUrl((current) => current === url ? current : url);
   }, []);
+  const activeClaim = background && backgroundUrl && background.imageUrl === backgroundUrl
+    ? background
+    : null;
   const displayKey = original && backgroundUrl && roomId && generationId
     ? bringForwardDisplayKey({
       roomId,
       generationId,
       backgroundUrl,
       original,
+      background: activeClaim,
     })
     : null;
   const visibleIds = visibleBringForwardIds(activeEditor);
@@ -166,6 +177,7 @@ export function BringForwardProvider({ children }: { children: ReactNode }) {
           ? { sha256: source.sha256, width: source.width, height: source.height }
           : null,
         removeActive: false,
+        background: activeClaim,
       });
       if (decision !== "show" || !source?.rgba) {
         setVerified((current) => (current && current.key === key ? null : current));
@@ -187,6 +199,7 @@ export function BringForwardProvider({ children }: { children: ReactNode }) {
       controller.abort();
     };
   }, [
+    activeClaim,
     activeEditor.editing,
     backgroundUrl,
     displayKey,
