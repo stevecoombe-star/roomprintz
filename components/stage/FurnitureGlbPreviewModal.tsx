@@ -6,7 +6,6 @@ import * as THREE from "three";
 
 import {
   clampPreviewOrbit,
-  cycleFocusableIndex,
   disposePreviewObject,
   formatFurnitureDimensions,
   initialPreviewCamera,
@@ -14,6 +13,7 @@ import {
   orbitPreviewPosition,
   previewCopy,
   previewFar,
+  previewKeyboardAction,
   previewLoadPlan,
   previewNear,
   previewOrbitLimits,
@@ -63,29 +63,21 @@ export function FurnitureGlbPreviewModal({
       : null;
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        onCloseRef.current();
-        return;
-      }
-      if (event.target === canvasRef.current) {
-        const nudged = sessionRef.current?.nudge(event.key) ?? false;
-        if (nudged) event.preventDefault();
-      }
-      if (event.key !== "Tab" || !dialog) return;
-      const items = [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)];
-      if (items.length === 0) return;
-      const current = items.indexOf(document.activeElement as HTMLElement);
-      const nextIndex = cycleFocusableIndex(
-        current < 0 ? (event.shiftKey ? 0 : items.length - 1) : current,
-        items.length,
-        event.shiftKey,
-      );
-      const leavingEnds = event.shiftKey ? current <= 0 : current === items.length - 1 || current < 0;
-      if (!leavingEnds) return;
-      event.preventDefault();
-      items[nextIndex]?.focus();
+      const items = dialog ? [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)] : [];
+      const nudged = event.target === canvasRef.current
+        ? (sessionRef.current?.nudge(event.key) ?? false)
+        : false;
+      const action = previewKeyboardAction({
+        key: event.key,
+        shiftKey: event.shiftKey,
+        nudged,
+        focusIndex: items.indexOf(document.activeElement as HTMLElement),
+        focusCount: items.length,
+      });
+      event.stopPropagation();
+      if (action.preventDefault) event.preventDefault();
+      if (action.close) onCloseRef.current();
+      if (action.nextFocusIndex != null) items[action.nextFocusIndex]?.focus();
     };
     window.addEventListener("keydown", onKey, true);
     return () => {
@@ -199,8 +191,13 @@ export function FurnitureGlbPreviewDialog({
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-neutral-950/75 p-3 sm:p-6"
-      onMouseDown={(event) => {
+      onPointerDown={(event) => {
+        event.stopPropagation();
         if (event.target === event.currentTarget) onBackdrop?.();
+      }}
+      onWheel={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
       }}
     >
       <div

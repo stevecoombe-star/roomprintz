@@ -37,6 +37,7 @@ import {
   initialPreviewCamera,
   nudgePreviewOrbit,
   openGlbPreview,
+  previewKeyboardAction,
   previewLoadPlan,
   previewOrbitLimits,
   previewSaveState,
@@ -388,6 +389,84 @@ test("fixture GLB loads, grounds, and leaves another object untouched", async ()
 
   const rejected = await readPreviewGlb(new Uint8Array([1, 2, 3, 4]).buffer);
   assert.deepEqual(rejected, { ok: false, message: "This file isn't a supported GLB." });
+});
+
+test("preview keys stay inside the dialog and do not reach STAGE", () => {
+  const shift = previewKeyboardAction({
+    key: "Shift",
+    shiftKey: true,
+    nudged: false,
+    focusIndex: 1,
+    focusCount: 3,
+  });
+  assert.equal(shift.stopPropagation, true);
+  assert.equal(shift.preventDefault, false);
+  assert.equal(shift.close, false);
+
+  const undo = previewKeyboardAction({
+    key: "z",
+    shiftKey: false,
+    nudged: false,
+    focusIndex: 0,
+    focusCount: 3,
+  });
+  assert.equal(undo.stopPropagation, true);
+  assert.equal(undo.close, false);
+  assert.equal(undo.nextFocusIndex, null);
+
+  const escape = previewKeyboardAction({
+    key: "Escape",
+    shiftKey: false,
+    nudged: false,
+    focusIndex: 2,
+    focusCount: 3,
+  });
+  assert.deepEqual(escape, {
+    stopPropagation: true,
+    preventDefault: true,
+    close: true,
+    nextFocusIndex: null,
+  });
+
+  const orbit = previewKeyboardAction({
+    key: "ArrowRight",
+    shiftKey: false,
+    nudged: true,
+    focusIndex: 1,
+    focusCount: 3,
+  });
+  assert.equal(orbit.preventDefault, true);
+  assert.equal(orbit.close, false);
+
+  const tabInside = previewKeyboardAction({
+    key: "Tab",
+    shiftKey: false,
+    nudged: false,
+    focusIndex: 0,
+    focusCount: 3,
+  });
+  assert.equal(tabInside.preventDefault, false);
+  assert.equal(tabInside.nextFocusIndex, null);
+
+  const tabWrap = previewKeyboardAction({
+    key: "Tab",
+    shiftKey: false,
+    nudged: false,
+    focusIndex: 2,
+    focusCount: 3,
+  });
+  assert.equal(tabWrap.preventDefault, true);
+  assert.equal(tabWrap.nextFocusIndex, 0);
+
+  const modalSource = source("components/stage/FurnitureGlbPreviewModal.tsx");
+  assert.match(modalSource, /previewKeyboardAction/);
+  assert.match(modalSource, /event\.stopPropagation\(\)/);
+  assert.match(modalSource, /addEventListener\("keydown", onKey, true\)/);
+
+  const furniture = source("components/stage/StageMyFurniturePanel.tsx");
+  assert.match(furniture, /furnitureSubmode === "library" \? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"/);
+  assert.match(furniture, /furnitureSubmode === "generator" \? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"/);
+  assert.doesNotMatch(furniture, /undo\(|boundScene|camera|selection/);
 });
 
 test("generator and preview markup stay disconnected from Meshy and from STAGE", () => {

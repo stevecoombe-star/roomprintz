@@ -315,6 +315,49 @@ export function cycleFocusableIndex(current: number, count: number, reverse: boo
   return (current + step + count) % count;
 }
 
+export type PreviewKeyboardAction = {
+  stopPropagation: true;
+  preventDefault: boolean;
+  close: boolean;
+  nextFocusIndex: number | null;
+};
+
+/**
+ * Every key is kept inside the preview while it is open. The underlying STAGE
+ * listeners stay on the window bubble path, so stopping propagation here is
+ * what keeps Shift, Escape, and editing shortcuts away from the room.
+ */
+export function previewKeyboardAction(input: {
+  key: string;
+  shiftKey: boolean;
+  nudged: boolean;
+  focusIndex: number;
+  focusCount: number;
+}): PreviewKeyboardAction {
+  if (input.key === "Escape") {
+    return { stopPropagation: true, preventDefault: true, close: true, nextFocusIndex: null };
+  }
+  if (input.nudged) {
+    return { stopPropagation: true, preventDefault: true, close: false, nextFocusIndex: null };
+  }
+  if (input.key === "Tab" && input.focusCount > 0) {
+    const nextFocusIndex = cycleFocusableIndex(
+      input.focusIndex < 0
+        ? (input.shiftKey ? 0 : input.focusCount - 1)
+        : input.focusIndex,
+      input.focusCount,
+      input.shiftKey,
+    );
+    const leavingEnds = input.shiftKey
+      ? input.focusIndex <= 0
+      : input.focusIndex === input.focusCount - 1 || input.focusIndex < 0;
+    if (leavingEnds) {
+      return { stopPropagation: true, preventDefault: true, close: false, nextFocusIndex };
+    }
+  }
+  return { stopPropagation: true, preventDefault: false, close: false, nextFocusIndex: null };
+}
+
 const TEXTURE_KEYS = [
   "map",
   "normalMap",
