@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { SceneObjectDefinition } from "@/lib/afc-v2-runtime/types";
 import type { RuntimeFurnitureAssetDefinition } from "@/lib/afc-v2-runtime/runtime-furniture-assets";
 import { runtimeDefinitionLeaksProvenance } from "@/lib/vibode-stage/partner-runtime-assets";
@@ -108,6 +110,7 @@ export async function createPersonalFurnitureUpload(input: Readonly<{
     status: "pending",
     resultAssetId: null,
     expiresAt,
+    updatedAt: input.now.toISOString(),
   };
   await input.store.insertUpload(upload);
   const signed = await input.objects.createPendingUploadUrl(pendingObjectPath);
@@ -150,15 +153,10 @@ export async function finalizePersonalFurnitureUpload(input: Readonly<{
     return { ok: true, item: toPersonalLibraryItem(asset, preview), idempotent: true };
   }
   if (existing.status === "finalizing") {
-    const recovered = await input.store.findOwnedAsset(input.userId, existing.assetId);
-    if (recovered && recovered.userId === input.userId) {
-      await input.store.markUploadFinalized(input.userId, input.uploadId, recovered.assetId);
-      const preview = await signPreview(input.objects, recovered);
-      return { ok: true, item: toPersonalLibraryItem(recovered, preview), idempotent: true };
-    }
-    return failure(409, "UPLOAD_IN_PROGRESS", "This upload is already being saved.");
+    const recovered = await recoverFinalizedAsset(input, existing.assetId);
+    if (recovered) return recovered;
   }
-  if (existing.status !== "pending") {
+  if (existing.status !== "pending" && existing.status !== "finalizing") {
     return failure(409, "UPLOAD_CLOSED", "This upload can no longer be saved.");
   }
   const claimed = await input.store.claimUpload(input.userId, input.uploadId, input.now.toISOString());
@@ -213,9 +211,19 @@ export async function finalizePersonalFurnitureUpload(input: Readonly<{
     return failure(500, "STORE_FAILED", "The model could not be saved.");
   }
   if (written === "exists") {
-    await input.objects.remove(claimed.pendingObjectPath);
-    await input.store.markUploadRejected(input.userId, input.uploadId);
-    return failure(409, "ASSET_EXISTS", "This model was already saved.");
+    const stored = await input.objects.read(claimed.permanentObjectPath);
+    const sameBytes = stored != null && sha256Hex(stored) === validated.sha256;
+    if (!sameBytes) {
+      const owner = await input.store.findOwnedAsset(input.userId, claimed.assetId);
+      if (owner) {
+        return failure(409, "ASSET_EXISTS", "This model was already saved.");
+      }
+      await input.objects.remove(claimed.permanentObjectPath);
+      const rewritten = await input.objects.writePermanent(claimed.permanentObjectPath, bytes);
+      if (rewritten !== "written") {
+        return failure(500, "STORE_FAILED", "The model could not be saved. Please try again.");
+      }
+    }
   }
   const asset: PersonalFurnitureAssetRecord = {
     assetId: claimed.assetId,
@@ -322,6 +330,26 @@ export async function personalSceneAssetsAreOwned(input: Readonly<{
   if (ids.length === 0) return "empty";
   const owned = await input.store.ownedAssetIds(input.userId, ids);
   return ids.every((id) => owned.has(id)) ? "owned" : "foreign";
+}
+
+async function recoverFinalizedAsset(
+  input: Readonly<{
+    userId: string;
+    uploadId: string;
+    store: PersonalFurnitureStore;
+    objects: PersonalObjectStore;
+  }>,
+  assetId: string,
+): Promise<Readonly<{ ok: true; item: PersonalFurnitureLibraryItem; idempotent: true }> | null> {
+  const recovered = await input.store.findOwnedAsset(input.userId, assetId);
+  if (!recovered || recovered.userId !== input.userId) return null;
+  await input.store.markUploadFinalized(input.userId, input.uploadId, recovered.assetId);
+  const preview = await signPreview(input.objects, recovered);
+  return { ok: true, item: toPersonalLibraryItem(recovered, preview), idempotent: true };
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 async function signPreview(

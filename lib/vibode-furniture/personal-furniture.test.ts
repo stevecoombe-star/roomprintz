@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -13,6 +14,7 @@ import {
   createPersonalFurnitureAssetId,
   isPersonalFurnitureAssetId,
   PERSONAL_FURNITURE_BUCKET,
+  PERSONAL_FURNITURE_FINALIZE_LEASE_MS,
   PERSONAL_FURNITURE_GLB_MAX_BYTES,
   personalFurniturePendingPath,
   personalFurniturePermanentPath,
@@ -34,6 +36,7 @@ import {
 import { resolveMixedSceneRuntimeAssets, resolvePersonalRuntimeAssets } from "./runtime-resolve";
 import { personalSceneAssetOwnership } from "./scene-guard.server";
 import type { PersonalFurnitureStore, PersonalGlbValidation, PersonalObjectStore } from "./store";
+import { personalUploadClaimOutcome, personalUploadShouldExpire } from "./upload-lease";
 import { validatePersonalFurnitureGlb } from "./validate.server";
 
 const USER_A = "11111111-1111-4111-8111-111111111111";
@@ -109,11 +112,7 @@ class MemoryRecords implements PersonalFurnitureStore {
   async expireUploads(userId: string, nowIso: string) {
     const paths: string[] = [];
     this.uploads = this.uploads.map((upload) => {
-      if (
-        upload.userId === userId &&
-        (upload.status === "pending" || upload.status === "finalizing") &&
-        upload.expiresAt <= nowIso
-      ) {
+      if (upload.userId === userId && personalUploadShouldExpire(upload, nowIso)) {
         paths.push(upload.pendingObjectPath);
         return { ...upload, status: "expired" as const };
       }
@@ -132,12 +131,14 @@ class MemoryRecords implements PersonalFurnitureStore {
 
   async claimUpload(userId: string, uploadId: string, nowIso: string) {
     const upload = this.uploads.find((item) => item.userId === userId && item.uploadId === uploadId);
-    if (!upload || upload.status !== "pending" || upload.expiresAt <= nowIso) {
-      if (!upload || upload.expiresAt <= nowIso) return null;
-      return "lost" as const;
+    const outcome = personalUploadClaimOutcome(upload ?? null, nowIso);
+    if (outcome === "claim" && upload) {
+      upload.status = "finalizing";
+      upload.updatedAt = nowIso;
+      return upload;
     }
-    upload.status = "finalizing";
-    return upload;
+    if (outcome === "lost") return "lost" as const;
+    return null;
   }
 
   async markUploadFinalized(userId: string, uploadId: string, resultAssetId: string) {
@@ -185,6 +186,18 @@ class MemoryRecords implements PersonalFurnitureStore {
       .filter((item) => item.userId === userId && assetIds.includes(item.assetId))
       .map((item) => item.assetId));
   }
+}
+
+function measured(bytes: Uint8Array): PersonalGlbValidation {
+  return {
+    accepted: true,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    byteSize: bytes.byteLength,
+    widthM: 1.2,
+    heightM: 0.8,
+    depthM: 0.6,
+    errors: [],
+  };
 }
 
 function accepted(bytes: Uint8Array): PersonalGlbValidation {
@@ -628,4 +641,286 @@ test("STAGE wiring keeps commercial placement and authorizes personal resolution
   assert.match(generator, /3D Furniture Generator — Coming Soon/);
   assert.doesNotMatch(generator, /meshy|Generate</i);
   assert.match(source("lib/vibode-thumbnail-render/payload.server.ts"), /room\?\.userId/);
+  const migration = source("supabase/migrations/20261105180000_vibode_furniture_assets.sql");
+  assert.doesNotMatch(migration, /vibode_furniture_assets_no_delete/);
+  assert.match(migration, /on delete cascade/);
+  assert.match(source("app/api/admin/delete-user/route.ts"), /vibode-furniture-assets/);
+});
+
+async function reserveUpload(records: MemoryRecords, objects: MemoryObjects, now: Date) {
+  const assetId = createPersonalFurnitureAssetId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!;
+  const uploadId = "33333333-3333-4333-8333-333333333333";
+  await createPersonalFurnitureUpload({
+    userId: USER_A,
+    uploadId,
+    assetId,
+    now,
+    store: records,
+    objects,
+  });
+  const pending = personalFurniturePendingPath(USER_A, uploadId)!;
+  const bytes = new Uint8Array([7, 8, 9, 10]);
+  objects.bytes.set(pending, bytes);
+  return {
+    assetId,
+    uploadId,
+    pending,
+    bytes,
+    permanent: personalFurniturePermanentPath(USER_A, assetId)!,
+  };
+}
+
+function finalizeReserved(args: {
+  records: MemoryRecords;
+  objects: MemoryObjects;
+  now: Date;
+  uploadId: string;
+  userId?: string;
+}) {
+  return finalizePersonalFurnitureUpload({
+    userId: args.userId ?? USER_A,
+    uploadId: args.uploadId,
+    displayName: "Chair",
+    now: args.now,
+    store: args.records,
+    objects: args.objects,
+    validate: async (input) => measured(input.bytes),
+  });
+}
+
+test("a crash before the permanent object is recovered after the finalize lease", async () => {
+  const records = new MemoryRecords();
+  const objects = new MemoryObjects();
+  const now = new Date("2026-11-05T12:00:00.000Z");
+  const reserved = await reserveUpload(records, objects, now);
+  const original = objects.writePermanent.bind(objects);
+  let attempts = 0;
+  objects.writePermanent = async (path, bytes) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("crashed before permanent object");
+    return original(path, bytes);
+  };
+  await assert.rejects(() => finalizeReserved({ records, objects, now, uploadId: reserved.uploadId }));
+  assert.equal(records.assets.length, 0);
+  assert.equal(objects.bytes.has(reserved.permanent), false);
+  const immediate = await finalizeReserved({ records, objects, now, uploadId: reserved.uploadId });
+  assert.equal(immediate.ok, false);
+  if (immediate.ok) return;
+  assert.equal(immediate.errorCode, "UPLOAD_IN_PROGRESS");
+  assert.equal(attempts, 1);
+  const later = new Date(now.getTime() + PERSONAL_FURNITURE_FINALIZE_LEASE_MS + 1);
+  const recovered = await finalizeReserved({ records, objects, now: later, uploadId: reserved.uploadId });
+  assert.equal(recovered.ok, true);
+  if (!recovered.ok) return;
+  assert.equal(recovered.idempotent, false);
+  assert.equal(recovered.item.assetId, reserved.assetId);
+  assert.equal(records.assets.length, 1);
+  assert.equal(attempts, 2);
+  const repeat = await finalizeReserved({ records, objects, now: later, uploadId: reserved.uploadId });
+  assert.equal(repeat.ok, true);
+  if (!repeat.ok) return;
+  assert.equal(repeat.idempotent, true);
+  assert.equal(records.assets.length, 1);
+});
+
+test("a crash after the permanent object adopts those bytes and does not overwrite them", async () => {
+  const records = new MemoryRecords();
+  const objects = new MemoryObjects();
+  const now = new Date("2026-11-05T12:00:00.000Z");
+  const reserved = await reserveUpload(records, objects, now);
+  const originalInsert = records.insertAsset.bind(records);
+  let inserts = 0;
+  records.insertAsset = async (asset) => {
+    inserts += 1;
+    if (inserts === 1) throw new Error("crashed before asset row");
+    return originalInsert(asset);
+  };
+  await assert.rejects(() => finalizeReserved({ records, objects, now, uploadId: reserved.uploadId }));
+  const frozen = objects.bytes.get(reserved.permanent);
+  assert.ok(frozen);
+  const copy = new Uint8Array(frozen);
+  assert.equal(records.assets.length, 0);
+  const immediate = await finalizeReserved({ records, objects, now, uploadId: reserved.uploadId });
+  assert.equal(immediate.ok, false);
+  if (immediate.ok) return;
+  assert.equal(immediate.errorCode, "UPLOAD_IN_PROGRESS");
+  assert.deepEqual(objects.bytes.get(reserved.permanent), copy);
+  const later = new Date(now.getTime() + PERSONAL_FURNITURE_FINALIZE_LEASE_MS + 1);
+  const stranger = await finalizeReserved({
+    records,
+    objects,
+    now: later,
+    uploadId: reserved.uploadId,
+    userId: USER_B,
+  });
+  assert.equal(stranger.ok, false);
+  if (stranger.ok) return;
+  assert.equal(stranger.status, 404);
+  const recovered = await finalizeReserved({ records, objects, now: later, uploadId: reserved.uploadId });
+  assert.equal(recovered.ok, true);
+  if (!recovered.ok) return;
+  assert.equal(recovered.item.assetId, reserved.assetId);
+  assert.equal(records.assets.length, 1);
+  assert.deepEqual(objects.bytes.get(reserved.permanent), copy);
+  assert.equal(records.assets[0]?.sha256, measured(copy).sha256);
+});
+
+test("a crash after the asset row is saved returns that same record", async () => {
+  const records = new MemoryRecords();
+  const objects = new MemoryObjects();
+  const now = new Date("2026-11-05T12:00:00.000Z");
+  const reserved = await reserveUpload(records, objects, now);
+  const original = records.markUploadFinalized.bind(records);
+  let marks = 0;
+  records.markUploadFinalized = async (userId, uploadId, resultAssetId) => {
+    marks += 1;
+    if (marks === 1) throw new Error("crashed before upload ack");
+    return original(userId, uploadId, resultAssetId);
+  };
+  await assert.rejects(() => finalizeReserved({ records, objects, now, uploadId: reserved.uploadId }));
+  assert.equal(records.assets.length, 1);
+  assert.equal(records.uploads[0]?.status, "finalizing");
+  assert.equal(objects.permanentWrites, 1);
+  const recovered = await finalizeReserved({ records, objects, now, uploadId: reserved.uploadId });
+  assert.equal(recovered.ok, true);
+  if (!recovered.ok) return;
+  assert.equal(recovered.idempotent, true);
+  assert.equal(recovered.item.assetId, reserved.assetId);
+  assert.equal(records.assets.length, 1);
+  assert.equal(objects.permanentWrites, 1);
+  assert.equal(records.uploads[0]?.status, "finalized");
+});
+
+test("a crash after database finalization retries the same saved model", async () => {
+  const records = new MemoryRecords();
+  const objects = new MemoryObjects();
+  const now = new Date("2026-11-05T12:00:00.000Z");
+  const reserved = await reserveUpload(records, objects, now);
+  const original = objects.signGet.bind(objects);
+  let signs = 0;
+  objects.signGet = async (path) => {
+    signs += 1;
+    if (signs === 1) throw new Error("response dropped");
+    return original(path);
+  };
+  await assert.rejects(() => finalizeReserved({ records, objects, now, uploadId: reserved.uploadId }));
+  assert.equal(records.uploads[0]?.status, "finalized");
+  assert.equal(records.uploads[0]?.resultAssetId, reserved.assetId);
+  const recovered = await finalizeReserved({ records, objects, now, uploadId: reserved.uploadId });
+  assert.equal(recovered.ok, true);
+  if (!recovered.ok) return;
+  assert.equal(recovered.idempotent, true);
+  assert.equal(recovered.item.assetId, reserved.assetId);
+  assert.equal(records.assets.length, 1);
+  assert.equal(objects.permanentWrites, 1);
+});
+
+test("a concurrent finalize cannot write a second object or cross users", async () => {
+  const records = new MemoryRecords();
+  const objects = new MemoryObjects();
+  const now = new Date("2026-11-05T12:00:00.000Z");
+  const reserved = await reserveUpload(records, objects, now);
+  const original = objects.writePermanent.bind(objects);
+  let entered = false;
+  objects.writePermanent = async (path, bytes) => {
+    if (!entered) {
+      entered = true;
+      const concurrent = await finalizeReserved({ records, objects, now, uploadId: reserved.uploadId });
+      assert.equal(concurrent.ok, false);
+      if (!concurrent.ok) assert.equal(concurrent.errorCode, "UPLOAD_IN_PROGRESS");
+      const stranger = await finalizeReserved({
+        records,
+        objects,
+        now,
+        uploadId: reserved.uploadId,
+        userId: USER_B,
+      });
+      assert.equal(stranger.ok, false);
+      if (!stranger.ok) assert.equal(stranger.status, 404);
+    }
+    return original(path, bytes);
+  };
+  const first = await finalizeReserved({ records, objects, now, uploadId: reserved.uploadId });
+  assert.equal(first.ok, true);
+  if (!first.ok) return;
+  assert.equal(first.idempotent, false);
+  assert.equal(records.assets.length, 1);
+  assert.equal(objects.permanentWrites, 1);
+  const repeat = await finalizeReserved({ records, objects, now, uploadId: reserved.uploadId });
+  assert.equal(repeat.ok, true);
+  if (!repeat.ok) return;
+  assert.equal(repeat.idempotent, true);
+  assert.equal(objects.permanentWrites, 1);
+});
+
+test("cleanup does not take an active finalize and removes an abandoned upload", async () => {
+  const records = new MemoryRecords();
+  const objects = new MemoryObjects();
+  const now = new Date("2026-11-05T12:00:00.000Z");
+  const reserved = await reserveUpload(records, objects, now);
+  const upload = records.uploads[0];
+  assert.ok(upload);
+  upload.status = "finalizing";
+  upload.updatedAt = now.toISOString();
+  upload.expiresAt = new Date(now.getTime() - 1000).toISOString();
+  objects.bytes.set(reserved.permanent, new Uint8Array([1, 2, 3]));
+  const held = await records.expireUploads(USER_A, now.toISOString());
+  assert.deepEqual(held, []);
+  assert.equal(upload.status, "finalizing");
+  assert.equal(objects.bytes.has(reserved.pending), true);
+  assert.deepEqual(objects.bytes.get(reserved.permanent), new Uint8Array([1, 2, 3]));
+
+  upload.updatedAt = new Date(now.getTime() - PERSONAL_FURNITURE_FINALIZE_LEASE_MS - 1).toISOString();
+  const nextUpload = "44444444-4444-4444-8444-444444444444";
+  const nextAsset = createPersonalFurnitureAssetId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!;
+  await createPersonalFurnitureUpload({
+    userId: USER_A,
+    uploadId: nextUpload,
+    assetId: nextAsset,
+    now,
+    store: records,
+    objects,
+  });
+  assert.equal(objects.bytes.has(reserved.pending), false);
+  assert.deepEqual(objects.bytes.get(reserved.permanent), new Uint8Array([1, 2, 3]));
+  assert.equal(records.uploads.find((item) => item.uploadId === reserved.uploadId)?.status, "expired");
+
+  const abandoned = records.uploads.find((item) => item.uploadId === nextUpload);
+  assert.ok(abandoned);
+  objects.bytes.set(abandoned.pendingObjectPath, new Uint8Array([4]));
+  abandoned.expiresAt = new Date(now.getTime() - 1000).toISOString();
+  const thirdUpload = "55555555-5555-4555-8555-555555555555";
+  const thirdAsset = createPersonalFurnitureAssetId("cccccccc-cccc-4ccc-8ccc-cccccccccccc")!;
+  await createPersonalFurnitureUpload({
+    userId: USER_A,
+    uploadId: thirdUpload,
+    assetId: thirdAsset,
+    now,
+    store: records,
+    objects,
+  });
+  assert.equal(objects.bytes.has(abandoned.pendingObjectPath), false);
+  assert.deepEqual(objects.bytes.get(reserved.permanent), new Uint8Array([1, 2, 3]));
+  assert.equal(records.assets.length, 0);
+});
+
+test("an unreferenced permanent object is replaced and a saved asset is not", async () => {
+  const records = new MemoryRecords();
+  const objects = new MemoryObjects();
+  const now = new Date("2026-11-05T12:00:00.000Z");
+  const reserved = await reserveUpload(records, objects, now);
+  objects.bytes.set(reserved.permanent, new Uint8Array([9, 9, 9]));
+  const result = await finalizeReserved({ records, objects, now, uploadId: reserved.uploadId });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.idempotent, false);
+  assert.deepEqual(objects.bytes.get(reserved.permanent), reserved.bytes);
+  assert.equal(records.assets.length, 1);
+  const saved = new Uint8Array(objects.bytes.get(reserved.permanent)!);
+  const repeat = await finalizeReserved({ records, objects, now, uploadId: reserved.uploadId });
+  assert.equal(repeat.ok, true);
+  if (!repeat.ok) return;
+  assert.equal(repeat.idempotent, true);
+  assert.deepEqual(objects.bytes.get(reserved.permanent), saved);
+  assert.equal(objects.permanentWrites, 2);
 });

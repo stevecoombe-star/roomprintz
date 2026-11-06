@@ -38,6 +38,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const VIBODE_STAGED_BUCKET = (process.env.VIBODE_STAGED_BUCKET || "vibode-generations").trim();
 const VIBODE_THUMBNAILS_BUCKET = (process.env.VIBODE_THUMBNAILS_BUCKET || "vibode-thumbnails").trim();
 const VIBODE_BASE_IMAGES_BUCKET = "vibode-base-images";
+const VIBODE_FURNITURE_ASSETS_BUCKET = "vibode-furniture-assets";
 const ROOM_ORIGINALS_BUCKET = "room-originals";
 const ROOM_STAGED_BUCKET = "room-staged";
 
@@ -136,60 +137,75 @@ async function listStoragePathsByPrefix(args: {
   prefix: string;
   maxFiles?: number;
   maxDirectories?: number;
-}): Promise<{ listed: boolean; paths: string[] }> {
+}): Promise<{ listed: boolean; paths: string[]; truncated: boolean }> {
   const maxFiles = Math.max(1, args.maxFiles ?? 500);
   const maxDirectories = Math.max(1, args.maxDirectories ?? 500);
   const normalizedPrefix = normalizePath(args.prefix);
-  if (!normalizedPrefix) return { listed: true, paths: [] };
+  if (!normalizedPrefix) return { listed: true, paths: [], truncated: false };
 
   const queue = [normalizedPrefix];
   const visited = new Set<string>();
   const collected: string[] = [];
+  let truncated = false;
 
   while (queue.length > 0 && visited.size < maxDirectories && collected.length < maxFiles) {
     const current = queue.shift() ?? "";
     if (visited.has(current)) continue;
     visited.add(current);
 
-    const { data, error } = await args.supabaseAdmin.storage.from(args.bucket).list(current, {
-      limit: 100,
-      sortBy: { column: "name", order: "asc" },
-    });
+    const pageSize = 100;
+    let offset = 0;
+    for (;;) {
+      const { data, error } = await args.supabaseAdmin.storage.from(args.bucket).list(current, {
+        limit: pageSize,
+        offset,
+        sortBy: { column: "name", order: "asc" },
+      });
 
-    if (error) {
-      if (
-        /bucket/i.test(error.message) ||
-        /not found/i.test(error.message) ||
-        /does not exist/i.test(error.message)
-      ) {
-        return { listed: false, paths: [] };
-      }
-      throw new Error(`Failed listing storage bucket ${args.bucket}.`);
-    }
-
-    for (const entry of data ?? []) {
-      const entryName = safeString((entry as { name?: unknown }).name);
-      if (!entryName) continue;
-
-      const fullPath = current ? `${current}/${entryName}` : entryName;
-      const normalizedFullPath = normalizePath(fullPath);
-      if (!normalizedFullPath) continue;
-
-      const maybeMetadata = (entry as { metadata?: unknown }).metadata;
-      const isFile = Boolean(maybeMetadata && typeof maybeMetadata === "object");
-      if (isFile) {
-        collected.push(normalizedFullPath);
-        if (collected.length >= maxFiles) break;
-        continue;
+      if (error) {
+        if (
+          /bucket/i.test(error.message) ||
+          /not found/i.test(error.message) ||
+          /does not exist/i.test(error.message)
+        ) {
+          return { listed: false, paths: [], truncated: false };
+        }
+        throw new Error(`Failed listing storage bucket ${args.bucket}.`);
       }
 
-      if (visited.size + queue.length < maxDirectories) {
-        queue.push(normalizedFullPath);
+      const entries = data ?? [];
+      for (const entry of entries) {
+        const entryName = safeString((entry as { name?: unknown }).name);
+        if (!entryName) continue;
+
+        const fullPath = current ? `${current}/${entryName}` : entryName;
+        const normalizedFullPath = normalizePath(fullPath);
+        if (!normalizedFullPath) continue;
+
+        const maybeMetadata = (entry as { metadata?: unknown }).metadata;
+        const isFile = Boolean(maybeMetadata && typeof maybeMetadata === "object");
+        if (isFile) {
+          collected.push(normalizedFullPath);
+          if (collected.length >= maxFiles) {
+            truncated = true;
+            break;
+          }
+          continue;
+        }
+
+        if (visited.size + queue.length < maxDirectories) {
+          queue.push(normalizedFullPath);
+        } else {
+          truncated = true;
+        }
       }
+      if (truncated || entries.length < pageSize) break;
+      offset += entries.length;
     }
   }
 
-  return { listed: true, paths: collected };
+  if (queue.length > 0 || collected.length >= maxFiles) truncated = true;
+  return { listed: true, paths: collected, truncated };
 }
 
 async function safeListStoragePathsByPrefix(args: {
@@ -198,11 +214,11 @@ async function safeListStoragePathsByPrefix(args: {
   prefix: string;
   maxFiles?: number;
   maxDirectories?: number;
-}): Promise<{ listed: boolean; paths: string[] }> {
+}): Promise<{ listed: boolean; paths: string[]; truncated: boolean }> {
   try {
     return await listStoragePathsByPrefix(args);
   } catch {
-    return { listed: false, paths: [] };
+    return { listed: false, paths: [], truncated: false };
   }
 }
 
@@ -379,21 +395,76 @@ export function createAdminDeleteUserPostHandler(
     });
   }
 
-  const userScopedListingTargets = [
+  const userScopedListingTargets: Array<{
+    bucket: string;
+    prefix: string;
+    maxFiles?: number;
+    maxDirectories?: number;
+  }> = [
     { bucket: ROOM_ORIGINALS_BUCKET, prefix: userId },
     { bucket: ROOM_STAGED_BUCKET, prefix: userId },
     { bucket: VIBODE_BASE_IMAGES_BUCKET, prefix: `users/${userId}` },
     { bucket: VIBODE_STAGED_BUCKET, prefix: `users/${userId}` },
     { bucket: VIBODE_THUMBNAILS_BUCKET, prefix: `users/${userId}` },
+    {
+      bucket: VIBODE_FURNITURE_ASSETS_BUCKET,
+      prefix: `users/${userId}`,
+      maxFiles: 10000,
+      maxDirectories: 10000,
+    },
     { bucket: VIBODE_STAGED_BUCKET, prefix: userId },
     { bucket: VIBODE_THUMBNAILS_BUCKET, prefix: userId },
   ];
 
   for (const target of userScopedListingTargets) {
+    if (target.bucket === VIBODE_FURNITURE_ASSETS_BUCKET) {
+      let furnitureListing: Awaited<ReturnType<typeof listStoragePathsByPrefix>>;
+      try {
+        furnitureListing = await listStoragePathsByPrefix({
+          supabaseAdmin,
+          bucket: target.bucket,
+          prefix: target.prefix,
+          maxFiles: target.maxFiles,
+          maxDirectories: target.maxDirectories,
+        });
+      } catch {
+        return json(500, {
+          error: "Furniture storage cleanup failed. Account deletion was not finished.",
+          deletedStorageFiles: afcCleanup.deleted,
+          skippedStorageFiles: storageSkipCounter.skipped + afcCleanup.skipped,
+          deletedRowsByTable,
+          authUserDeleted: false,
+        });
+      }
+      if (!furnitureListing.listed) continue;
+      if (furnitureListing.truncated) {
+        return json(500, {
+          error: "Furniture storage cleanup is incomplete. Account deletion was not finished.",
+          deletedStorageFiles: afcCleanup.deleted,
+          skippedStorageFiles: storageSkipCounter.skipped + afcCleanup.skipped,
+          deletedRowsByTable,
+          authUserDeleted: false,
+        });
+      }
+      for (const listedPath of furnitureListing.paths) {
+        addStorageCandidate({
+          into: storageDeleteCandidates,
+          bucket: target.bucket,
+          path: listedPath,
+          source: "storage_listing",
+          userId,
+          roomIds,
+          deletedStorageFilesRef: storageSkipCounter,
+        });
+      }
+      continue;
+    }
     const listing = await safeListStoragePathsByPrefix({
       supabaseAdmin,
       bucket: target.bucket,
       prefix: target.prefix,
+      maxFiles: target.maxFiles,
+      maxDirectories: target.maxDirectories,
     });
     if (!listing.listed) continue;
     for (const listedPath of listing.paths) {

@@ -51,6 +51,7 @@ export type PersonalFurnitureUploadRecord = Readonly<{
   status: PersonalUploadStatus;
   resultAssetId: string | null;
   expiresAt: string;
+  updatedAt: string;
 }>;
 
 export function normalizePersonalDisplayName(value: string): string | null {

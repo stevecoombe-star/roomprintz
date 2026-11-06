@@ -5,13 +5,20 @@
 -- library_visibility only. It does not remove the row or the object, so a
 -- saved room can keep resolving the same asset id.
 --
--- service_role is the only database role that can read or write these
--- tables. There are no policies for anon or authenticated. Application
--- routes check auth.uid ownership before using the service role.
+-- service_role can select, insert, and update these tables. It cannot
+-- delete them. anon and authenticated have no grants and no policies.
+-- Application routes check auth.uid ownership before using the service role.
+-- Archive is an update of library_visibility. There is no client delete API.
 --
--- The delete trigger rejects every delete, including a cascade from
--- auth.users. Account deletion for someone who owns a personal model
--- needs a later, explicit cleanup migration. Archive does not delete.
+-- user_id references auth.users on delete cascade. Deleting the auth user
+-- removes that user's asset and upload rows. The immutability trigger still
+-- rejects changes to the GLB identity. Browser roles and service_role cannot
+-- issue the delete themselves.
+--
+-- That cascade does not delete Storage objects. Account cleanup must list
+-- and remove vibode-furniture-assets under users/{userId}/ before the auth
+-- user row is deleted. Objects left behind are private, but they are no
+-- longer referenced.
 --
 -- Private bucket vibode-furniture-assets rejects browser roles. Clients
 -- receive a service-role signed URL for one server-chosen object.
@@ -162,31 +169,16 @@ create trigger vibode_furniture_assets_protect_row
 before update on public.vibode_furniture_assets
 for each row execute function public.vibode_furniture_assets_protect_row();
 
-create or replace function public.vibode_furniture_assets_no_delete()
-returns trigger
-language plpgsql
-set search_path = public
-as $$
-begin
-  raise exception 'VIBODE_FURNITURE_ASSET:DELETE_FORBIDDEN';
-end;
-$$;
-
-create trigger vibode_furniture_assets_no_delete
-before delete on public.vibode_furniture_assets
-for each row execute function public.vibode_furniture_assets_no_delete();
-
 alter table public.vibode_furniture_assets enable row level security;
 alter table public.vibode_furniture_asset_uploads enable row level security;
 
 revoke all on table public.vibode_furniture_assets from public, anon, authenticated;
 revoke all on table public.vibode_furniture_asset_uploads from public, anon, authenticated;
 
-grant select, insert, update, delete on table public.vibode_furniture_assets to service_role;
-grant select, insert, update, delete on table public.vibode_furniture_asset_uploads to service_role;
+grant select, insert, update on table public.vibode_furniture_assets to service_role;
+grant select, insert, update on table public.vibode_furniture_asset_uploads to service_role;
 
 revoke all on function public.vibode_furniture_assets_protect_row() from public, anon, authenticated;
-revoke all on function public.vibode_furniture_assets_no_delete() from public, anon, authenticated;
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (

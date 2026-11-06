@@ -20,6 +20,12 @@ export const PERSONAL_FURNITURE_PENDING_LIMIT = 5;
 
 export const PERSONAL_FURNITURE_UPLOAD_TTL_MS = 2 * 60 * 60 * 1000;
 
+/**
+ * A finalizing upload is exclusive for this long. A crashed finalize can be
+ * reclaimed after the lease. Cleanup will not expire a lease that is still fresh.
+ */
+export const PERSONAL_FURNITURE_FINALIZE_LEASE_MS = 2 * 60 * 1000;
+
 export const PERSONAL_FURNITURE_NAME_MAX = 80;
 
 export const PERSONAL_FURNITURE_CATEGORY_MAX = 40;

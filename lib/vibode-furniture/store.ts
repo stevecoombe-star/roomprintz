@@ -2,7 +2,10 @@ import type { PersonalFurnitureAssetRecord, PersonalFurnitureUploadRecord } from
 
 export type PersonalFurnitureStore = Readonly<{
   countOpenUploads: (userId: string, nowIso: string) => Promise<number>;
-  /** Expires this user's pending and unfinished finalizing uploads. Returns pending object paths. */
+  /**
+   * Expires this user's abandoned uploads and returns their pending object paths.
+   * A finalizing upload with a fresh lease is left alone.
+   */
   expireUploads: (userId: string, nowIso: string) => Promise<readonly string[]>;
   insertUpload: (upload: PersonalFurnitureUploadRecord) => Promise<void>;
   readUpload: (

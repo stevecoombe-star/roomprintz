@@ -11,6 +11,10 @@ import {
   PERSONAL_FURNITURE_BUCKET,
   personalFurniturePermanentPath,
 } from "./asset-id";
+import {
+  personalFinalizeLeaseBefore,
+  personalUploadLeaseIsFresh,
+} from "./upload-lease";
 import type {
   PersonalFurnitureAssetRecord,
   PersonalFurnitureUploadRecord,
@@ -24,7 +28,7 @@ const ASSET_COLUMNS =
   "asset_id, user_id, display_name, category, origin, authored_width_m, authored_height_m, authored_depth_m, sha256, byte_size, storage_bucket, storage_object_path, library_visibility";
 
 const UPLOAD_COLUMNS =
-  "upload_id, user_id, asset_id, storage_bucket, pending_object_path, permanent_object_path, status, result_asset_id, expires_at";
+  "upload_id, user_id, asset_id, storage_bucket, pending_object_path, permanent_object_path, status, result_asset_id, expires_at, updated_at";
 
 const PENDING_PATH =
   /^users\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/uploads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/model\.glb$/;
@@ -91,12 +95,13 @@ function createRecordStore(supabase: SupabaseClient): PersonalFurnitureStore {
       return count;
     },
     async expireUploads(userId, nowIso) {
+      const leaseBefore = personalFinalizeLeaseBefore(nowIso);
       const { data, error } = await supabase
         .from("vibode_furniture_asset_uploads")
         .update({ status: "expired" })
         .eq("user_id", userId)
-        .in("status", ["pending", "finalizing"])
         .lte("expires_at", nowIso)
+        .or(`status.eq.pending,and(status.eq.finalizing,updated_at.lt."${leaseBefore}")`)
         .select("pending_object_path");
       if (error) throw new Error("Failed to expire furniture uploads.");
       if (!Array.isArray(data)) return [];
@@ -134,20 +139,25 @@ function createRecordStore(supabase: SupabaseClient): PersonalFurnitureStore {
       return mapUpload(data);
     },
     async claimUpload(userId, uploadId, nowIso) {
+      const leaseBefore = personalFinalizeLeaseBefore(nowIso);
       const { data, error } = await supabase
         .from("vibode_furniture_asset_uploads")
         .update({ status: "finalizing" })
         .eq("user_id", userId)
         .eq("upload_id", uploadId)
-        .eq("status", "pending")
         .gt("expires_at", nowIso)
+        .or(`status.eq.pending,and(status.eq.finalizing,updated_at.lt."${leaseBefore}")`)
         .select(UPLOAD_COLUMNS)
         .maybeSingle();
       if (error) throw new Error("Failed to claim furniture upload.");
       const claimed = mapUpload(data);
       if (claimed) return claimed;
       const current = await this.readUpload(userId, uploadId);
-      if (!current || Date.parse(current.expiresAt) <= Date.parse(nowIso)) return null;
+      if (!current) return null;
+      if (current.status === "finalizing" && personalUploadLeaseIsFresh(current.updatedAt, nowIso)) {
+        return "lost";
+      }
+      if (Date.parse(current.expiresAt) <= Date.parse(nowIso)) return null;
       return "lost";
     },
     async markUploadFinalized(userId, uploadId, resultAssetId) {
@@ -369,7 +379,10 @@ function mapUpload(value: unknown): PersonalFurnitureUploadRecord | null {
   const pendingObjectPath = typeof row.pending_object_path === "string" ? row.pending_object_path : "";
   const permanentObjectPath = typeof row.permanent_object_path === "string" ? row.permanent_object_path : "";
   const expiresAt = typeof row.expires_at === "string" ? row.expires_at : "";
-  if (!status || !uploadId || !userId || !isPersonalFurnitureAssetId(assetId) || !expiresAt) return null;
+  const updatedAt = typeof row.updated_at === "string" ? row.updated_at : "";
+  if (!status || !uploadId || !userId || !isPersonalFurnitureAssetId(assetId) || !expiresAt || !updatedAt) {
+    return null;
+  }
   if (!PENDING_PATH.test(pendingObjectPath) || !PERMANENT_PATH.test(permanentObjectPath)) return null;
   return {
     uploadId,
@@ -381,6 +394,7 @@ function mapUpload(value: unknown): PersonalFurnitureUploadRecord | null {
     status,
     resultAssetId: typeof row.result_asset_id === "string" ? row.result_asset_id : null,
     expiresAt,
+    updatedAt,
   };
 }
 

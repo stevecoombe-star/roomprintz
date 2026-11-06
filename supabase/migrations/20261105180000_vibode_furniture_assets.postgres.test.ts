@@ -35,7 +35,10 @@ test("personal furniture grants, immutability, and storage denial hold on dispos
   }
   const migration = migrationSql();
   assert.match(migration, /revoke all on table public\.vibode_furniture_assets from public, anon, authenticated/);
-  assert.match(migration, /grant select, insert, update, delete on table public\.vibode_furniture_assets to service_role/);
+  assert.match(migration, /grant select, insert, update on table public\.vibode_furniture_assets to service_role/);
+  assert.doesNotMatch(migration, /grant select, insert, update, delete on table public\.vibode_furniture_assets/);
+  assert.doesNotMatch(migration, /vibode_furniture_assets_no_delete/);
+  assert.match(migration, /references auth\.users\(id\) on delete cascade/);
   assert.match(migration, /vibode-furniture-assets/);
   assert.doesNotMatch(migration, /create table public\.vibode_stage_assets|alter table public\.vibode_stage_assets|insert into public\.vibode_stage_assets/);
 
@@ -123,7 +126,10 @@ test("personal furniture grants, immutability, and storage denial hold on dispos
     `), /VIBODE_FURNITURE_ASSET:IMMUTABLE/);
     assert.match(await psqlErrorAs("service_role", `
       delete from public.vibode_furniture_assets where asset_id = '${ASSET_ID}'
-    `), /VIBODE_FURNITURE_ASSET:DELETE_FORBIDDEN/);
+    `), /permission denied/i);
+    assert.match(await psqlErrorAs("authenticated", `
+      delete from public.vibode_furniture_assets where asset_id = '${ASSET_ID}'
+    `), /permission denied/i);
     assert.match(await psqlErrorAs("service_role", `
       insert into public.vibode_furniture_assets (
         asset_id, user_id, display_name, origin,
@@ -145,6 +151,47 @@ test("personal furniture grants, immutability, and storage denial hold on dispos
       select library_visibility || ':' || display_name || ':' || sha256
       from public.vibode_furniture_assets where asset_id = '${ASSET_ID}'
     `), `archived:Archived chair:${SHA}`);
+    const assetB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const uploadA = "33333333-3333-4333-8333-333333333333";
+    await psqlAs("service_role", `
+      insert into public.vibode_furniture_assets (
+        asset_id, user_id, display_name, origin,
+        authored_width_m, authored_height_m, authored_depth_m,
+        sha256, byte_size, storage_bucket, storage_object_path
+      ) values (
+        'vibode-furniture/personal/${assetB}', '${USER_B}', 'Other chair', 'uploaded',
+        1, 1, 1, '${"cd".repeat(32)}', 64,
+        'vibode-furniture-assets', 'users/${USER_B}/assets/${assetB}/model.glb'
+      );
+      insert into public.vibode_furniture_asset_uploads (
+        upload_id, user_id, asset_id, storage_bucket,
+        pending_object_path, permanent_object_path, status, expires_at
+      ) values (
+        '${uploadA}', '${USER_A}', '${ASSET_ID}', 'vibode-furniture-assets',
+        'users/${USER_A}/uploads/${uploadA}/model.glb',
+        '${PATH_A}', 'pending', now() + interval '1 hour'
+      );
+    `);
+    await psql(`
+      insert into storage.objects (bucket_id, name)
+      values ('vibode-furniture-assets', '${PATH_A}');
+      delete from auth.users where id = '${USER_A}';
+    `);
+    assert.equal(await psql(`select count(*) from auth.users where id = '${USER_A}'`), "0");
+    assert.equal(await psql(`select count(*) from auth.users where id = '${USER_B}'`), "1");
+    assert.equal(await psql(`
+      select count(*) from public.vibode_furniture_assets where user_id = '${USER_A}'
+    `), "0");
+    assert.equal(await psql(`
+      select count(*) from public.vibode_furniture_asset_uploads where user_id = '${USER_A}'
+    `), "0");
+    assert.equal(await psql(`
+      select asset_id from public.vibode_furniture_assets where user_id = '${USER_B}'
+    `), `vibode-furniture/personal/${assetB}`);
+    assert.equal(await psql(`
+      select count(*) from storage.objects
+      where bucket_id = 'vibode-furniture-assets' and name = '${PATH_A}'
+    `), "1");
 
     await psql(`
       insert into storage.objects (bucket_id, name) values
