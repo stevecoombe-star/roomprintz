@@ -638,8 +638,13 @@ test("STAGE wiring keeps commercial placement and authorizes personal resolution
     assert.ok(route.indexOf("authorizeProductionAfcUser") < route.indexOf("personalFurnitureServices()"), file);
   }
   const generator = source("components/stage/StageMyFurniturePanel.tsx");
-  assert.match(generator, /3D Furniture Generator — Coming Soon/);
-  assert.doesNotMatch(generator, /meshy|Generate</i);
+  const generatorUi = source("components/stage/FurnitureGeneratorPanel.tsx");
+  assert.match(generator, /3D Generator/);
+  assert.match(generator, /FurnitureGeneratorPanel/);
+  assert.match(generator, /Upload GLB/);
+  assert.doesNotMatch(generator, /Coming Soon/);
+  assert.doesNotMatch(generatorUi, /api\.meshy\.ai|fetch\(/);
+  assert.match(generatorUi, /data-generate="unavailable"/);
   assert.match(source("lib/vibode-thumbnail-render/payload.server.ts"), /room\?\.userId/);
   const migration = source("supabase/migrations/20261105180000_vibode_furniture_assets.sql");
   assert.doesNotMatch(migration, /vibode_furniture_assets_no_delete/);

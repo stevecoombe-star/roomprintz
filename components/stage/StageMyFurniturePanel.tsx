@@ -2,8 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { FurnitureGeneratorPanel } from "@/components/stage/FurnitureGeneratorPanel";
+import { FurnitureGlbPreviewModal } from "@/components/stage/FurnitureGlbPreviewModal";
 import { PersonalFurniturePreview } from "@/components/stage/PersonalFurniturePreview";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
+import {
+  closedPreviewModal,
+  closeGlbPreview,
+  openGlbPreview,
+  type GlbPreviewRequest,
+} from "@/lib/vibode-furniture/generator/preview";
 import { PERSONAL_FURNITURE_GLB_MAX_BYTES } from "@/lib/vibode-furniture/asset-id";
 import type { PersonalFurnitureLibraryItem } from "@/lib/vibode-furniture/library";
 import { putPersonalGlbToSignedUrl } from "@/lib/vibode-furniture/upload-client";
@@ -28,6 +36,13 @@ export function StageMyFurniturePanel({
   const [fileInputKey, setFileInputKey] = useState(0);
   const [progress, setProgress] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [preview, setPreview] = useState(closedPreviewModal);
+  const openPreview = useCallback((request: GlbPreviewRequest) => {
+    setPreview((current) => openGlbPreview(current, request));
+  }, []);
+  const closePreview = useCallback(() => {
+    setPreview((current) => closeGlbPreview(current));
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -187,17 +202,7 @@ export function StageMyFurniturePanel({
         ))}
       </div>
 
-      {stage.furnitureSubmode === "generator" ? (
-        <div className="mt-4 rounded-md border border-neutral-800 px-3 py-4">
-          <h2 className="text-sm font-medium text-neutral-100">
-            3D Furniture Generator — Coming Soon
-          </h2>
-          <p className="mt-2 text-xs leading-5 text-neutral-400">
-            Image-based furniture model generation will be added later. Uploaded GLBs can already be saved and placed in your rooms.
-          </p>
-        </div>
-      ) : (
-        <>
+      <div className={stage.furnitureSubmode === "library" ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
           <form
             className="mt-3 space-y-2"
             onSubmit={(event) => {
@@ -270,6 +275,22 @@ export function StageMyFurniturePanel({
                       <div className="mt-2 flex gap-1">
                         <button
                           type="button"
+                          disabled={!item.previewUrl}
+                          onClick={() => {
+                            if (!item.previewUrl) return;
+                            openPreview({
+                              kind: "library",
+                              url: item.previewUrl,
+                              label: item.displayName,
+                              assetId: item.assetId,
+                            });
+                          }}
+                          className={`rounded-md border border-neutral-800 px-2 py-1 text-[11px] text-neutral-300 ${FOCUS}`}
+                        >
+                          Preview
+                        </button>
+                        <button
+                          type="button"
                           disabled={!placementOpen || stage.addPendingKey === key}
                           title={placementOpen ? undefined : "Placement is paused during inspection."}
                           onClick={() => stage.addPersonalAssetToRoom(item.assetId)}
@@ -294,8 +315,11 @@ export function StageMyFurniturePanel({
               </div>
             )}
           </div>
-        </>
-      )}
+      </div>
+      <div className={stage.furnitureSubmode === "generator" ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
+        <FurnitureGeneratorPanel onOpenPreview={openPreview} />
+      </div>
+      <FurnitureGlbPreviewModal state={preview} onClose={closePreview} />
     </div>
   );
 }
