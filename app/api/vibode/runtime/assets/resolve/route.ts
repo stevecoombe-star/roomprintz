@@ -9,6 +9,8 @@ import {
   readOwnedHarmonizeSourceScene,
   resolveOwnedVersionScene,
 } from "@/lib/afc-v2-runtime/scene-persistence.server";
+import { lookupPersonalFurnitureRuntimeRows } from "@/lib/vibode-furniture/furniture-store.server";
+import { resolveMixedSceneRuntimeAssets } from "@/lib/vibode-furniture/runtime-resolve";
 import {
   lookupPartnerRuntimeAssets,
   mintPartnerRuntimeSignedGet,
@@ -16,7 +18,6 @@ import {
 import {
   intersectRequestedSceneAssetIds,
   parseRuntimeAssetResolveBody,
-  resolveSceneRuntimeAssets,
 } from "@/lib/vibode-stage/partner-runtime-assets";
 import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 
@@ -80,9 +81,11 @@ export async function POST(request: Request) {
   if (!supabase) {
     return productionAfcJson({ error: "Server misconfigured." }, 500);
   }
-  const runtime = await resolveSceneRuntimeAssets({
+  const runtime = await resolveMixedSceneRuntimeAssets({
     assetIds: allowedIds,
+    ownerUserId: auth.userId,
     lookupDynamicAssets: (ids) => lookupPartnerRuntimeAssets(supabase, ids),
+    lookupPersonalAssets: (ids, userId) => lookupPersonalFurnitureRuntimeRows(supabase, ids, userId),
     mintSignedGet: (row) => mintPartnerRuntimeSignedGet(supabase, row),
   });
   return productionAfcJson({

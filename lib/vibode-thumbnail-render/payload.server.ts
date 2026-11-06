@@ -35,6 +35,11 @@ import {
   type StageAssetModelRecord,
   type StageVariantModelRecord,
 } from "@/lib/vibode-stage/furniture-model-scale";
+import { lookupPersonalFurnitureRuntimeRows } from "@/lib/vibode-furniture/furniture-store.server";
+import {
+  resolveMixedSceneRuntimeAssets,
+  type PersonalRuntimeRow,
+} from "@/lib/vibode-furniture/runtime-resolve";
 import { lookupPartnerRuntimeAssets } from "@/lib/vibode-stage/partner-runtime-assets.server";
 import {
   ROOM_SCALE_DEFAULT,
@@ -43,7 +48,6 @@ import {
 } from "@/lib/vibode-stage/room-scale";
 import {
   expiresAtFromNow,
-  resolveSceneRuntimeAssets,
   type DynamicRuntimeLookupRow,
   type SignedGetMintResult,
 } from "@/lib/vibode-stage/partner-runtime-assets";
@@ -121,6 +125,14 @@ export type ThumbnailRenderSource = Readonly<{
   lookupDynamicAssets: (
     assetIds: readonly string[],
   ) => Promise<readonly DynamicRuntimeLookupRow[]>;
+  /**
+   * Absent in older tests. Production reads the room owner's personal GLBs,
+   * including archived ones. A missing lookup fails closed for those ids.
+   */
+  lookupPersonalAssets?: (
+    assetIds: readonly string[],
+    ownerUserId: string,
+  ) => Promise<readonly PersonalRuntimeRow[]>;
   mintDynamicSignedGet: (row: DynamicRuntimeLookupRow) => Promise<SignedGetMintResult>;
   /** Absent in tests. Production reads durable room_scale_multiplier. */
   loadRoomScaleMultiplier?: (roomId: string) => Promise<
@@ -259,7 +271,11 @@ export async function buildVibodeThumbnailRenderPayload(
     );
   }
 
-  const resolvedAssets = await resolveObjectAssets(placed.scene.objects, source);
+  const resolvedAssets = await resolveObjectAssets(
+    placed.scene.objects,
+    source,
+    room?.userId ?? "",
+  );
   if (!resolvedAssets.ok) return resolvedAssets.failure;
 
   const scaled = await thumbnailRenderScaleState(
@@ -752,6 +768,7 @@ async function resolveBackground(
 async function resolveObjectAssets(
   objects: readonly SceneObjectDefinition[],
   source: ThumbnailRenderSource,
+  ownerUserId: string,
 ): Promise<
   | Readonly<{ ok: true; glbUrls: Map<string, string> }>
   | Readonly<{ ok: false; failure: VibodeThumbnailRenderFailure }>
@@ -772,10 +789,24 @@ async function resolveObjectAssets(
     assetIssues: readonly RuntimeAssetIssue[];
   };
   try {
-    resolved = await resolveSceneRuntimeAssets({
+    resolved = await resolveMixedSceneRuntimeAssets({
       assetIds: objects.map((object) => object.assetId),
+      ownerUserId,
       lookupDynamicAssets: source.lookupDynamicAssets,
-      mintSignedGet: source.mintDynamicSignedGet,
+      lookupPersonalAssets: (ids, userId) =>
+        source.lookupPersonalAssets?.(ids, userId) ?? Promise.resolve([]),
+      // The shared signer reads only the bucket and object path. Personal
+      // ownership was already checked before this mint.
+      mintSignedGet: (row) => source.mintDynamicSignedGet({
+        assetId: row.storageObjectPath,
+        status: "ready",
+        source: "partner_intake",
+        authoredWidthM: 1,
+        authoredHeightM: 1,
+        authoredDepthM: 1,
+        storageBucket: row.storageBucket,
+        storageObjectPath: row.storageObjectPath,
+      }),
     });
   } catch {
     return {
@@ -1116,6 +1147,11 @@ export function createProductionThumbnailRenderSource(): ThumbnailRenderSource {
       const supabase = getServiceRoleSupabaseClient();
       if (!supabase) return Promise.resolve([]);
       return lookupPartnerRuntimeAssets(supabase, assetIds);
+    },
+    lookupPersonalAssets(assetIds, ownerUserId) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return Promise.resolve([]);
+      return lookupPersonalFurnitureRuntimeRows(supabase, assetIds, ownerUserId);
     },
     async mintDynamicSignedGet(row) {
       const supabase = getServiceRoleSupabaseClient();

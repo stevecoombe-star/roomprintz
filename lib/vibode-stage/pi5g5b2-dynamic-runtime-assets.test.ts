@@ -376,7 +376,7 @@ test("PI-5G5B2 inherited and persisted object lists use the same enrichment path
   assert.deepEqual(split.staticIds, [AFC_V2_RUNTIME_FURNITURE_ASSET_ID]);
   assert.deepEqual(split.dynamicMisses, [DYNAMIC_ID]);
   const route = source("app/api/vibode/3d-scene/route.ts");
-  assert.match(route, /enrichOwnedSceneRuntimeAssets\(resolved\.scene\.objects\)/);
+  assert.match(route, /enrichOwnedSceneRuntimeAssets\(resolved\.scene\.objects, auth\.userId\)/);
   assert.match(route, /origin: resolved\.origin/);
   assert.doesNotMatch(route, /partner-asset-register|vibode_stage_partner_assets|vibode_stage_asset_storage/);
 });

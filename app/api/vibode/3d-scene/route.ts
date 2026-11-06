@@ -112,7 +112,7 @@ export async function GET(request: Request) {
     origin: resolved.origin,
     currentAfcGenerationId: query.afcGenerationId,
   };
-  const runtime = await enrichOwnedSceneRuntimeAssets(resolved.scene.objects);
+  const runtime = await enrichOwnedSceneRuntimeAssets(resolved.scene.objects, auth.userId);
   if (runtime.assetDefinitions.length > 0) {
     readyBody.assetDefinitions = runtime.assetDefinitions;
   }

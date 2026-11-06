@@ -22,19 +22,34 @@ export function StageEditorHeader() {
       className="relative z-40 flex h-10 min-w-0 shrink-0 items-center justify-between gap-2 border-b border-neutral-800/80 px-3"
       data-stage-header="true"
     >
-      <button
-        type="button"
-        aria-pressed={stage.catalogOpen}
-        aria-label="Catalog"
-        onClick={stage.toggleCatalog}
-        className={`shrink-0 rounded-md border px-2.5 py-1 text-xs ${FOCUS} ${
-          stage.catalogOpen
-            ? "border-neutral-500 bg-neutral-800 text-neutral-100"
-            : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
-        }`}
-      >
-        Catalog
-      </button>
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          aria-pressed={stage.catalogOpen && stage.drawerPanel === "catalog"}
+          aria-label="Catalog"
+          onClick={stage.toggleCatalog}
+          className={`shrink-0 rounded-md border px-2.5 py-1 text-xs ${FOCUS} ${
+            stage.catalogOpen && stage.drawerPanel === "catalog"
+              ? "border-neutral-500 bg-neutral-800 text-neutral-100"
+              : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+          }`}
+        >
+          Catalog
+        </button>
+        <button
+          type="button"
+          aria-pressed={stage.catalogOpen && stage.drawerPanel === "furniture"}
+          aria-label="My Furniture"
+          onClick={stage.toggleFurniture}
+          className={`shrink-0 rounded-md border px-2.5 py-1 text-xs ${FOCUS} ${
+            stage.catalogOpen && stage.drawerPanel === "furniture"
+              ? "border-neutral-500 bg-neutral-800 text-neutral-100"
+              : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+          }`}
+        >
+          My Furniture
+        </button>
+      </div>
       <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
         <RoomScaleControl />
         <div className="flex min-w-0 items-center justify-end gap-2 overflow-x-auto">

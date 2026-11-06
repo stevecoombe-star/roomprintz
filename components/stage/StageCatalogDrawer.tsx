@@ -2,6 +2,7 @@
 
 import { useCallback, useLayoutEffect, useRef } from "react";
 
+import { StageMyFurniturePanel } from "@/components/stage/StageMyFurniturePanel";
 import { StageProductCard } from "@/components/stage/StageProductCard";
 import { StageProductDetail } from "@/components/stage/StageProductDetail";
 import { useBringForward } from "@/components/stage/BringForwardSession";
@@ -88,11 +89,14 @@ export function StageCatalogDrawer() {
       data-catalog-placement={placementOpen ? "open" : "blocked"}
       data-stage-catalog-authority={stage.catalogAuthority}
       data-stage-catalog-mode={stage.catalogMode}
+      data-stage-drawer-panel={stage.drawerPanel}
       aria-hidden={!stage.catalogSettled || !stage.catalogOpen}
     >
       <div className="flex min-h-0 w-[340px] flex-1 flex-col px-3 py-3">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-sm font-medium text-neutral-100">Catalog</div>
+          <div className="text-sm font-medium text-neutral-100">
+            {stage.drawerPanel === "furniture" ? "My Furniture" : "Catalog"}
+          </div>
           <div className="flex items-center gap-1">
             <button
               type="button"
@@ -118,7 +122,9 @@ export function StageCatalogDrawer() {
           </div>
         </div>
 
-        {stage.detailProductId ? (
+        {stage.drawerPanel === "furniture" ? (
+          <StageMyFurniturePanel placementOpen={placementOpen} />
+        ) : stage.detailProductId ? (
           <div className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1">
             <StageProductDetail />
           </div>

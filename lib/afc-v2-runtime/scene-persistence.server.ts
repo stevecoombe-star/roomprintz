@@ -25,6 +25,7 @@ import {
   type ResolvedVersionScene,
 } from "./scene-inheritance";
 import { AFC_V2_RUNTIME_COORDINATE_SPACE } from "./types";
+import { personalSceneAssetOwnership } from "@/lib/vibode-furniture/scene-guard.server";
 
 type AnySupabase = SupabaseClient;
 
@@ -465,7 +466,7 @@ export async function saveOwnedVersionScene(input: Readonly<{
   scene: PersistedVersionScene;
 }>): Promise<
   | { ok: true; scene: PersistedVersionScene }
-  | { ok: false; status: 400 | 401 | 404 | 500; error: string }
+  | { ok: false; status: 400 | 401 | 403 | 404 | 500; error: string }
 > {
   const authorized = await authorizeOwnedVersionScene({
     userId: input.userId,
@@ -488,6 +489,17 @@ export async function saveOwnedVersionScene(input: Readonly<{
   }
   if (harmonized === "harmonized") {
     return { ok: false, status: 400, error: "Harmonized images do not have an editable 3D scene." };
+  }
+  const personalOwnership = await personalSceneAssetOwnership(
+    supabase,
+    input.userId,
+    input.scene.objects,
+  );
+  if (personalOwnership === "unavailable") {
+    return { ok: false, status: 500, error: "Failed to save 3D scene." };
+  }
+  if (personalOwnership === "foreign") {
+    return { ok: false, status: 403, error: "This furniture model is not available." };
   }
   const { data, error } = await supabase
     .from(PI4C_SCENE_TABLE)

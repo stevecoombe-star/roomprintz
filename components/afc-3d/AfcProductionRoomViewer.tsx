@@ -20,6 +20,8 @@ import {
   type FurnitureAssetResolver,
 } from "@/lib/afc-v2-runtime/furniture-assets";
 import { cloneFurnitureGlbScene } from "@/lib/afc-v2-runtime/furniture-glb-loader";
+import { isPersonalFurnitureAssetId } from "@/lib/vibode-furniture/asset-id";
+import type { EnsurePersonalFurniturePlacement } from "@/lib/vibode-furniture/place-client";
 import {
   createFurnitureTemplateCache,
   mergeMountedAndSkippedSceneObjects,
@@ -192,6 +194,7 @@ type Props = Readonly<{
     assetId: string,
   ) => Promise<FurnitureAssetDefinition | null>;
   ensureCommercialPlacement?: EnsureStageCommercialPlacement;
+  ensurePersonalPlacement?: EnsurePersonalFurniturePlacement;
   roomScaleMultiplier?: number;
   trustedPath?: TrustedPathBaseline | null;
   trustedPathVisible?: boolean;
@@ -230,6 +233,7 @@ type ReadyProps = Readonly<{
     assetId: string,
   ) => Promise<FurnitureAssetDefinition | null>;
   ensureCommercialPlacement?: EnsureStageCommercialPlacement;
+  ensurePersonalPlacement?: EnsurePersonalFurniturePlacement;
   roomScaleMultiplier?: number;
   trustedPath?: TrustedPathBaseline | null;
   trustedPathVisible?: boolean;
@@ -266,6 +270,7 @@ export function AfcProductionRoomViewer({
   runtimeAssetOverlay,
   refreshRuntimeAsset,
   ensureCommercialPlacement,
+  ensurePersonalPlacement,
   roomScaleMultiplier = ROOM_SCALE_DEFAULT,
   trustedPath = null,
   trustedPathVisible = false,
@@ -329,6 +334,7 @@ export function AfcProductionRoomViewer({
       runtimeAssetOverlay={runtimeAssetOverlay}
       refreshRuntimeAsset={refreshRuntimeAsset}
       ensureCommercialPlacement={ensureCommercialPlacement}
+      ensurePersonalPlacement={ensurePersonalPlacement}
       roomScaleMultiplier={roomScaleMultiplier}
       trustedPath={trustedPath}
       trustedPathVisible={trustedPathVisible}
@@ -367,6 +373,7 @@ function AfcProductionRoomViewerReady({
   runtimeAssetOverlay,
   refreshRuntimeAsset,
   ensureCommercialPlacement,
+  ensurePersonalPlacement,
   roomScaleMultiplier = ROOM_SCALE_DEFAULT,
   trustedPath = null,
   trustedPathVisible = false,
@@ -492,6 +499,7 @@ function AfcProductionRoomViewerReady({
   const overlayRef = useRef(runtimeAssetOverlay ?? null);
   const refreshRuntimeAssetRef = useRef(refreshRuntimeAsset);
   const ensureCommercialPlacementRef = useRef(ensureCommercialPlacement);
+  const ensurePersonalPlacementRef = useRef(ensurePersonalPlacement);
   const resolveAssetRef = useRef<FurnitureAssetResolver>(furnitureAssetDefinition);
   sceneObjectsPropRef.current = resolvedSceneObjects;
   sceneInstanceIdRef.current = resolvedSceneInstanceId;
@@ -506,6 +514,7 @@ function AfcProductionRoomViewerReady({
   overlayRef.current = runtimeAssetOverlay ?? null;
   refreshRuntimeAssetRef.current = refreshRuntimeAsset;
   ensureCommercialPlacementRef.current = ensureCommercialPlacement;
+  ensurePersonalPlacementRef.current = ensurePersonalPlacement;
   resolveAssetRef.current = createFurnitureAssetResolver(overlayRef.current);
 
   useEffect(() => {
@@ -1560,6 +1569,25 @@ function AfcProductionRoomViewerReady({
             const failed = await ensureStaticTemplate(resolved.assetId);
             if (failed) return failed;
             return mountDescriptor(resolved.assetId, identity);
+          }
+
+          if (isPersonalFurnitureAssetId(assetId)) {
+            const ensurePersonal = ensurePersonalPlacementRef.current;
+            if (!ensurePersonal) return unknownAsset();
+            const placed = await ensurePersonal(assetId);
+            if (!placed.ok) {
+              if (placed.cancelled || staleOrDisposed()) return notReadyResult();
+              return instantiateFailed(placed.error || PI5A_INSTANTIATE_FAILED_MESSAGE);
+            }
+            if (staleOrDisposed() || placed.assetId !== assetId) {
+              return instantiateFailed(PI5A_INSTANTIATE_FAILED_MESSAGE);
+            }
+            await templateCache.ensure([assetId], { allowRefresh: false });
+            if (staleOrDisposed()) return notReadyResult();
+            if (!templateCache.template(assetId)) {
+              return instantiateFailed(PI5A_INSTANTIATE_FAILED_MESSAGE);
+            }
+            return mountDescriptor(assetId, undefined, resolveAsset);
           }
 
           const productId = identity?.productId?.trim() ?? "";

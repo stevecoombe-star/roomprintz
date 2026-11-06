@@ -46,8 +46,13 @@ import {
 import {
   collapseCatalogDrawer,
   pinCatalogDrawer,
-  toggleCatalogDrawer,
 } from "@/lib/vibode-stage/drawer-state";
+import { isPersonalFurnitureAssetId } from "@/lib/vibode-furniture/asset-id";
+import {
+  nextStageDrawer,
+  type StageDrawerPanel,
+  type StageFurnitureSubmode,
+} from "@/lib/vibode-furniture/drawer-panel";
 import {
   readFavoriteKeysFromStorage,
   toggleFavoriteKeys,
@@ -81,6 +86,8 @@ export type StageToolbarSlider = null | "rotate" | "size";
 type StageEditorContextValue = Readonly<{
   active: boolean;
   catalogOpen: boolean;
+  drawerPanel: StageDrawerPanel;
+  furnitureSubmode: StageFurnitureSubmode;
   catalogSettled: boolean;
   catalogMotion: "instant" | "smooth";
   catalogPinned: boolean;
@@ -113,6 +120,8 @@ type StageEditorContextValue = Readonly<{
   addError: string | null;
   addErrorKey: string | null;
   toggleCatalog: () => void;
+  toggleFurniture: () => void;
+  setFurnitureSubmode: (mode: StageFurnitureSubmode) => void;
   pinCatalog: () => void;
   collapseCatalog: () => void;
   noteFurnitureBaseline: (roomId: string, baseline: StageFurnitureBaseline) => void;
@@ -129,6 +138,7 @@ type StageEditorContextValue = Readonly<{
   pasteProductLink: () => Promise<void>;
   toggleFavorite: (productId: string, variantId?: string | null) => void;
   addProductToRoom: (productId: string, variantId?: string | null) => boolean;
+  addPersonalAssetToRoom: (assetId: string) => boolean;
   bindScene: (scene: BoundScene) => void;
   setSelection: (selection: SceneSelectionPresentation | null) => void;
   setTransformMode: (mode: RuntimeTransformMode) => void;
@@ -178,6 +188,8 @@ export function StageEditorProvider({
   const selectedObjectId = session?.selectedObjectId ?? null;
   const selectionSessionRef = useRef(selectedObjectId);
   const [catalogOpen, setCatalogOpen] = useState(false);
+  const [drawerPanel, setDrawerPanel] = useState<StageDrawerPanel>("catalog");
+  const [furnitureSubmode, setFurnitureSubmode] = useState<StageFurnitureSubmode>("library");
   const [catalogSettled, setCatalogSettled] = useState(false);
   const [catalogMotion, setCatalogMotion] = useState<"instant" | "smooth">("instant");
   const [catalogPinned, setCatalogPinned] = useState(false);
@@ -188,6 +200,8 @@ export function StageEditorProvider({
   const catalogAppliedRoomRef = useRef<string | null>(null);
   if (roomId !== trackedRoomId) {
     setTrackedRoomId(roomId);
+    setDrawerPanel("catalog");
+    setFurnitureSubmode("library");
     setFurnitureBaseline("unresolved");
     setCatalogSettled(false);
     setCatalogMotion("instant");
@@ -315,14 +329,30 @@ export function StageEditorProvider({
     return () => window.clearTimeout(timer);
   }, [addedProductId]);
 
-  const toggleCatalog = useCallback(() => {
-    const next = toggleCatalogDrawer({ open: catalogOpen, pinned: catalogPinned });
+  const applyDrawer = useCallback((
+    target: StageDrawerPanel,
+  ) => {
+    const next = nextStageDrawer({
+      open: catalogOpen,
+      pinned: catalogPinned,
+      panel: drawerPanel,
+      target,
+    });
     setCatalogOpen(next.open);
     setCatalogPinned(next.pinned);
+    setDrawerPanel(next.panel);
     setCatalogSettled(true);
     rememberCatalog(next.open);
     if (!next.open) setDetailProductId(null);
-  }, [catalogOpen, catalogPinned, rememberCatalog]);
+  }, [catalogOpen, catalogPinned, drawerPanel, rememberCatalog]);
+
+  const toggleCatalog = useCallback(() => {
+    applyDrawer("catalog");
+  }, [applyDrawer]);
+
+  const toggleFurniture = useCallback(() => {
+    applyDrawer("furniture");
+  }, [applyDrawer]);
 
   const pinCatalog = useCallback(() => {
     const next = pinCatalogDrawer();
@@ -364,6 +394,7 @@ export function StageEditorProvider({
 
   const openProductDetail = useCallback((productId: string) => {
     setDetailProductId(productId);
+    setDrawerPanel("catalog");
     if (!catalogOpen) {
       setCatalogOpen(true);
       setCatalogPinned(false);
@@ -490,6 +521,31 @@ export function StageEditorProvider({
     }
   }, [pasteUrl, rememberCatalog]);
 
+  const addPersonalAssetToRoom = useCallback((assetId: string) => {
+    if (!session || !isPersonalFurnitureAssetId(assetId)) return false;
+    const key = `personal::${assetId}`;
+    if (!acquireStageAddLock(addLocksRef.current, key)) return false;
+    setAddPendingKey(key);
+    setAddError(null);
+    setAddErrorKey(null);
+    void (async () => {
+      try {
+        const result = await session.addFurnitureWithIdentity(assetId);
+        if (!result.ok) {
+          setAddError(result.message);
+          setAddErrorKey(key);
+          return;
+        }
+        onTransformModeChange("move");
+        setToolbarSlider(null);
+      } finally {
+        releaseStageAddLock(addLocksRef.current, key);
+        setAddPendingKey((current) => (current === key ? null : current));
+      }
+    })();
+    return true;
+  }, [onTransformModeChange, session]);
+
   const bindScene = useCallback((scene: BoundScene) => {
     setBoundScene((current) => nextBoundScene(current, scene));
   }, []);
@@ -513,6 +569,8 @@ export function StageEditorProvider({
   const value = useMemo<StageEditorContextValue>(() => ({
     active,
     catalogOpen,
+    drawerPanel,
+    furnitureSubmode,
     catalogSettled,
     catalogMotion,
     catalogPinned,
@@ -545,6 +603,8 @@ export function StageEditorProvider({
     addError,
     addErrorKey,
     toggleCatalog,
+    toggleFurniture,
+    setFurnitureSubmode,
     pinCatalog,
     collapseCatalog,
     noteFurnitureBaseline,
@@ -561,6 +621,7 @@ export function StageEditorProvider({
     pasteProductLink,
     toggleFavorite,
     addProductToRoom,
+    addPersonalAssetToRoom,
     bindScene,
     setSelection,
     setTransformMode,
@@ -578,6 +639,7 @@ export function StageEditorProvider({
     addPendingKey,
     addError,
     addErrorKey,
+    addPersonalAssetToRoom,
     addProductToRoom,
     bindScene,
     boundScene,
@@ -586,6 +648,8 @@ export function StageEditorProvider({
     catalogMode,
     catalogMotion,
     catalogOpen,
+    drawerPanel,
+    furnitureSubmode,
     catalogPinned,
     catalogSettled,
     catalogQuery,
@@ -609,7 +673,9 @@ export function StageEditorProvider({
     selection,
     setCatalogCategoryId,
     summaryOpen,
+    setFurnitureSubmode,
     toggleCatalog,
+    toggleFurniture,
     toggleFavorite,
     toggleSummary,
     toolbarSlider,

@@ -29,7 +29,6 @@ import {
   expiresAtFromNow,
   parseActivateAssetIdParam,
   parsePartnerAssetActivateBody,
-  resolveSceneRuntimeAssets,
   splitStaticAndDynamicAssetIds,
   STAGE_ACTIVATE_PARTNER_ASSET_RPC,
   warnRuntimeAssetIssue,
@@ -42,6 +41,8 @@ import {
   type SignedGetProofResult,
 } from "./partner-runtime-assets";
 import { PARTNER_INTAKE_ASSET_SOURCE } from "./partner-runtime-asset-id";
+import { lookupPersonalFurnitureRuntimeRows } from "@/lib/vibode-furniture/furniture-store.server";
+import { resolveMixedSceneRuntimeAssets } from "@/lib/vibode-furniture/runtime-resolve";
 
 const ASSET_SELECT =
   "asset_id, glb_url, authored_width_m, authored_height_m, authored_depth_m, status, created_at";
@@ -75,7 +76,7 @@ function mapActivateRpcResult(value: unknown): PartnerAssetActivateRpcResult | n
 
 export async function mintPartnerRuntimeSignedGet(
   supabase: SupabaseClient,
-  row: DynamicRuntimeLookupRow,
+  row: Readonly<{ storageBucket: string; storageObjectPath: string }>,
 ): Promise<SignedGetMintResult> {
   try {
     const { data, error } = await supabase.storage
@@ -171,6 +172,7 @@ function mintFailedIssues(assetIds: readonly string[]): RuntimeAssetIssue[] {
 
 export async function enrichOwnedSceneRuntimeAssets(
   objects: readonly SceneObjectDefinition[],
+  ownerUserId: string,
 ): Promise<{
   assetDefinitions: RuntimeFurnitureAssetDefinition[];
   assetIssues: RuntimeAssetIssue[];
@@ -186,9 +188,11 @@ export async function enrichOwnedSceneRuntimeAssets(
     return { assetDefinitions: [], assetIssues: mintFailedIssues(dynamicMisses) };
   }
   try {
-    const resolved = await resolveSceneRuntimeAssets({
+    const resolved = await resolveMixedSceneRuntimeAssets({
       assetIds: objects.map((object) => object.assetId),
+      ownerUserId,
       lookupDynamicAssets: (ids) => lookupPartnerRuntimeAssets(supabase, ids),
+      lookupPersonalAssets: (ids, userId) => lookupPersonalFurnitureRuntimeRows(supabase, ids, userId),
       mintSignedGet: (row) => mintPartnerRuntimeSignedGet(supabase, row),
     });
     return {

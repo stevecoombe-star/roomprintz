@@ -15,6 +15,11 @@ import {
   type RuntimeFurnitureAssetDefinition,
 } from "./runtime-furniture-assets";
 import {
+  fetchPersonalFurniturePlacement,
+  type EnsurePersonalFurniturePlacement,
+  type PersonalPlacementClientResult,
+} from "@/lib/vibode-furniture/place-client";
+import {
   fetchStageRuntimePlacement,
   isCurrentStageSceneGuard,
   parseStageRuntimePlacementRequest,
@@ -72,6 +77,7 @@ export type Persisted3dSceneState = Readonly<{
     definition: RuntimeFurnitureAssetDefinition,
   ) => boolean;
   ensureCommercialPlacement: EnsureStageCommercialPlacement;
+  ensurePersonalPlacement: EnsurePersonalFurniturePlacement;
   canUndo: boolean;
   undo: () => void;
   onObjectTransformCommitted: (scene: SerializedRuntimeScene) => void;
@@ -595,6 +601,69 @@ export function usePersisted3dScene(input: Readonly<{
     }
   }, [upsertRuntimeAssetDefinition]);
 
+  const ensurePersonalPlacement = useCallback(async (
+    assetId: string,
+  ): Promise<PersonalPlacementClientResult> => {
+    const capturedIdentity = identityRef.current;
+    const capturedRevision = loadRevisionRef.current;
+    if (!capturedIdentity) {
+      return {
+        ok: false,
+        errorCode: "VERSION_NOT_FOUND",
+        error: "Furniture isn't ready yet.",
+        cancelled: true,
+      };
+    }
+    const stillCurrent = () => isCurrentStageSceneGuard({
+      capturedIdentity,
+      currentIdentity: identityRef.current,
+      capturedRevision,
+      currentRevision: loadRevisionRef.current,
+    });
+    try {
+      const token = await getSupabaseBrowserAccessToken();
+      if (!token || !stillCurrent()) {
+        return {
+          ok: false,
+          errorCode: token ? "VERSION_NOT_FOUND" : "UNAUTHORIZED",
+          error: token ? "Furniture isn't ready yet." : "Unauthorized.",
+          cancelled: !token ? undefined : true,
+        };
+      }
+      const placed = await fetchPersonalFurniturePlacement({
+        assetId,
+        roomId: capturedIdentity.roomId,
+        versionId: capturedIdentity.versionId,
+        afcGenerationId: capturedIdentity.afcGenerationId,
+        token,
+      });
+      if (!stillCurrent()) {
+        return {
+          ok: false,
+          errorCode: "VERSION_NOT_FOUND",
+          error: "Furniture isn't ready yet.",
+          cancelled: true,
+        };
+      }
+      if (!placed.ok) return placed;
+      if (!upsertRuntimeAssetDefinition(placed.runtimeAsset)) {
+        return {
+          ok: false,
+          errorCode: "VERSION_NOT_FOUND",
+          error: "Furniture isn't ready yet.",
+          cancelled: true,
+        };
+      }
+      return placed;
+    } catch {
+      return {
+        ok: false,
+        errorCode: "RUNTIME_DEFINITION_UNAVAILABLE",
+        error: "This furniture model is temporarily unavailable.",
+      };
+    }
+  }, [upsertRuntimeAssetDefinition]);
+
   const refreshRuntimeAsset = useCallback(async (
     assetId: string,
   ): Promise<FurnitureAssetDefinition | null> => {
@@ -661,6 +730,7 @@ export function usePersisted3dScene(input: Readonly<{
     refreshRuntimeAsset,
     upsertRuntimeAssetDefinition,
     ensureCommercialPlacement,
+    ensurePersonalPlacement,
     canUndo,
     undo,
     onObjectTransformCommitted,
