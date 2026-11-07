@@ -742,7 +742,7 @@ function touch(job: GenerationJob, nowMs: number): void {
   job.updatedAtMs = nowMs;
 }
 
-function releaseExpiredGenerationHolds(db: GenerationDatabase, nowMs: number): void {
+export function releaseExpiredGenerationHolds(db: GenerationDatabase, nowMs: number): void {
   for (const job of db.jobs) {
     if (job.savedAssetId) continue;
     if (job.status === "ready" && job.outputExpiresAtMs != null && job.outputExpiresAtMs <= nowMs) {
