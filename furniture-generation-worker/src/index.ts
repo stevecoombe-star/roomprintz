@@ -1,10 +1,9 @@
 /**
- * Local worker process. Provider POSTs stay off in this build.
- * The transport never calls the network. Do not deploy this process.
+ * Generation worker process. Fake mode never posts. Real mode can post only
+ * when the ledger's live switch and paid-submission allowance both allow it.
+ * Do not deploy this process or configure a credential in this phase.
  */
 
-import { createMeshyAdapter } from "@/lib/vibode-furniture/generation/meshy-adapter";
-import type { MeshyTransportResult } from "@/lib/vibode-furniture/generation/meshy-task";
 import {
   cleanupTemporaryGenerationObjects,
   executeFurnitureGenerationClaim,
@@ -12,10 +11,9 @@ import {
 import { productionFurnitureGenerationDeps } from "@/lib/vibode-furniture/generation/production.server";
 import { validatePersonalFurnitureGlb } from "@/lib/vibode-furniture/validate.server";
 
+import { createFurnitureGenerationWorkerRuntime } from "./provider";
 import { runFurnitureGenerationWorker } from "./run";
 import { evaluateFurnitureGenerationWorkerStartup } from "./startup";
-
-const WORKER_POSTS_ENABLED = false;
 
 function log(event: string, fields: Record<string, string | number | boolean | null>): void {
   process.stdout.write(`${JSON.stringify({ event, at: new Date().toISOString(), ...fields })}\n`);
@@ -36,16 +34,20 @@ async function main(): Promise<void> {
     log("worker_config_invalid", { missing: startup.missing, action: "invalid", jobId: null });
     process.exit(1);
   }
+  const runtime = createFurnitureGenerationWorkerRuntime({
+    env: process.env,
+    fetchImpl: fetch,
+    log,
+  });
+  if (!runtime.ok) {
+    log("worker_config_invalid", { missing: runtime.missing, action: "invalid", jobId: null });
+    process.exit(1);
+  }
   const deps = productionFurnitureGenerationDeps();
   if (!deps) {
     log("worker_config_invalid", { missing: "service_role", action: "invalid", jobId: null });
     process.exit(1);
   }
-  const adapter = createMeshyAdapter({
-    async request(): Promise<MeshyTransportResult> {
-      return { kind: "network" };
-    },
-  });
   let stop = false;
   process.on("SIGTERM", () => {
     stop = true;
@@ -54,8 +56,8 @@ async function main(): Promise<void> {
     stop = true;
   });
   log("worker_started", {
-    provider: "fake",
-    postsEnabled: WORKER_POSTS_ENABLED,
+    provider: runtime.runtime.mode,
+    postsEnabled: runtime.runtime.submitAllowed,
     processingEnabled: startup.processingEnabled,
     action: "started",
     jobId: null,
@@ -72,11 +74,11 @@ async function main(): Promise<void> {
       return executeFurnitureGenerationClaim({
         commands: deps.commands,
         objects: deps.objects,
-        adapter,
-        download: async () => ({ kind: "network" }),
+        adapter: runtime.runtime.adapter,
+        download: runtime.runtime.download,
         validate: validatePersonalFurnitureGlb,
         nowMs: Date.now(),
-        submitAllowed: WORKER_POSTS_ENABLED,
+        submitAllowed: runtime.runtime.submitAllowed,
       });
     },
     pollIntervalMs: startup.pollIntervalMs,

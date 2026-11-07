@@ -1,7 +1,7 @@
 /**
  * Optional fetch transport. Callers pass the credential in.
- * Nothing in this phase reads MESHY_API_KEY during tests or app startup.
- * A missing key does not invent one.
+ * App routes do not read MESHY_API_KEY. The worker reads it only after
+ * real mode is explicitly selected. A missing key does not invent one.
  */
 
 import { MESHY_API_ORIGIN } from "./policy";

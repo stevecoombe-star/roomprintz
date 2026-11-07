@@ -46,7 +46,7 @@ import { generationRequestSha256 } from "./workflow";
 
 export type GenerationPass = Readonly<{
   ok: true;
-  action: "idle" | "disabled" | "submitted" | "reconciled" | "running" | "ready" | "failed" | "waiting" | "needs_review" | "ambiguous" | "rate_limited";
+  action: "idle" | "disabled" | "submitted" | "reconciled" | "running" | "ready" | "failed" | "waiting" | "needs_review" | "ambiguous" | "rate_limited" | "submission_not_authorized";
   jobId: string | null;
 }>;
 
@@ -223,7 +223,12 @@ export async function executeFurnitureGenerationClaim(input: {
   submitAllowed: boolean;
 }): Promise<GenerationPass> {
   const claimed = await input.commands.claimNext(input.submitAllowed, input.nowMs);
-  if (!claimed.ok) return { ok: true, action: "waiting", jobId: null };
+  if (!claimed.ok) {
+    if (claimed.code === "submission_not_authorized") {
+      return { ok: true, action: "submission_not_authorized", jobId: null };
+    }
+    return { ok: true, action: "waiting", jobId: null };
+  }
   if (claimed.outcome !== "claimed") return { ok: true, action: claimed.outcome, jobId: null };
   const claim = claimed.claim;
   if (claim.purpose === "submit") return submitClaim(input, claim);

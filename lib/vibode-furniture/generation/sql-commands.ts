@@ -10,6 +10,7 @@ import type {
   ClaimedGeneration,
   GenerationCommands,
   GenerationCommandResult,
+  OperatorGenerationJob,
   PublicGenerationJob,
   StoredGenerationInput,
   TemporaryGenerationObject,
@@ -70,6 +71,8 @@ export const GENERATION_RPC_ARGUMENTS = {
   ],
   record_vibode_furniture_generation_output: ["p_user_id", "p_job_id", "p_claim_nonce", "p_byte_size", "p_sha256"],
   fail_vibode_furniture_generation_output: ["p_user_id", "p_job_id", "p_claim_nonce", "p_error_class"],
+  grant_vibode_furniture_generation_paid_submission: ["p_acknowledge"],
+  read_vibode_furniture_generation_operator: ["p_job_id"],
   sweep_vibode_furniture_generation_holds: [],
   list_vibode_furniture_generation_temporary_objects: ["p_limit"],
   mark_vibode_furniture_generation_temporary_object_purged: ["p_kind", "p_job_id", "p_slot"],
@@ -263,6 +266,25 @@ export function createSqlGenerationCommands(rpc: PositionalGenerationRpc): Gener
         input.errorClass,
       ]));
     },
+    async grantPaidSubmission(acknowledge) {
+      const data = asRecord(await rpc("grant_vibode_furniture_generation_paid_submission", [acknowledge]));
+      if (!data || data.ok !== true) return fail(data);
+      if (typeof data.paid_submissions_authorized !== "number" || typeof data.paid_submissions_used !== "number") {
+        return { ok: false, code: "unavailable" };
+      }
+      return {
+        ok: true,
+        authorized: data.paid_submissions_authorized,
+        used: data.paid_submissions_used,
+      };
+    },
+    async readOperator(jobId) {
+      const data = asRecord(await rpc("read_vibode_furniture_generation_operator", [jobId]));
+      if (!data || data.ok !== true) return fail(data);
+      const job = operatorFrom(data);
+      if (!job) return { ok: false, code: "unavailable" };
+      return { ok: true, job };
+    },
     async sweep() {
       await rpc("sweep_vibode_furniture_generation_holds", []);
     },
@@ -314,6 +336,27 @@ function publicFromReserve(data: Record<string, unknown>): PublicGenerationJob |
     progress: 0,
     errorClass: null,
     outputExpiresAt: null,
+  };
+}
+
+function operatorFrom(data: Record<string, unknown>): OperatorGenerationJob | null {
+  if (typeof data.job_id !== "string" || typeof data.status !== "string" || !STATUSES.has(data.status as GenerationStatus)) {
+    return null;
+  }
+  if (typeof data.attempt_count !== "number" || typeof data.paid_submissions_authorized !== "number" || typeof data.paid_submissions_used !== "number") {
+    return null;
+  }
+  return {
+    jobId: data.job_id,
+    status: data.status as GenerationStatus,
+    progress: typeof data.progress === "number" ? data.progress : 0,
+    errorClass: typeof data.error_class === "string" ? data.error_class : null,
+    providerStatus: typeof data.provider_status === "string" ? data.provider_status : null,
+    consumedCredits: typeof data.consumed_credits === "number" ? data.consumed_credits : null,
+    quotaState: typeof data.quota_state === "string" ? data.quota_state : null,
+    attemptCount: data.attempt_count,
+    paidSubmissionsAuthorized: data.paid_submissions_authorized,
+    paidSubmissionsUsed: data.paid_submissions_used,
   };
 }
 

@@ -16,6 +16,7 @@ import {
   previewOwnedGeneration,
   readOwnedGeneration,
 } from "./pipeline";
+import { MESHY_TEST_CREDIT_CEILING } from "./policy";
 import { furnitureSettingsFromJson } from "./settings-json";
 
 const UUID =
@@ -194,6 +195,75 @@ export async function postFurnitureGenerationRecovery(
   }
 }
 
+export async function postFurnitureGenerationAllowance(
+  request: Request,
+  deps: GenerationHttpDeps,
+): Promise<GenerationHttpResult> {
+  const caller = await deps.authorize(request);
+  if (!caller.ok) return caller.response;
+  if (!deps.isAdmin(caller.email)) {
+    return json(401, { ok: false, error: "A paid Meshy submission is not authorized." });
+  }
+  const body = await readJson(request);
+  if (!body.ok) return json(400, { ok: false, error: "A paid Meshy submission is not authorized." });
+  if (FORBIDDEN_FIELDS.some((field) => field in body.value) || "duplicateChargeRiskAccepted" in body.value) {
+    return json(400, { ok: false, error: "A paid Meshy submission is not authorized." });
+  }
+  if (body.value.paidSubmissionAuthorized !== true) {
+    return json(409, { ok: false, error: "A paid Meshy submission is not authorized." });
+  }
+  try {
+    const granted = await deps.commands.grantPaidSubmission(true);
+    if (!granted.ok) {
+      return json(failureStatus(granted.code), { ok: false, error: "A paid Meshy submission is not authorized." });
+    }
+    return json(200, {
+      ok: true,
+      paidSubmissionsAuthorized: granted.authorized,
+      paidSubmissionsUsed: granted.used,
+      maxEstimatedCredits: MESHY_TEST_CREDIT_CEILING,
+    });
+  } catch {
+    return json(500, { ok: false, error: "A paid Meshy submission is not authorized." });
+  }
+}
+
+export async function getFurnitureGenerationOperator(
+  request: Request,
+  deps: GenerationHttpDeps,
+  jobId: string,
+): Promise<GenerationHttpResult> {
+  const caller = await deps.authorize(request);
+  if (!caller.ok) return caller.response;
+  if (!deps.isAdmin(caller.email)) {
+    return json(401, { ok: false, error: "That generation could not be found." });
+  }
+  if (!UUID.test(jobId)) return json(404, { ok: false, error: "That generation could not be found." });
+  try {
+    const read = await deps.commands.readOperator(jobId);
+    if (!read.ok) return json(failureStatus(read.code), { ok: false, error: "That generation could not be found." });
+    return json(200, {
+      ok: true,
+      job: {
+        jobId: read.job.jobId,
+        status: read.job.status,
+        progress: read.job.progress,
+        errorClass: read.job.errorClass,
+        providerStatus: read.job.providerStatus,
+        consumedCredits: read.job.consumedCredits,
+        quotaState: read.job.quotaState,
+        attemptCount: read.job.attemptCount,
+      },
+      allowance: {
+        paidSubmissionsAuthorized: read.job.paidSubmissionsAuthorized,
+        paidSubmissionsUsed: read.job.paidSubmissionsUsed,
+      },
+    });
+  } catch {
+    return json(500, { ok: false, error: "That generation could not be found." });
+  }
+}
+
 async function readJson(request: Request): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false }> {
   try {
     const value = await request.json() as unknown;
@@ -232,6 +302,8 @@ function failureStatus(code: string): number {
     || code === "concurrency_limited"
     || code === "idempotency_conflict"
     || code === "not_claimable"
+    || code === "allowance_closed"
+    || code === "submission_not_authorized"
   ) {
     return 409;
   }

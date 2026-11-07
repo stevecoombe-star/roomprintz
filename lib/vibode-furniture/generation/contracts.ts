@@ -59,6 +59,19 @@ export type ClaimedGeneration = Readonly<{
   imageSlots: readonly FurnitureViewSlot[];
 }>;
 
+export type OperatorGenerationJob = Readonly<{
+  jobId: string;
+  status: GenerationStatus;
+  progress: number;
+  errorClass: string | null;
+  providerStatus: string | null;
+  consumedCredits: number | null;
+  quotaState: string | null;
+  attemptCount: number;
+  paidSubmissionsAuthorized: number;
+  paidSubmissionsUsed: number;
+}>;
+
 export type TemporaryGenerationObject = Readonly<{
   kind: "input" | "candidate";
   bucket: string;
@@ -105,6 +118,10 @@ export type GenerationCommands = {
   adminAuthorize(jobId: string, duplicateChargeRiskAccepted: boolean): Promise<
     GenerationCommandResult<{ status: string; duplicateChargeRisk: true }>
   >;
+  grantPaidSubmission(acknowledge: boolean): Promise<
+    GenerationCommandResult<{ authorized: number; used: number }>
+  >;
+  readOperator(jobId: string): Promise<GenerationCommandResult<{ job: OperatorGenerationJob }>>;
   claimNext(submitAllowed: boolean, nowMs: number): Promise<
     | { ok: true; outcome: "idle" | "disabled" }
     | { ok: true; outcome: "claimed"; claim: ClaimedGeneration }

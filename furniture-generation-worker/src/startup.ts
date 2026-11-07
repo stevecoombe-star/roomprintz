@@ -1,20 +1,21 @@
 /**
- * Worker startup. This build refuses a Meshy credential and any provider
- * other than the local fake. The process does not print secret values.
+ * Worker startup. Fake mode is the default. A Meshy key does not select
+ * real mode. Incomplete real-mode configuration refuses to boot.
+ * The result never contains the credential.
  */
 
+import { resolveFurnitureGenerationProvider } from "./provider";
+
 export type FurnitureGenerationWorkerStartup =
-  | { ok: true; processingEnabled: boolean; pollIntervalMs: number; once: boolean }
+  | { ok: true; mode: "fake" | "meshy"; processingEnabled: boolean; pollIntervalMs: number; once: boolean }
   | { ok: false; missing: string };
 
 export function evaluateFurnitureGenerationWorkerStartup(
   env: Readonly<Record<string, string | undefined>>,
   argv: readonly string[],
 ): FurnitureGenerationWorkerStartup {
-  if (env.MESHY_API_KEY?.trim()) return { ok: false, missing: "meshy_credentials_refused" };
-  if (env.VIBODE_FURNITURE_GENERATION_PROVIDER !== "fake") {
-    return { ok: false, missing: "provider_must_be_fake" };
-  }
+  const provider = resolveFurnitureGenerationProvider(env);
+  if (!provider.ok) return provider;
   const rawPoll = env.VIBODE_FURNITURE_GENERATION_WORKER_POLL_MS;
   let pollIntervalMs = 5_000;
   if (rawPoll != null && rawPoll !== "") {
@@ -26,6 +27,7 @@ export function evaluateFurnitureGenerationWorkerStartup(
   }
   return {
     ok: true,
+    mode: provider.mode,
     processingEnabled: env.VIBODE_FURNITURE_GENERATION_WORKER_ENABLED === "true",
     pollIntervalMs,
     once: argv.includes("--once"),

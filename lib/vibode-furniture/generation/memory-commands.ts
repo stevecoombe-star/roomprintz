@@ -92,6 +92,37 @@ export function createMemoryGenerationCommands(
       if (!authorized.ok) return { ok: false, code: authorized.code };
       return { ok: true, status: authorized.job.status, duplicateChargeRisk: true };
     },
+    async grantPaidSubmission(acknowledge) {
+      if (acknowledge !== true) return { ok: false, code: "not_claimable" };
+      if (db.controls.paidSubmissionsAuthorized >= 1) {
+        return { ok: false, code: "allowance_closed" };
+      }
+      db.controls.paidSubmissionsAuthorized = 1;
+      return {
+        ok: true,
+        authorized: db.controls.paidSubmissionsAuthorized,
+        used: db.controls.paidSubmissionsUsed,
+      };
+    },
+    async readOperator(jobId) {
+      const job = db.jobs.find((item) => item.jobId === jobId);
+      if (!job) return { ok: false, code: "not_found" };
+      return {
+        ok: true,
+        job: {
+          jobId: job.jobId,
+          status: job.status,
+          progress: job.progress,
+          errorClass: job.errorClass,
+          providerStatus: job.providerStatus,
+          consumedCredits: job.consumedCredits,
+          quotaState: job.quotaState,
+          attemptCount: job.attemptCount,
+          paidSubmissionsAuthorized: db.controls.paidSubmissionsAuthorized,
+          paidSubmissionsUsed: db.controls.paidSubmissionsUsed,
+        },
+      };
+    },
     async claimNext(submitAllowed, nowMs) {
       const job = db.jobs
         .filter((item) => ACTIVE.has(item.status))
@@ -100,6 +131,12 @@ export function createMemoryGenerationCommands(
       if (!job) return { ok: true, outcome: "idle" };
       if (job.status === "reserved" && (submitAllowed !== true || db.controls.liveEnabled !== true)) {
         return { ok: true, outcome: "disabled" };
+      }
+      if (
+        job.status === "reserved"
+        && db.controls.paidSubmissionsUsed >= db.controls.paidSubmissionsAuthorized
+      ) {
+        return { ok: false, code: "submission_not_authorized" };
       }
       const claimed = claimGeneration(db, {
         userId: job.userId,
@@ -110,6 +147,7 @@ export function createMemoryGenerationCommands(
       if (!claimed.ok || !claimed.job.claimNonce) return { ok: true, outcome: "idle" };
       const view = claimedView(claimed.job, claimed.purpose);
       if (!view) return { ok: false, code: "not_claimable" };
+      if (claimed.purpose === "submit") db.controls.paidSubmissionsUsed += 1;
       return { ok: true, outcome: "claimed", claim: view };
     },
     async listInputs(userId, jobId) {
@@ -145,6 +183,7 @@ export function createMemoryGenerationCommands(
     async settleRateLimit(input) {
       const settled = settleGenerationRateLimit(db, input);
       if (!settled.ok) return { ok: false, code: settled.code };
+      db.controls.paidSubmissionsUsed = Math.max(0, db.controls.paidSubmissionsUsed - 1);
       return { ok: true, status: settled.job.status };
     },
     async dropClaim(input) {

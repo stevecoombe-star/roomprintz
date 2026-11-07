@@ -16,7 +16,9 @@ import { validatePersonalFurnitureGlb } from "@/lib/vibode-furniture/validate.se
 import type { GenerationHttpDeps } from "./http";
 import {
   getFurnitureGeneration,
+  getFurnitureGenerationOperator,
   postFurnitureGeneration,
+  postFurnitureGenerationAllowance,
   postFurnitureGenerationDiscard,
   postFurnitureGenerationPreview,
   postFurnitureGenerationRecovery,
@@ -61,6 +63,11 @@ function harness(options?: { live?: boolean; env?: string }) {
     newJobId: () => `aaaaaaaa-aaaa-4aaa-8aaa-${String(sequence++).padStart(12, "a")}`,
   };
   return { db, clock, commands, objects, deps };
+}
+
+async function allowOne(ctx: { commands: { grantPaidSubmission(acknowledge: boolean): Promise<{ ok: boolean }> } }) {
+  const granted = await ctx.commands.grantPaidSubmission(true);
+  assert.equal(granted.ok, true);
 }
 
 function asCaller(deps: GenerationHttpDeps, userId: string, email: string): GenerationHttpDeps {
@@ -199,6 +206,7 @@ test("invalid photos and settings are rejected before reservation", async () => 
 
 test("a single image reaches a private preview without a second post", async () => {
   const ctx = harness();
+  await allowOne(ctx);
   const bytes = await png();
   const created = await postFurnitureGeneration(request("idem-key-0001", bytes), ctx.deps);
   assert.equal(created.status, 200);
@@ -259,6 +267,7 @@ test("a single image reaches a private preview without a second post", async () 
   assert.equal(discarded.status, 200);
   assert.equal((discarded.body as { providerCreditsRefunded: boolean }).providerCreditsRefunded, false);
   assert.equal(ctx.db.controls.creditsConsumed, 20);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
   assert.equal(ctx.db.jobs[0]?.savedAssetId, null);
 
   const cleaned = await cleanupTemporaryGenerationObjects({
@@ -281,6 +290,7 @@ test("a single image reaches a private preview without a second post", async () 
 
 test("provider failure, oversized output, and compressed GLBs free the slot", async () => {
   const failed = harness();
+  await allowOne(failed);
   await postFurnitureGeneration(request("idem-key-0001", await png()), failed.deps);
   const failure = scripted([
     response(202, { result: TASK_ID }),
@@ -290,8 +300,11 @@ test("provider failure, oversized output, and compressed GLBs free the slot", as
   assert.equal((await runPass(failed, failure, okGlb)).action, "failed");
   assert.equal(failed.db.jobs[0]?.status, "failed");
   assert.equal(failed.db.controls.creditsReserved, 0);
+  assert.equal(failed.db.controls.creditsConsumed, 0);
+  assert.equal(failed.db.controls.paidSubmissionsUsed, 1);
 
   const oversized = harness();
+  await allowOne(oversized);
   await postFurnitureGeneration(request("idem-key-0001", await png()), oversized.deps);
   const huge = scripted([response(202, { result: TASK_ID }), succeededTask(20)]);
   await runPass(oversized, huge, okGlb);
@@ -303,9 +316,31 @@ test("provider failure, oversized output, and compressed GLBs free the slot", as
   }));
   assert.equal(oversized.db.jobs[0]?.status, "failed");
   assert.equal(oversized.db.jobs[0]?.errorClass, "oversized_output");
+  assert.equal(oversized.db.jobs[0]?.providerStatus, "SUCCEEDED");
+  assert.equal(oversized.db.jobs[0]?.consumedCredits, 20);
   assert.equal(oversized.db.controls.creditsConsumed, 20);
+  assert.equal(oversized.db.controls.paidSubmissionsUsed, 1);
+  const oversizedJobId = oversized.db.jobs[0]?.jobId ?? "";
+  const operator = await getFurnitureGenerationOperator(
+    new Request("https://vibode.local/operator"),
+    oversized.deps,
+    oversizedJobId,
+  );
+  const operatorText = JSON.stringify(operator.body);
+  assert.equal(operator.status, 200);
+  assert.equal((operator.body as { job: { providerStatus: string; consumedCredits: number; errorClass: string } }).job.providerStatus, "SUCCEEDED");
+  assert.equal((operator.body as { job: { consumedCredits: number } }).job.consumedCredits, 20);
+  assert.equal((operator.body as { job: { errorClass: string } }).job.errorClass, "oversized_output");
+  assert.equal(operatorText.includes(TASK_ID) || operatorText.includes("http") || operatorText.includes("data:image"), false);
+  const ownerOperator = await getFurnitureGenerationOperator(
+    new Request("https://vibode.local/operator"),
+    asCaller(oversized.deps, USER_A, "person@example.com"),
+    oversizedJobId,
+  );
+  assert.equal(ownerOperator.status, 401);
 
   const compressed = harness();
+  await allowOne(compressed);
   await postFurnitureGeneration(request("idem-key-0001", await png()), compressed.deps);
   const draco = scripted([response(202, { result: TASK_ID }), succeededTask(20)]);
   const dracoBytes = encodeGlb({
@@ -320,11 +355,15 @@ test("provider failure, oversized output, and compressed GLBs free the slot", as
     contentLength: dracoBytes.byteLength,
   }));
   assert.equal(compressed.db.jobs[0]?.errorClass, "invalid_output");
+  assert.equal(compressed.db.jobs[0]?.providerStatus, "SUCCEEDED");
+  assert.equal(compressed.db.jobs[0]?.consumedCredits, 20);
   assert.equal(compressed.db.jobs[0]?.status, "failed");
+  assert.equal(compressed.db.controls.paidSubmissionsUsed, 1);
 });
 
-test("an ambiguous create is not posted again until an administrator authorizes it", async () => {
+test("an ambiguous create stays held after administrator recovery", async () => {
   const ctx = harness();
+  await allowOne(ctx);
   const bytes = await png();
   const created = await postFurnitureGeneration(request("idem-key-0001", bytes), ctx.deps);
   const jobId = (created.body as { job: { jobId: string } }).job.jobId;
@@ -332,7 +371,6 @@ test("an ambiguous create is not posted again until an administrator authorizes 
     { kind: "timeout" },
     response(200, []),
     response(200, []),
-    response(202, { result: TASK_ID }),
   ]);
   assert.equal((await runPass(ctx, provider, okGlb)).action, "ambiguous");
   assert.equal((await runPass(ctx, provider, okGlb)).action, "waiting");
@@ -379,12 +417,19 @@ test("an ambiguous create is not posted again until an administrator authorizes 
   );
   assert.equal(authorized.status, 200);
   assert.equal((authorized.body as { duplicateChargeRisk: boolean }).duplicateChargeRisk, true);
-  assert.equal((await runPass(ctx, provider, okGlb)).action, "submitted");
-  assert.equal(provider.posts(), 2);
+  const blocked = await runPass(ctx, provider, okGlb);
+  assert.equal(blocked.action, "submission_not_authorized");
+  assert.equal(provider.posts(), 1);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
+  assert.equal(ctx.db.jobs[0]?.status, "reserved");
+  const closed = await ctx.commands.grantPaidSubmission(true);
+  assert.equal(closed.ok, false);
+  if (!closed.ok) assert.equal(closed.code, "allowance_closed");
 });
 
 test("a second worker cannot post while a submit claim is outstanding", async () => {
   const ctx = harness();
+  await allowOne(ctx);
   await postFurnitureGeneration(request("idem-key-0001", await png()), ctx.deps);
   const first = await ctx.commands.claimNext(true, ctx.clock.nowMs);
   assert.equal(first.ok, true);
@@ -393,6 +438,7 @@ test("a second worker cannot post while a submit claim is outstanding", async ()
   const blocked = await runPass(ctx, provider, okGlb);
   assert.equal(blocked.action, "idle");
   assert.equal(provider.posts(), 0);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
   const job = ctx.db.jobs[0];
   assert.ok(job);
   job.claimExpiresAtMs = ctx.clock.nowMs - 1;
@@ -400,6 +446,7 @@ test("a second worker cannot post while a submit claim is outstanding", async ()
   assert.equal(recovered.action, "waiting");
   assert.equal(ctx.db.jobs[0]?.status, "ambiguous");
   assert.equal(provider.posts(), 0);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
 });
 
 test("a disabled worker does not submit a reserved job", async () => {
@@ -422,6 +469,7 @@ test("a disabled worker does not submit a reserved job", async () => {
 
 test("expiry removes the candidate and keeps the consumed credits", async () => {
   const ctx = harness();
+  await allowOne(ctx);
   await postFurnitureGeneration(request("idem-key-0001", await png()), ctx.deps);
   const provider = scripted([response(202, { result: TASK_ID }), succeededTask(20)]);
   await runPass(ctx, provider, okGlb);
@@ -451,6 +499,106 @@ test("expiry removes the candidate and keeps the consumed credits", async () => 
   assert.equal(next.status, 200);
 });
 
+test("the paid allowance starts at zero and is not replenished", async () => {
+  const blocked = harness();
+  await postFurnitureGeneration(request("idem-key-0001", await png()), blocked.deps);
+  const none = scripted([response(202, { result: TASK_ID })]);
+  assert.equal((await runPass(blocked, none, okGlb)).action, "submission_not_authorized");
+  assert.equal(none.posts(), 0);
+  assert.equal(blocked.db.jobs[0]?.attemptCount, 0);
+  assert.equal(blocked.db.controls.paidSubmissionsUsed, 0);
+
+  const refused = harness();
+  await allowOne(refused);
+  await postFurnitureGeneration(request("idem-key-0001", await png()), refused.deps);
+  const payment = scripted([response(402, { message: "Payment Required" })]);
+  assert.equal((await runPass(refused, payment, okGlb)).action, "failed");
+  assert.equal(payment.posts(), 1);
+  assert.equal(refused.db.controls.paidSubmissionsUsed, 1);
+  assert.equal(refused.db.controls.creditsConsumed, 0);
+  const next = await postFurnitureGeneration(request("idem-key-0002", await png()), refused.deps);
+  assert.equal(next.status, 200);
+  const second = scripted([response(202, { result: "018a210d-8ba4-705c-b111-1f1776f7f580" })]);
+  assert.equal((await runPass(refused, second, okGlb)).action, "submission_not_authorized");
+  assert.equal(second.posts(), 0);
+  assert.equal(refused.db.controls.paidSubmissionsUsed, 1);
+
+  const limited = harness();
+  await allowOne(limited);
+  await postFurnitureGeneration(request("idem-key-0001", await png()), limited.deps);
+  const rate = scripted([response(429, { message: "Too Many Requests" })]);
+  assert.equal((await runPass(limited, rate, okGlb)).action, "rate_limited");
+  assert.equal(limited.db.controls.paidSubmissionsUsed, 0);
+  assert.equal(limited.db.jobs[0]?.status, "reserved");
+  const afterLimit = scripted([response(202, { result: TASK_ID }), succeededTask(20)]);
+  assert.equal((await runPass(limited, afterLimit, okGlb)).action, "submitted");
+  assert.equal(limited.db.controls.paidSubmissionsUsed, 1);
+});
+
+test("an owner cannot grant a paid submission and a restart does not replenish it", async () => {
+  const ctx = harness();
+  const owner = await postFurnitureGenerationAllowance(
+    new Request("https://vibode.local/allowance", {
+      method: "POST",
+      body: JSON.stringify({ paidSubmissionAuthorized: true }),
+    }),
+    asCaller(ctx.deps, USER_A, "person@example.com"),
+  );
+  assert.equal(owner.status, 401);
+  const missing = await postFurnitureGenerationAllowance(
+    new Request("https://vibode.local/allowance", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+    ctx.deps,
+  );
+  assert.equal(missing.status, 409);
+  const duplicate = await postFurnitureGenerationAllowance(
+    new Request("https://vibode.local/allowance", {
+      method: "POST",
+      body: JSON.stringify({ duplicateChargeRiskAccepted: true }),
+    }),
+    ctx.deps,
+  );
+  assert.equal(duplicate.status, 400);
+  assert.equal(ctx.db.controls.paidSubmissionsAuthorized, 0);
+  const granted = await postFurnitureGenerationAllowance(
+    new Request("https://vibode.local/allowance", {
+      method: "POST",
+      body: JSON.stringify({ paidSubmissionAuthorized: true }),
+    }),
+    ctx.deps,
+  );
+  assert.equal(granted.status, 200);
+  assert.equal((granted.body as { maxEstimatedCredits: number }).maxEstimatedCredits, 40);
+  const again = await postFurnitureGenerationAllowance(
+    new Request("https://vibode.local/allowance", {
+      method: "POST",
+      body: JSON.stringify({ paidSubmissionAuthorized: true }),
+    }),
+    ctx.deps,
+  );
+  assert.equal(again.status, 409);
+  await postFurnitureGeneration(request("idem-key-0001", await png()), ctx.deps);
+  const provider = scripted([response(202, { result: TASK_ID }), succeededTask(20)]);
+  await runPass(ctx, provider, okGlb);
+  await runPass(ctx, provider, okGlb);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
+  const discarded = await postFurnitureGenerationDiscard(
+    new Request("https://vibode.local/discard", { method: "POST", body: "{}" }),
+    ctx.deps,
+    ctx.db.jobs[0]?.jobId ?? "",
+  );
+  assert.equal(discarded.status, 200);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
+  const restarted = scripted([response(202, { result: "018a210d-8ba4-705c-b111-1f1776f7f580" })]);
+  const created = await postFurnitureGeneration(request("idem-key-0002", await png()), ctx.deps);
+  assert.equal(created.status, 200);
+  assert.equal((await runPass(ctx, restarted, okGlb)).action, "submission_not_authorized");
+  assert.equal(restarted.posts(), 0);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
+});
+
 test("quota blocks another reservation after the budget is consumed", async () => {
   const ctx = harness();
   ctx.db.controls.creditsConsumed = 30;
@@ -464,8 +612,11 @@ test("routes keep recovery separate and the worker cannot post", () => {
   const read = (path: string) => readFileSync(`${root}/${path}`, "utf8");
   const panel = read("components/stage/FurnitureGeneratorPanel.tsx");
   assert.match(panel, /data-generate="unavailable"/);
+  assert.doesNotMatch(panel, /paidSubmissionAuthorized|grantPaidSubmission/);
   const discard = read("app/api/vibode/furniture-generations/[jobId]/discard/route.ts");
-  assert.doesNotMatch(discard, /duplicateChargeRisk|adminAuthorize|recover/);
+  assert.doesNotMatch(discard, /duplicateChargeRisk|adminAuthorize|recover|paidSubmissionAuthorized/);
+  const allowance = read("app/api/vibode/admin/furniture-generations/allowance/route.ts");
+  assert.match(allowance, /postFurnitureGenerationAllowance/);
   const recover = read("app/api/vibode/admin/furniture-generations/[jobId]/recover/route.ts");
   assert.match(recover, /postFurnitureGenerationRecovery/);
   const production = read("lib/vibode-furniture/generation/production.server.ts");
@@ -473,8 +624,11 @@ test("routes keep recovery separate and the worker cannot post", () => {
   assert.match(production, /isAdminEmail/);
   assert.doesNotMatch(production, /MESHY_API_KEY|api\.meshy\.ai/);
   const worker = read("furniture-generation-worker/src/index.ts");
-  assert.match(worker, /WORKER_POSTS_ENABLED = false/);
+  const providerMode = read("furniture-generation-worker/src/provider.ts");
+  assert.match(worker, /submitAllowed: runtime.runtime.submitAllowed/);
   assert.doesNotMatch(worker, /MESHY_API_KEY|api\.meshy\.ai|msy_/);
+  assert.match(providerMode, /mode: "fake",\s*submitAllowed: false/);
+  assert.match(providerMode, /selected === "" \|\| selected === "fake"/);
   for (const path of [
     "lib/vibode-furniture/generation/pipeline.ts",
     "lib/vibode-furniture/generation/http.ts",

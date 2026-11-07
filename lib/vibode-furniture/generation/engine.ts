@@ -133,6 +133,8 @@ export type GenerationControls = {
   creditCeiling: number;
   creditsReserved: number;
   creditsConsumed: number;
+  paidSubmissionsAuthorized: number;
+  paidSubmissionsUsed: number;
 };
 
 export type GenerationDatabase = {
@@ -175,6 +177,8 @@ export function createGenerationDatabase(): GenerationDatabase {
       creditCeiling: MESHY_TEST_CREDIT_CEILING,
       creditsReserved: 0,
       creditsConsumed: 0,
+      paidSubmissionsAuthorized: 0,
+      paidSubmissionsUsed: 0,
     },
     jobs: [],
     inputs: [],
@@ -525,6 +529,7 @@ export function failGenerationOutput(
   const job = ownedLease(db, input);
   if (!job.ok) return job;
   if (job.job.status !== "ingesting" && job.job.status !== "running") return { ok: false, code: "not_claimable" };
+  // Provider status and consumed credits stay. A rejected GLB is still a paid result.
   job.job.status = "failed";
   job.job.errorClass = input.errorClass;
   job.job.errorCode = input.errorClass;

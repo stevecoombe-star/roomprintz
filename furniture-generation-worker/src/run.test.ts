@@ -68,21 +68,45 @@ test("continuous mode does not overlap passes", async () => {
   assert.equal(calls, 2);
 });
 
-test("startup refuses Meshy credentials and a live provider", () => {
+test("startup keeps fake mode when a key exists and fails closed for real mode", () => {
+  const key = "msy_test_secret_value";
   const credential = evaluateFurnitureGenerationWorkerStartup({
-    MESHY_API_KEY: "present",
+    MESHY_API_KEY: key,
     VIBODE_FURNITURE_GENERATION_PROVIDER: "fake",
   }, []);
-  assert.equal(credential.ok, false);
-  const live = evaluateFurnitureGenerationWorkerStartup({
+  assert.equal(credential.ok, true);
+  if (credential.ok) assert.equal(credential.mode, "fake");
+  assert.equal(JSON.stringify(credential).includes(key), false);
+  const incomplete = evaluateFurnitureGenerationWorkerStartup({
+    MESHY_API_KEY: key,
     VIBODE_FURNITURE_GENERATION_PROVIDER: "meshy",
   }, []);
-  assert.equal(live.ok, false);
+  assert.equal(incomplete.ok, false);
+  if (!incomplete.ok) assert.equal(incomplete.missing, "generation_disabled");
+  const missingKey = evaluateFurnitureGenerationWorkerStartup({
+    VIBODE_FURNITURE_GENERATION_PROVIDER: "meshy",
+    VIBODE_MESHY_GENERATION_ENABLED: "true",
+  }, []);
+  assert.equal(missingKey.ok, false);
+  if (!missingKey.ok) assert.equal(missingKey.missing, "meshy_credential_missing");
+  const enabled = evaluateFurnitureGenerationWorkerStartup({
+    MESHY_API_KEY: key,
+    VIBODE_FURNITURE_GENERATION_PROVIDER: "meshy",
+    VIBODE_MESHY_GENERATION_ENABLED: "true",
+  }, ["--once"]);
+  assert.equal(enabled.ok, true);
+  if (enabled.ok) {
+    assert.equal(enabled.mode, "meshy");
+    assert.equal(enabled.processingEnabled, false);
+    assert.equal(enabled.once, true);
+  }
+  assert.equal(JSON.stringify(enabled).includes(key), false);
   const fake = evaluateFurnitureGenerationWorkerStartup({
     VIBODE_FURNITURE_GENERATION_PROVIDER: "fake",
   }, ["--once"]);
   assert.equal(fake.ok, true);
   if (fake.ok) {
+    assert.equal(fake.mode, "fake");
     assert.equal(fake.processingEnabled, false);
     assert.equal(fake.once, true);
   }
