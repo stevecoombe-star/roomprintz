@@ -387,12 +387,10 @@ export function settleGenerationRateLimit(
   const job = ownedLease(db, input);
   if (!job.ok) return job;
   if (job.job.status !== "submitting" || job.job.providerTaskId) return { ok: false, code: "not_claimable" };
-  job.job.attemptCount = Math.max(0, job.job.attemptCount - 1);
-  job.job.resubmitAuthorized = job.job.attemptCount > 0;
-  job.job.providerContactedAtMs = null;
-  job.job.status = "reserved";
-  job.job.errorClass = null;
-  job.job.errorCode = null;
+  releaseReservation(db, job.job, 0, "failure");
+  job.job.status = "failed";
+  job.job.errorClass = "rate_limited";
+  job.job.errorCode = "rate_limited";
   releaseClaim(job.job);
   touch(job.job, input.nowMs);
   return { ok: true, job: job.job };

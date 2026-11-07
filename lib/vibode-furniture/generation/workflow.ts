@@ -268,6 +268,7 @@ export async function submitFurnitureGeneration(input: {
     return { ok: false, errorClass: "ambiguous_timeout", message: outcome.message };
   }
   if (outcome.errorClass === "rate_limited") {
+    // HTTP 429 closes this POST. It does not return the job to reserved.
     const settled = settleGenerationRateLimit(input.db, {
       userId: input.actorUserId,
       jobId: input.jobId,

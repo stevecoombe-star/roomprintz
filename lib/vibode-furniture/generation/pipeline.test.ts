@@ -528,10 +528,34 @@ test("the paid allowance starts at zero and is not replenished", async () => {
   await postFurnitureGeneration(request("idem-key-0001", await png()), limited.deps);
   const rate = scripted([response(429, { message: "Too Many Requests" })]);
   assert.equal((await runPass(limited, rate, okGlb)).action, "rate_limited");
-  assert.equal(limited.db.controls.paidSubmissionsUsed, 0);
-  assert.equal(limited.db.jobs[0]?.status, "reserved");
-  const afterLimit = scripted([response(202, { result: TASK_ID }), succeededTask(20)]);
-  assert.equal((await runPass(limited, afterLimit, okGlb)).action, "submitted");
+  assert.equal(rate.posts(), 1);
+  assert.equal(limited.db.controls.paidSubmissionsAuthorized, 1);
+  assert.equal(limited.db.controls.paidSubmissionsUsed, 1);
+  assert.equal(limited.db.controls.creditsReserved, 0);
+  assert.equal(limited.db.controls.creditsConsumed, 0);
+  assert.equal(limited.db.jobs[0]?.status, "failed");
+  assert.equal(limited.db.jobs[0]?.errorClass, "rate_limited");
+  assert.equal(limited.db.jobs[0]?.providerTaskId, null);
+  assert.equal(limited.db.jobs[0]?.consumedCredits, 0);
+  assert.equal(limited.db.jobs[0]?.attemptCount, 1);
+  for (let pass = 0; pass < 3; pass += 1) {
+    const repeat = scripted([response(202, { result: TASK_ID })]);
+    assert.equal((await runPass(limited, repeat, okGlb)).action, "idle");
+    assert.equal(repeat.posts(), 0);
+  }
+  const restarted = {
+    ...limited,
+    commands: createMemoryGenerationCommands(limited.db, limited.clock),
+  };
+  const afterRestart = scripted([response(202, { result: TASK_ID })]);
+  assert.equal((await runPass(restarted, afterRestart, okGlb)).action, "idle");
+  assert.equal(afterRestart.posts(), 0);
+  assert.equal(limited.db.controls.paidSubmissionsUsed, 1);
+  const another = await postFurnitureGeneration(request("idem-key-0002", await png()), limited.deps);
+  assert.equal(another.status, 200);
+  const blockedRetry = scripted([response(202, { result: "018a210d-8ba4-705c-b111-1f1776f7f580" })]);
+  assert.equal((await runPass(limited, blockedRetry, okGlb)).action, "submission_not_authorized");
+  assert.equal(blockedRetry.posts(), 0);
   assert.equal(limited.db.controls.paidSubmissionsUsed, 1);
 });
 
@@ -640,4 +664,10 @@ test("routes keep recovery separate and the worker cannot post", () => {
     assert.doesNotMatch(source, /api\.meshy\.ai|MESHY_API_KEY/);
   }
   assert.equal(GENERATION_INPUT_BUCKET.includes("generation-inputs"), true);
+  const onePost = read("supabase/migrations/20261107231500_vibode_furniture_generation_one_post.sql");
+  assert.match(onePost, /status = 'failed'/);
+  assert.match(onePost, /error_class = 'rate_limited'/);
+  assert.doesNotMatch(onePost, /paid_submissions_used\s*=/);
+  const memory = read("lib/vibode-furniture/generation/memory-commands.ts");
+  assert.doesNotMatch(memory, /paidSubmissionsUsed - 1/);
 });

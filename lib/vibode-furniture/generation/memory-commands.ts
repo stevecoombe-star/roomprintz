@@ -183,7 +183,6 @@ export function createMemoryGenerationCommands(
     async settleRateLimit(input) {
       const settled = settleGenerationRateLimit(db, input);
       if (!settled.ok) return { ok: false, code: settled.code };
-      db.controls.paidSubmissionsUsed = Math.max(0, db.controls.paidSubmissionsUsed - 1);
       return { ok: true, status: settled.job.status };
     },
     async dropClaim(input) {

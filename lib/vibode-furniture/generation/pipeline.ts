@@ -302,6 +302,7 @@ async function submitClaim(
     return { ok: true, action: "ambiguous", jobId: claim.jobId };
   }
   if (outcome.errorClass === "rate_limited") {
+    // The POST already consumed the one lifetime allowance. Keep it consumed.
     await input.commands.settleRateLimit({
       userId: claim.userId,
       jobId: claim.jobId,

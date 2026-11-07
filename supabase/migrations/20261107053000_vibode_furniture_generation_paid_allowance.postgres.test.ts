@@ -53,6 +53,7 @@ test("one paid submission is durable and a second submission stays closed", { ti
     const foundation = readFileSync(path.join(process.cwd(), "supabase/migrations/20261106234500_vibode_furniture_generation.sql"), "utf8");
     const pipeline = readFileSync(path.join(process.cwd(), "supabase/migrations/20261107043000_vibode_furniture_generation_pipeline.sql"), "utf8");
     const allowance = readFileSync(path.join(process.cwd(), "supabase/migrations/20261107053000_vibode_furniture_generation_paid_allowance.sql"), "utf8");
+    const onePost = readFileSync(path.join(process.cwd(), "supabase/migrations/20261107231500_vibode_furniture_generation_one_post.sql"), "utf8");
     await psql(`
       create role anon nologin;
       create role authenticated nologin;
@@ -87,6 +88,7 @@ test("one paid submission is durable and a second submission stays closed", { ti
     await psql(foundation);
     await psql(pipeline);
     await psql(allowance);
+    await psql(onePost);
     await psql(`
       alter role anon login;
       alter role authenticated login;
@@ -165,12 +167,6 @@ test("one paid submission is durable and a second submission stays closed", { ti
     assert.equal((await postFurnitureGenerationAllowance(allowanceRequest({ paidSubmissionAuthorized: true }), deps)).status, 409);
     assert.equal(await counters(), "1:0");
 
-    const limited = scripted([response(429, { message: "Too Many Requests" })]);
-    assert.equal((await pass(deps, limited)).action, "rate_limited");
-    assert.equal(limited.posts(), 1);
-    assert.equal(await counters(), "1:0");
-    assert.equal(await psql(`select status from public.vibode_furniture_generation_jobs`), "reserved");
-
     const provider = scripted([
       response(202, { result: TASK_ID }),
       response(200, {
@@ -185,6 +181,10 @@ test("one paid submission is durable and a second submission stays closed", { ti
     assert.equal((await pass(deps, provider)).action, "submitted");
     assert.equal(await counters(), "1:1");
     assert.equal((await pass(deps, provider)).action, "ready");
+    assert.equal(provider.posts(), 1);
+    const polled = scripted([]);
+    assert.equal((await pass(deps, polled)).action, "idle");
+    assert.equal(polled.posts(), 0);
     assert.equal(provider.posts(), 1);
     assert.equal(await counters(), "1:1");
     assert.equal(await psql(`
@@ -240,6 +240,92 @@ test("one paid submission is durable and a second submission stays closed", { ti
     assert.equal(await psql(`
       select count(*) from public.vibode_furniture_generation_jobs where status = 'reserved' and attempt_count = 0
     `), "1");
+
+    await psql(`
+      update public.vibode_furniture_generation_jobs
+      set status = 'cancelled'
+      where status = 'reserved';
+      update public.vibode_furniture_generation_controls
+      set paid_submissions_authorized = 0,
+        paid_submissions_used = 0,
+        credits_reserved = 0,
+        credits_consumed = 0,
+        live_enabled = true
+      where control_id = 'global';
+    `);
+    assert.equal((await postFurnitureGenerationAllowance(allowanceRequest({ paidSubmissionAuthorized: true }), deps)).status, 200);
+    const rateJob = await create(deps, "idem-key-0003");
+    assert.equal(rateJob.status, 200);
+    const rateLimited = scripted([response(429, { message: "Too Many Requests" })]);
+    assert.equal((await pass(deps, rateLimited)).action, "rate_limited");
+    assert.equal(rateLimited.posts(), 1);
+    assert.equal(await counters(), "1:1");
+    assert.equal(await psql(`
+      select status || ':' || error_class || ':' || coalesce(consumed_credits, -1)::text
+        || ':' || attempt_count::text || ':' || case when provider_task_id is null then 'none' else 'task' end
+      from public.vibode_furniture_generation_jobs
+      where idempotency_key = 'idem-key-0003'
+    `), "failed:rate_limited:0:1:none");
+    assert.equal(await psql(`
+      select credits_reserved::text || ':' || credits_consumed::text
+      from public.vibode_furniture_generation_controls
+      where control_id = 'global'
+    `), "0:0");
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const repeat = scripted([response(202, { result: TASK_ID })]);
+      assert.equal((await pass(deps, repeat)).action, "idle");
+      assert.equal(repeat.posts(), 0);
+    }
+    const restartedWorker = { ...deps, commands: createSqlGenerationCommands(rpc) };
+    const afterRestart = scripted([response(202, { result: TASK_ID })]);
+    assert.equal((await pass(restartedWorker, afterRestart)).action, "idle");
+    assert.equal(afterRestart.posts(), 0);
+    assert.equal(await counters(), "1:1");
+
+    await psql(`
+      update public.vibode_furniture_generation_controls
+      set paid_submissions_authorized = 0,
+        paid_submissions_used = 0,
+        credits_reserved = 0,
+        live_enabled = true
+      where control_id = 'global';
+    `);
+    assert.equal((await postFurnitureGenerationAllowance(allowanceRequest({ paidSubmissionAuthorized: true }), deps)).status, 200);
+    const raced = await create(deps, "idem-key-0004");
+    assert.equal(raced.status, 200);
+    const [firstClaim, secondClaim] = await Promise.all([
+      psql(`select public.claim_next_vibode_furniture_generation(true)::text`),
+      psql(`select public.claim_next_vibode_furniture_generation(true)::text`),
+    ]);
+    const claims = [JSON.parse(firstClaim), JSON.parse(secondClaim)] as Array<{ outcome?: string; code?: string }>;
+    assert.equal(claims.filter((claim) => claim.outcome === "claimed").length, 1);
+    assert.equal(claims.filter((claim) => claim.outcome === "claimed" || claim.outcome === "idle" || claim.code === "submission_not_authorized").length, 2);
+    assert.equal(await counters(), "1:1");
+    const racedNonce = await psql(`
+      select claim_nonce::text
+      from public.vibode_furniture_generation_jobs
+      where idempotency_key = 'idem-key-0004'
+    `);
+    const racedUser = await psql(`
+      select user_id::text
+      from public.vibode_furniture_generation_jobs
+      where idempotency_key = 'idem-key-0004'
+    `);
+    const racedId = await psql(`
+      select job_id::text
+      from public.vibode_furniture_generation_jobs
+      where idempotency_key = 'idem-key-0004'
+    `);
+    assert.equal(await psql(`
+      select public.settle_vibode_furniture_generation_rate_limit('${racedUser}', '${racedId}', '${racedNonce}')->>'status'
+    `), "failed");
+    assert.equal(await counters(), "1:1");
+    assert.equal(await psql(`select public.claim_next_vibode_furniture_generation(true)->>'outcome'`), "idle");
+    assert.equal(await psql(`
+      select status || ':' || error_class || ':' || coalesce(consumed_credits, -1)::text
+      from public.vibode_furniture_generation_jobs
+      where idempotency_key = 'idem-key-0004'
+    `), "failed:rate_limited:0");
   } finally {
     globalThis.fetch = previousFetch;
     await removeContainer();
