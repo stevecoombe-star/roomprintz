@@ -615,6 +615,8 @@ test("routes keep recovery separate and the worker cannot post", () => {
   assert.doesNotMatch(panel, /paidSubmissionAuthorized|grantPaidSubmission/);
   const discard = read("app/api/vibode/furniture-generations/[jobId]/discard/route.ts");
   assert.doesNotMatch(discard, /duplicateChargeRisk|adminAuthorize|recover|paidSubmissionAuthorized/);
+  const create = read("app/api/vibode/furniture-generations/route.ts");
+  assert.match(create, /export const maxDuration = 60;/);
   const allowance = read("app/api/vibode/admin/furniture-generations/allowance/route.ts");
   assert.match(allowance, /postFurnitureGenerationAllowance/);
   const recover = read("app/api/vibode/admin/furniture-generations/[jobId]/recover/route.ts");

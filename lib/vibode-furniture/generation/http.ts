@@ -18,6 +18,11 @@ import {
 } from "./pipeline";
 import { MESHY_TEST_CREDIT_CEILING } from "./policy";
 import { furnitureSettingsFromJson } from "./settings-json";
+import {
+  GENERATION_REQUEST_BODY_MAX_BYTES,
+  generationRequestBodyLimit,
+  imagesFitGenerationTransport,
+} from "./transport";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -63,7 +68,7 @@ export async function postFurnitureGeneration(
   const caller = await deps.authorize(request);
   if (!caller.ok) return caller.response;
   const body = await readJson(request);
-  if (!body.ok) return json(400, { ok: false, error: "The generation request could not be read." });
+  if (!body.ok) return unreadable(body.reason);
   if (FORBIDDEN_FIELDS.some((field) => field in body.value)) {
     return json(400, { ok: false, error: "The generation request could not be read." });
   }
@@ -74,7 +79,11 @@ export async function postFurnitureGeneration(
   const settings = furnitureSettingsFromJson(body.value.settings);
   if (!settings) return json(400, { ok: false, error: "Those settings are not available." });
   const images = decodeImages(body.value.images);
-  if (!images) return json(400, { ok: false, error: "The photos could not be used." });
+  if (!images.ok) {
+    return images.reason === "too_large"
+      ? json(413, { ok: false, error: "The photo is too large to send." })
+      : json(400, { ok: false, error: "The photos could not be used." });
+  }
   try {
     const created = await createOwnedGeneration({
       commands: deps.commands,
@@ -85,7 +94,7 @@ export async function postFurnitureGeneration(
       idempotencyKey,
       jobId: (deps.newJobId ?? randomUUID)(),
       settings,
-      images,
+      images: images.images,
       nowMs: deps.nowMs(),
     });
     if (!created.ok) return json(failureStatus(created.errorClass), { ok: false, error: created.message });
@@ -264,32 +273,82 @@ export async function getFurnitureGenerationOperator(
   }
 }
 
-async function readJson(request: Request): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false }> {
+async function readJson(
+  request: Request,
+): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; reason: "unreadable" | "too_large" }> {
+  const declared = generationRequestBodyLimit(request.headers.get("content-length"));
+  if (declared !== "ok") return { ok: false, reason: declared === "too_large" ? "too_large" : "unreadable" };
+  let text: string;
   try {
-    const value = await request.json() as unknown;
-    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false };
+    text = await readBodyText(request, GENERATION_REQUEST_BODY_MAX_BYTES);
+  } catch (error) {
+    return { ok: false, reason: error instanceof BodyTooLargeError ? "too_large" : "unreadable" };
+  }
+  try {
+    const value = JSON.parse(text) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, reason: "unreadable" };
     return { ok: true, value: value as Record<string, unknown> };
   } catch {
-    return { ok: false };
+    return { ok: false, reason: "unreadable" };
   }
 }
 
-function decodeImages(value: unknown): { slot: FurnitureViewSlot; bytes: Uint8Array }[] | null {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 4) return null;
+function decodeImages(
+  value: unknown,
+): { ok: true; images: { slot: FurnitureViewSlot; bytes: Uint8Array }[] } | { ok: false; reason: "invalid" | "too_large" } {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 4) return { ok: false, reason: "invalid" };
   const images: { slot: FurnitureViewSlot; bytes: Uint8Array }[] = [];
   for (const item of value) {
-    if (!item || typeof item !== "object") return null;
+    if (!item || typeof item !== "object") return { ok: false, reason: "invalid" };
     const record = item as Record<string, unknown>;
-    if (typeof record.slot !== "string" || !SLOTS.has(record.slot as FurnitureViewSlot)) return null;
-    if (typeof record.base64 !== "string" || record.base64.includes("data:") || record.base64.includes("http")) {
-      return null;
+    if (typeof record.slot !== "string" || !SLOTS.has(record.slot as FurnitureViewSlot)) {
+      return { ok: false, reason: "invalid" };
     }
-    if (record.base64.length === 0 || record.base64.length > 28_000_000) return null;
+    if (typeof record.base64 !== "string" || record.base64.includes("data:") || record.base64.includes("http")) {
+      return { ok: false, reason: "invalid" };
+    }
+    if (record.base64.length === 0 || record.base64.length > GENERATION_REQUEST_BODY_MAX_BYTES) {
+      return { ok: false, reason: record.base64.length > GENERATION_REQUEST_BODY_MAX_BYTES ? "too_large" : "invalid" };
+    }
     const bytes = Buffer.from(record.base64, "base64");
-    if (bytes.byteLength === 0) return null;
+    if (bytes.byteLength === 0) return { ok: false, reason: "invalid" };
     images.push({ slot: record.slot as FurnitureViewSlot, bytes: new Uint8Array(bytes) });
   }
-  return images;
+  if (!imagesFitGenerationTransport(images.map((image) => image.bytes.byteLength))) {
+    return { ok: false, reason: "too_large" };
+  }
+  return { ok: true, images };
+}
+
+class BodyTooLargeError extends Error {}
+
+async function readBodyText(request: Request, maxBytes: number): Promise<string> {
+  const body = request.body;
+  if (!body) {
+    const text = await request.text();
+    if (Buffer.byteLength(text) > maxBytes) throw new BodyTooLargeError();
+    return text;
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    total += next.value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new BodyTooLargeError();
+    }
+    chunks.push(next.value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function unreadable(reason: "unreadable" | "too_large"): GenerationHttpResult {
+  return reason === "too_large"
+    ? json(413, { ok: false, error: "The photo is too large to send." })
+    : json(400, { ok: false, error: "The generation request could not be read." });
 }
 
 function failureStatus(code: string): number {
