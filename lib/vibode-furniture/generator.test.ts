@@ -40,6 +40,8 @@ import {
   initialPreviewCamera,
   nudgePreviewOrbit,
   openGlbPreview,
+  orbitPreviewFromPointer,
+  orbitPreviewPosition,
   previewKeyboardAction,
   previewLoadPlan,
   previewOrbitLimits,
@@ -388,6 +390,8 @@ test("fixture GLB loads, grounds, and leaves another object untouched", async ()
   const raised = nudgePreviewOrbit(pose, "ArrowUp", limits);
   assert.ok(raised);
   assert.ok(raised.phi < pose.phi);
+  const raisedPosition = orbitPreviewPosition(pose.target, raised);
+  assert.ok(raisedPosition.y > pose.position.y);
   const floor = nudgePreviewOrbit({ ...pose, phi: limits.minPhi }, "ArrowUp", limits);
   assert.equal(floor?.phi, limits.minPhi);
 
@@ -594,6 +598,34 @@ test("generator and preview markup stay disconnected from Meshy and from STAGE",
   assert.doesNotMatch(requestSource, /fetch\(|MESHY_API_KEY|process\.env/);
   assert.match(source("components/stage/StageMyFurniturePanel.tsx"), /Upload GLB/);
   assert.match(source("components/stage/StageMyFurniturePanel.tsx"), /Archive/);
+});
+
+test("an upward pointer drag looks upward and a sideways drag keeps its direction", () => {
+  const limits = previewOrbitLimits({ widthM: 1, heightM: 1, depthM: 1 });
+  const orbit = { theta: 0.55, phi: 1.02, distance: 4 };
+  const target = { x: 0, y: 0.5, z: 0 };
+  const before = orbitPreviewPosition(target, orbit);
+
+  const draggedUp = orbitPreviewFromPointer(orbit, { x: 0, y: -80 }, limits);
+  const upPosition = orbitPreviewPosition(target, draggedUp);
+  assert.ok(draggedUp.phi > orbit.phi);
+  assert.ok(upPosition.y < before.y);
+  assert.equal(draggedUp.theta, orbit.theta);
+  assert.equal(draggedUp.distance, orbit.distance);
+
+  const draggedDown = orbitPreviewFromPointer(orbit, { x: 0, y: 80 }, limits);
+  const downPosition = orbitPreviewPosition(target, draggedDown);
+  assert.ok(draggedDown.phi < orbit.phi);
+  assert.ok(downPosition.y > before.y);
+  assert.equal(draggedDown.theta, orbit.theta);
+
+  const draggedLeft = orbitPreviewFromPointer(orbit, { x: -80, y: 0 }, limits);
+  const draggedRight = orbitPreviewFromPointer(orbit, { x: 80, y: 0 }, limits);
+  assert.ok(Math.abs(draggedLeft.theta - (orbit.theta + 0.4)) < 1e-12);
+  assert.ok(Math.abs(draggedRight.theta - (orbit.theta - 0.4)) < 1e-12);
+  assert.equal(draggedLeft.phi, orbit.phi);
+  assert.equal(draggedRight.phi, orbit.phi);
+  assert.equal(draggedLeft.distance, orbit.distance);
 });
 
 test("an owned candidate preview fetches a fresh private link and rejects the rest", async () => {

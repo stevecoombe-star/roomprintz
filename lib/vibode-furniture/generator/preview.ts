@@ -288,6 +288,25 @@ export function orbitPreviewPosition(target: PreviewVec3, orbit: PreviewOrbit): 
   };
 }
 
+const PREVIEW_POINTER_ORBIT_SPEED = 0.005;
+
+/**
+ * Screen Y increases downward. Subtracting that delta reverses the old
+ * mapping: dragging up increases phi and lowers the camera, so the view
+ * looks more upward at the model. Horizontal theta is unchanged.
+ */
+export function orbitPreviewFromPointer(
+  orbit: PreviewOrbit,
+  pointerDelta: Readonly<{ x: number; y: number }>,
+  limits: PreviewOrbitLimits,
+): PreviewOrbit {
+  return clampPreviewOrbit({
+    theta: orbit.theta - pointerDelta.x * PREVIEW_POINTER_ORBIT_SPEED,
+    phi: orbit.phi - pointerDelta.y * PREVIEW_POINTER_ORBIT_SPEED,
+    distance: orbit.distance,
+  }, limits);
+}
+
 export function nudgePreviewOrbit(
   orbit: PreviewOrbit,
   key: string,

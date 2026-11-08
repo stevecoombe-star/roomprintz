@@ -11,6 +11,7 @@ import {
   formatGeneratedDimensions,
   initialPreviewCamera,
   nudgePreviewOrbit,
+  orbitPreviewFromPointer,
   orbitPreviewPosition,
   previewCopy,
   previewFar,
@@ -389,10 +390,9 @@ function mountFurniturePreview(input: {
   const onPointerMove = (event: PointerEvent) => {
     if (!dragging) return;
     if (event.clientX !== lastX || event.clientY !== lastY) userMoved = true;
-    const next = clampPreviewOrbit({
-      theta: orbit.theta - (event.clientX - lastX) * 0.005,
-      phi: orbit.phi + (event.clientY - lastY) * 0.005,
-      distance: orbit.distance,
+    const next = orbitPreviewFromPointer(orbit, {
+      x: event.clientX - lastX,
+      y: event.clientY - lastY,
     }, limits);
     lastX = event.clientX;
     lastY = event.clientY;
