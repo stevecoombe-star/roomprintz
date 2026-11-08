@@ -10,7 +10,11 @@
 import { randomUUID } from "node:crypto";
 
 import { isUuidLike } from "@/lib/vibode-stage/asset-id";
-import { PERSONAL_FURNITURE_BUCKET, PERSONAL_FURNITURE_GLB_MAX_BYTES } from "@/lib/vibode-furniture/asset-id";
+import {
+  isPersonalFurnitureAssetId,
+  PERSONAL_FURNITURE_BUCKET,
+  PERSONAL_FURNITURE_GLB_MAX_BYTES,
+} from "@/lib/vibode-furniture/asset-id";
 import {
   FURNITURE_VIEW_SLOT_ORDER,
   type FurniturePhotoMime,
@@ -512,6 +516,66 @@ export function recordGenerationOutput(
   releaseClaim(row);
   touch(row, input.nowMs);
   return { ok: true, job: row };
+}
+
+/**
+ * Records the permanent asset id. The candidate path, checksum, byte count,
+ * and expiry stay as they were. The personal asset row is checked by the
+ * SQL function; this ledger mirrors the job transition only.
+ */
+export function linkGenerationSavedAsset(
+  db: GenerationDatabase,
+  input: {
+    userId: string;
+    jobId: string;
+    assetId: string;
+    sourceSha256: string;
+    sourceByteSize: number;
+    assetSha256: string;
+    assetByteSize: number;
+    nowMs: number;
+  },
+): { ok: true; idempotent: boolean } | { ok: false; code: string } {
+  const job = readGeneration(db, input.userId, input.jobId);
+  if (!job) return { ok: false, code: "not_found" };
+  if (
+    !isPersonalFurnitureAssetId(input.assetId)
+    || !SHA.test(input.sourceSha256)
+    || !SHA.test(input.assetSha256)
+    || !storedByteSize(input.sourceByteSize)
+    || !storedByteSize(input.assetByteSize)
+  ) {
+    return { ok: false, code: "not_claimable" };
+  }
+  if (job.savedAssetId || job.status === "saved") {
+    if (job.status === "saved" && job.savedAssetId === input.assetId) {
+      return { ok: true, idempotent: true };
+    }
+    return { ok: false, code: "already_saved" };
+  }
+  const candidate = generationCandidatePath(job.userId, job.jobId);
+  if (
+    job.status !== "ready"
+    || job.outputBucket !== PERSONAL_FURNITURE_BUCKET
+    || job.outputObjectPath !== candidate
+    || job.outputSha256 == null
+    || job.outputByteSize == null
+    || job.outputExpiresAtMs == null
+  ) {
+    return { ok: false, code: "not_claimable" };
+  }
+  if (job.outputExpiresAtMs <= input.nowMs) return { ok: false, code: "expired" };
+  if (job.outputSha256 !== input.sourceSha256 || job.outputByteSize !== input.sourceByteSize) {
+    return { ok: false, code: "source_mismatch" };
+  }
+  job.status = "saved";
+  job.savedAssetId = input.assetId;
+  touch(job, input.nowMs);
+  return { ok: true, idempotent: false };
+}
+
+function storedByteSize(value: number): boolean {
+  return Number.isInteger(value) && value > 0 && value <= PERSONAL_FURNITURE_GLB_MAX_BYTES;
 }
 
 export function failGenerationOutput(

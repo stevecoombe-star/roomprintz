@@ -3,6 +3,7 @@
  * service_role is the only database role that can execute these functions.
  */
 
+import { isPersonalFurnitureAssetId } from "@/lib/vibode-furniture/asset-id";
 import type { FurnitureViewSlot } from "@/lib/vibode-furniture/generator/images";
 
 import type { MeshyGenerationOperation } from "./credits";
@@ -10,6 +11,7 @@ import type {
   ClaimedGeneration,
   GenerationCommands,
   GenerationCommandResult,
+  GenerationSaveSource,
   OperatorGenerationJob,
   PublicGenerationJob,
   StoredGenerationInput,
@@ -72,6 +74,16 @@ export const GENERATION_RPC_ARGUMENTS = {
   ],
   record_vibode_furniture_generation_output: ["p_user_id", "p_job_id", "p_claim_nonce", "p_byte_size", "p_sha256"],
   fail_vibode_furniture_generation_output: ["p_user_id", "p_job_id", "p_claim_nonce", "p_error_class"],
+  read_vibode_furniture_generation_save_source: ["p_user_id", "p_job_id"],
+  link_vibode_furniture_generation_saved_asset: [
+    "p_user_id",
+    "p_job_id",
+    "p_asset_id",
+    "p_source_sha256",
+    "p_source_byte_size",
+    "p_asset_sha256",
+    "p_asset_byte_size",
+  ],
   grant_vibode_furniture_generation_paid_submission: ["p_acknowledge"],
   read_vibode_furniture_generation_operator: ["p_job_id"],
   sweep_vibode_furniture_generation_holds: [],
@@ -160,6 +172,24 @@ export function createSqlGenerationCommands(rpc: PositionalGenerationRpc): Gener
         return { ok: false, code: "not_found" };
       }
       return { ok: true, bucket, path };
+    },
+    async readSaveSource(userId, jobId) {
+      const data = asRecord(await rpc("read_vibode_furniture_generation_save_source", [userId, jobId]));
+      if (!data || data.ok !== true) return fail(data);
+      return saveSourceFrom(data, userId);
+    },
+    async linkSavedAsset(input) {
+      const data = asRecord(await rpc("link_vibode_furniture_generation_saved_asset", [
+        input.userId,
+        input.jobId,
+        input.assetId,
+        input.sourceSha256,
+        input.sourceByteSize,
+        input.assetSha256,
+        input.assetByteSize,
+      ]));
+      if (!data || data.ok !== true || data.status !== "saved") return fail(data);
+      return { ok: true, status: "saved", idempotent: data.idempotent === true };
     },
     async discard(input) {
       const data = asRecord(await rpc("discard_vibode_furniture_generation_candidate", [input.userId, input.jobId]));
@@ -365,6 +395,48 @@ function operatorFrom(data: Record<string, unknown>): OperatorGenerationJob | nu
   };
 }
 
+function saveSourceFrom(
+  data: Record<string, unknown>,
+  userId: string,
+): GenerationCommandResult<GenerationSaveSource> {
+  if (typeof data.status !== "string" || !STATUSES.has(data.status as GenerationStatus)) {
+    return { ok: false, code: "unavailable" };
+  }
+  const savedAssetId = data.saved_asset_id == null ? null : data.saved_asset_id;
+  if (savedAssetId != null && (typeof savedAssetId !== "string" || !isPersonalFurnitureAssetId(savedAssetId))) {
+    return { ok: false, code: "unavailable" };
+  }
+  const bucket = data.output_bucket == null ? null : data.output_bucket;
+  const path = data.output_object_path == null ? null : data.output_object_path;
+  const sha256 = data.output_sha256 == null ? null : data.output_sha256;
+  if (bucket != null && typeof bucket !== "string") return { ok: false, code: "unavailable" };
+  if (path != null && typeof path !== "string") return { ok: false, code: "unavailable" };
+  if (sha256 != null && (typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256))) {
+    return { ok: false, code: "unavailable" };
+  }
+  const byteSize = data.output_byte_size == null ? null : integerAt(data.output_byte_size);
+  if (data.output_byte_size != null && byteSize == null) return { ok: false, code: "unavailable" };
+  const expiresAtMs = data.output_expires_at == null ? null : epoch(data.output_expires_at);
+  if (data.output_expires_at != null && expiresAtMs == null) return { ok: false, code: "unavailable" };
+  if (
+    typeof bucket === "string"
+    && typeof path === "string"
+    && !generationObjectAllowed(bucket, path, userId)
+  ) {
+    return { ok: false, code: "not_found" };
+  }
+  return {
+    ok: true,
+    status: data.status as GenerationStatus,
+    savedAssetId: typeof savedAssetId === "string" ? savedAssetId : null,
+    bucket: typeof bucket === "string" ? bucket : null,
+    path: typeof path === "string" ? path : null,
+    sha256: typeof sha256 === "string" ? sha256 : null,
+    byteSize,
+    expiresAtMs,
+  };
+}
+
 function publicFromRead(data: Record<string, unknown>): PublicGenerationJob | null {
   if (typeof data.job_id !== "string" || typeof data.status !== "string" || !STATUSES.has(data.status as GenerationStatus)) {
     return null;
@@ -448,6 +520,12 @@ function temporaryFrom(value: unknown): TemporaryGenerationObject | null {
     userId: data.user_id,
     slot: typeof data.slot === "string" ? data.slot : null,
   };
+}
+
+function integerAt(value: unknown): number | null {
+  const number = asNumber(value);
+  if (number == null || !Number.isInteger(number)) return null;
+  return number;
 }
 
 function asNumber(value: unknown): number | null {

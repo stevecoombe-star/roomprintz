@@ -17,6 +17,16 @@ export type PublicGenerationJob = Readonly<{
   outputExpiresAt: string | null;
 }>;
 
+export type GenerationSaveSource = Readonly<{
+  status: GenerationStatus;
+  savedAssetId: string | null;
+  bucket: string | null;
+  path: string | null;
+  sha256: string | null;
+  byteSize: number | null;
+  expiresAtMs: number | null;
+}>;
+
 export type GenerationCaller = Readonly<{
   userId: string;
   email: string | null;
@@ -112,6 +122,17 @@ export type GenerationCommands = {
   failBeforeProvider(input: Readonly<{ userId: string; jobId: string; nowMs: number }>): Promise<void>;
   readOwner(userId: string, jobId: string): Promise<GenerationCommandResult<{ job: PublicGenerationJob }>>;
   previewSource(userId: string, jobId: string): Promise<GenerationCommandResult<{ bucket: string; path: string }>>;
+  readSaveSource(userId: string, jobId: string): Promise<GenerationCommandResult<GenerationSaveSource>>;
+  linkSavedAsset(input: Readonly<{
+    userId: string;
+    jobId: string;
+    assetId: string;
+    sourceSha256: string;
+    sourceByteSize: number;
+    assetSha256: string;
+    assetByteSize: number;
+    nowMs: number;
+  }>): Promise<GenerationCommandResult<{ status: "saved"; idempotent: boolean }>>;
   discard(input: Readonly<{ userId: string; jobId: string; nowMs: number }>): Promise<
     GenerationCommandResult<{ status: string; providerCreditsRefunded: false }>
   >;

@@ -20,6 +20,7 @@ import {
   failGenerationBeforeProvider,
   failGenerationCreate,
   failGenerationOutput,
+  linkGenerationSavedAsset,
   markGenerationAmbiguous,
   markGenerationNeedsReview,
   readGeneration,
@@ -74,6 +75,25 @@ export function createMemoryGenerationCommands(
         return { ok: false, code: "not_found" };
       }
       return { ok: true, bucket: job.outputBucket, path: job.outputObjectPath };
+    },
+    async readSaveSource(userId, jobId) {
+      const job = readGeneration(db, userId, jobId);
+      if (!job) return { ok: false, code: "not_found" };
+      return {
+        ok: true,
+        status: job.status,
+        savedAssetId: job.savedAssetId,
+        bucket: job.outputBucket,
+        path: job.outputObjectPath,
+        sha256: job.outputSha256,
+        byteSize: job.outputByteSize,
+        expiresAtMs: job.outputExpiresAtMs,
+      };
+    },
+    async linkSavedAsset(input) {
+      const linked = linkGenerationSavedAsset(db, input);
+      if (!linked.ok) return { ok: false, code: linked.code };
+      return { ok: true, status: "saved", idempotent: linked.idempotent };
     },
     async discard(input) {
       const discarded = discardGenerationCandidate(db, input);
