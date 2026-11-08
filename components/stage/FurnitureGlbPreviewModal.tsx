@@ -4,6 +4,17 @@ import { useEffect, useId, useRef, useState, type Ref } from "react";
 import { createPortal } from "react-dom";
 import * as THREE from "three";
 
+import { CandidateCalibrationForm } from "@/components/stage/CandidateCalibrationForm";
+import type { CalibrationAxis } from "@/lib/vibode-furniture/generation/calibrate";
+import { saveCalibratedCandidate } from "@/lib/vibode-furniture/generator/calibrated-save-client";
+import {
+  buildCalibrationPreview,
+  calibrationFailureLocks,
+  claimCalibrationSubmit,
+  formatGeneratedCentimetres,
+  nextCalibrationPhase,
+  type CalibrationSavePhase,
+} from "@/lib/vibode-furniture/generator/calibration-ui";
 import {
   clampPreviewOrbit,
   disposePreviewObject,
@@ -36,9 +47,17 @@ const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select
 export function FurnitureGlbPreviewModal({
   state,
   onClose,
+  onCandidateSaved,
+  onCandidateLibraryChanged,
 }: {
   state: PreviewModalState;
   onClose: () => void;
+  onCandidateSaved?: (saved: Readonly<{
+    assetId: string;
+    displayName: string;
+    idempotent: boolean;
+  }>) => void;
+  onCandidateLibraryChanged?: () => void;
 }) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -154,6 +173,7 @@ export function FurnitureGlbPreviewModal({
   if (!state.open || typeof document === "undefined") return null;
   return createPortal(
     <FurnitureGlbPreviewDialog
+      session={state.session}
       request={state.request}
       titleId={titleId}
       phase={phase}
@@ -164,12 +184,15 @@ export function FurnitureGlbPreviewModal({
       onClose={onClose}
       onReset={() => sessionRef.current?.reset()}
       onBackdrop={() => onClose()}
+      onCandidateSaved={onCandidateSaved}
+      onCandidateLibraryChanged={onCandidateLibraryChanged}
     />,
     document.body,
   );
 }
 
 export function FurnitureGlbPreviewDialog({
+  session = 0,
   request,
   titleId,
   phase,
@@ -180,7 +203,10 @@ export function FurnitureGlbPreviewDialog({
   onClose,
   onReset,
   onBackdrop,
+  onCandidateSaved,
+  onCandidateLibraryChanged,
 }: {
+  session?: number;
   request: GlbPreviewRequest;
   titleId: string;
   phase: PreviewPhase;
@@ -191,10 +217,105 @@ export function FurnitureGlbPreviewDialog({
   onClose: () => void;
   onReset: () => void;
   onBackdrop?: () => void;
+  onCandidateSaved?: (saved: Readonly<{
+    assetId: string;
+    displayName: string;
+    idempotent: boolean;
+  }>) => void;
+  onCandidateLibraryChanged?: () => void;
 }) {
   const copy = previewCopy(request);
   const save = previewSaveState(request);
   const ready = phase.status === "ready";
+  const [seenSession, setSeenSession] = useState(session);
+  const [axis, setAxis] = useState<CalibrationAxis>("height");
+  const [targetText, setTargetText] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [category, setCategory] = useState("");
+  const [savePhase, setSavePhase] = useState<CalibrationSavePhase>("edit");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [locked, setLocked] = useState(false);
+  const submitGate = useRef({ pending: false });
+  if (session !== seenSession) {
+    setSeenSession(session);
+    setAxis("height");
+    setTargetText("");
+    setDisplayName("");
+    setCategory("");
+    setSavePhase("edit");
+    setNotice(null);
+    setLocked(false);
+    submitGate.current.pending = false;
+  }
+  const calibration = request.kind === "candidate"
+    ? buildCalibrationPreview({
+      measured: bounds,
+      axis,
+      targetText,
+      displayName,
+      category,
+    })
+    : null;
+  const saveEnabled = savePhase === "confirm" && calibration?.ready === true && !locked;
+  const editCalibration = (apply: () => void) => {
+    if (submitGate.current.pending || locked) return;
+    apply();
+    setSavePhase((current) => nextCalibrationPhase(current, "edit", false));
+    setNotice(null);
+  };
+  const commitSave = () => {
+    if (!calibration?.ready || calibration.targetM == null || calibration.displayName == null) return;
+    if (request.kind !== "candidate" || locked) return;
+    if (nextCalibrationPhase(savePhase, "commit", true) !== "saving") return;
+    if (!claimCalibrationSubmit(submitGate.current)) return;
+    const targetM = calibration.targetM;
+    const savedName = calibration.displayName;
+    const savedCategory = calibration.category;
+    const savedAxis = calibration.axis;
+    const jobId = request.jobId;
+    setSavePhase("saving");
+    setNotice(null);
+    void (async () => {
+      try {
+        const token = await readOwnerAccessToken();
+        if (!token) {
+          setNotice("Sign in again to save this model.");
+          setSavePhase("edit");
+          return;
+        }
+        const result = await saveCalibratedCandidate({
+          jobId,
+          token,
+          displayName: savedName,
+          category: savedCategory,
+          axis: savedAxis,
+          targetM,
+        });
+        if (!result.ok) {
+          setNotice(result.message);
+          setLocked(calibrationFailureLocks(result.errorCode));
+          setSavePhase("edit");
+          if (result.errorCode === "ALREADY_SAVED") onCandidateLibraryChanged?.();
+          return;
+        }
+        setLocked(true);
+        setSavePhase("edit");
+        setNotice(result.idempotent
+          ? `${result.displayName} is already in My Furniture.`
+          : `${result.displayName} was saved to My Furniture.`);
+        onCandidateSaved?.({
+          assetId: result.assetId,
+          displayName: result.displayName,
+          idempotent: result.idempotent,
+        });
+      } catch {
+        setNotice("The model could not be saved. Check the connection and try again.");
+        setSavePhase("edit");
+      } finally {
+        submitGate.current.pending = false;
+      }
+    })();
+  };
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-neutral-950/75 p-3 sm:p-6"
@@ -203,6 +324,8 @@ export function FurnitureGlbPreviewDialog({
         if (event.target === event.currentTarget) onBackdrop?.();
       }}
       onWheel={(event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest("[data-preview-scroll]")) return;
         event.preventDefault();
         event.stopPropagation();
       }}
@@ -215,7 +338,7 @@ export function FurnitureGlbPreviewDialog({
         aria-busy={phase.status === "loading"}
         data-preview-kind={request.kind}
         data-preview-phase={phase.status}
-        data-save-enabled="false"
+        data-save-enabled={saveEnabled ? "true" : "false"}
         className="flex h-[min(820px,calc(100vh-1.5rem))] w-[min(1080px,calc(100vw-1.5rem))] max-w-full flex-col overflow-hidden rounded-lg border border-neutral-700 bg-neutral-950 shadow-xl"
       >
         <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-neutral-800 px-4 py-3">
@@ -260,36 +383,55 @@ export function FurnitureGlbPreviewDialog({
             </div>
           ) : null}
         </div>
-        <div className="shrink-0 border-t border-neutral-800 px-4 py-3">
+        <div data-preview-scroll className="max-h-[46%] shrink-0 overflow-y-auto border-t border-neutral-800 px-4 py-3">
           <p className="text-xs text-neutral-200" data-preview-dimensions={bounds ? "ready" : "pending"}>
             {bounds
               ? (request.kind === "candidate" ? formatGeneratedDimensions(bounds) : formatFurnitureDimensions(bounds))
               : "Dimensions appear after the model loads."}
           </p>
-          {request.kind === "candidate" ? (
-            <p className="mt-1 text-[11px] leading-5 text-neutral-500" data-dimension-authority="generated">
-              Uncalibrated generated measurements, not verified product sizes.
-            </p>
-          ) : null}
           <p className="mt-1 text-[11px] leading-5 text-neutral-500">
             Drag to orbit. Scroll to zoom. Arrow keys orbit when the view is focused.
           </p>
-          {save.shown ? (
-            <button
-              type="button"
-              disabled
-              className={`mt-3 ${BUTTON} cursor-not-allowed border-neutral-900 text-neutral-600`}
-            >
-              Save to My Furniture
-            </button>
+          {save.available && calibration ? (
+            <div className="mt-3">
+              <CandidateCalibrationForm
+                generatedCentimetres={bounds ? formatGeneratedCentimetres(bounds) : "Waiting for the model"}
+                axis={calibration.axis}
+                targetText={targetText}
+                displayName={displayName}
+                category={category}
+                targetLabel={calibration.targetLabel}
+                resultLabel={calibration.resultLabel}
+                issue={calibration.measurementIssue ?? calibration.detailIssue}
+                phase={savePhase}
+                notice={notice}
+                canReview={calibration.ready && ready}
+                locked={locked}
+                onAxis={(next) => editCalibration(() => setAxis(next))}
+                onTarget={(value) => editCalibration(() => setTargetText(value))}
+                onDisplayName={(value) => editCalibration(() => setDisplayName(value))}
+                onCategory={(value) => editCalibration(() => setCategory(value))}
+                onReview={() => {
+                  if (!calibration.ready || locked) return;
+                  setSavePhase((current) => nextCalibrationPhase(current, "review", true));
+                }}
+                onBack={() => setSavePhase((current) => nextCalibrationPhase(current, "back", false))}
+                onCommit={commitSave}
+              />
+            </div>
           ) : null}
-          {save.shown ? (
-            <p className="mt-1 text-[11px] text-neutral-500">{save.reason}</p>
+          {save.shown && !save.available ? (
+            <p className="mt-2 text-[11px] text-neutral-500">{save.reason}</p>
           ) : null}
         </div>
       </div>
     </div>
   );
+}
+
+async function readOwnerAccessToken(): Promise<string | null> {
+  const browser = await import("@/lib/supabaseBrowser");
+  return browser.getSupabaseBrowserAccessToken();
 }
 
 type PreviewPhase =

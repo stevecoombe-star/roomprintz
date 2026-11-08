@@ -319,7 +319,22 @@ export function StageMyFurniturePanel({
       <div className={stage.furnitureSubmode === "generator" ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
         <FurnitureGeneratorPanel onOpenPreview={openPreview} />
       </div>
-      <FurnitureGlbPreviewModal state={preview} onClose={closePreview} />
+      <FurnitureGlbPreviewModal
+        state={preview}
+        onClose={closePreview}
+        onCandidateLibraryChanged={() => {
+          void load();
+        }}
+        onCandidateSaved={(saved) => {
+          setError(null);
+          setMessage(saved.idempotent
+            ? `${saved.displayName} is already in My Furniture.`
+            : `${saved.displayName} was saved to My Furniture.`);
+          stage.setFurnitureSubmode("library");
+          closePreview();
+          void load();
+        }}
+      />
     </div>
   );
 }

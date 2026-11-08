@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import sharp from "sharp";
+import * as THREE from "three";
 
 import { validateFurnitureAsset } from "@/lib/afc-v2-runtime/furniture-asset-validate";
+import { parseFurnitureGlb } from "@/lib/afc-v2-runtime/furniture-glb-loader";
 import { authoredPlacementLocalAabb } from "@/lib/afc-v2-runtime/furniture-runtime";
 import { encodeGlb, glbBinaryChunk, inspectGlbJsonChunk } from "@/lib/afc-v2-runtime/glb-binary";
 import { PERSONAL_FURNITURE_BUCKET, personalFurniturePermanentPath } from "@/lib/vibode-furniture/asset-id";
@@ -1028,4 +1031,58 @@ test("axis is part of the stable asset identity", () => {
   });
   assert.equal(height, same);
   assert.notEqual(height, width);
+});
+
+test("a baked textured model keeps a decodable image linked to its material", async () => {
+  const baked = bakeUniformGlbScale(chairGlb(), 0.85 / CHAIR.heightM);
+  assert.equal(baked.ok, true);
+  if (!baked.ok) return;
+  const inspected = inspectGlbJsonChunk(baked.bytes);
+  assert.equal(inspected.ok, true);
+  if (!inspected.ok) return;
+  const doc = inspected.json as typeof inspected.json & {
+    materials?: Array<{
+      name?: string;
+      pbrMetallicRoughness?: { baseColorTexture?: { index?: number } };
+    }>;
+    textures?: Array<{ source?: number }>;
+    bufferViews?: Array<{ byteOffset?: number; byteLength?: number }>;
+    images?: Array<{ bufferView?: number; mimeType?: string }>;
+  };
+  assert.equal(doc.materials?.[0]?.name, "fabric");
+  assert.equal(doc.materials?.[0]?.pbrMetallicRoughness?.baseColorTexture?.index, 0);
+  assert.equal(doc.textures?.[0]?.source, 0);
+  const view = doc.bufferViews?.[doc.images?.[0]?.bufferView ?? -1];
+  const bin = glbBinaryChunk(baked.bytes);
+  assert.ok(bin);
+  assert.equal(typeof view?.byteOffset, "number");
+  assert.equal(typeof view?.byteLength, "number");
+  const png = bin!.subarray(view!.byteOffset ?? 0, (view!.byteOffset ?? 0) + (view!.byteLength ?? 0));
+  assert.equal(Buffer.compare(Buffer.from(png), Buffer.from(PNG)), 0);
+  const decoded = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  assert.equal(decoded.info.width, 1);
+  assert.equal(decoded.info.height, 1);
+  assert.equal(decoded.info.channels, 4);
+  assert.ok(decoded.data[0] > 200);
+  assert.equal(decoded.data[1], 0);
+  assert.equal(decoded.data[2], 0);
+  assert.equal(decoded.data[3], 255);
+
+  const parsed = await parseFurnitureGlb(baked.bytes.buffer.slice(
+    baked.bytes.byteOffset,
+    baked.bytes.byteOffset + baked.bytes.byteLength,
+  ) as ArrayBuffer);
+  assert.equal(parsed.ok, true, parsed.ok ? "" : parsed.message);
+  if (!parsed.ok) return;
+  const found: { material: THREE.MeshStandardMaterial | null } = { material: null };
+  parsed.scene.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh || found.material) return;
+    const next = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+    if (next instanceof THREE.MeshStandardMaterial) found.material = next;
+  });
+  assert.equal(found.material?.name, "fabric");
+  const image = found.material?.map?.image as { width?: number; height?: number } | undefined;
+  assert.equal(image?.width, undefined);
+  assert.equal(doc.images?.[0]?.mimeType, "image/png");
 });

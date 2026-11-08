@@ -745,7 +745,12 @@ test("temporary output is private, size-limited, and not a saved asset", async (
     });
     assert.equal(invalid.ok, false);
     if (!invalid.ok) assert.equal(invalid.errorClass, "invalid_output");
-    assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "https://assets.meshy.ai/model.glb" }).action, "refuse");
+    assert.equal(previewLoadPlan({
+      kind: "candidate",
+      label: "Generated",
+      url: "https://assets.meshy.ai/model.glb",
+      jobId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    }).action, "refuse");
   } finally {
     if (previous === undefined) delete process.env.VIBODE_ADMIN_EMAIL;
     else process.env.VIBODE_ADMIN_EMAIL = previous;

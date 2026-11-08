@@ -15,8 +15,18 @@ import {
 import { PERSONAL_FURNITURE_GLB_MAX_BYTES } from "./asset-id";
 import { generationCandidateStillPreviewable } from "./generation/preview-access";
 import { requestCandidatePreview } from "./generator/candidate-preview";
+import { preferredAddCanonicalTransform } from "@/lib/afc-v2-runtime/scene-crud";
+import { CandidateCalibrationForm } from "@/components/stage/CandidateCalibrationForm";
 import { FurnitureGeneratorPanel } from "@/components/stage/FurnitureGeneratorPanel";
 import { FurnitureGlbPreviewDialog } from "@/components/stage/FurnitureGlbPreviewModal";
+import { saveCalibratedCandidate } from "@/lib/vibode-furniture/generator/calibrated-save-client";
+import {
+  buildCalibrationPreview,
+  calibrationFailureLocks,
+  claimCalibrationSubmit,
+  nextCalibrationPhase,
+  parseCalibrationTargetMetres,
+} from "@/lib/vibode-furniture/generator/calibration-ui";
 import {
   emptyFurniturePhotoSet,
   furnitureInputMode,
@@ -290,7 +300,7 @@ test("provider mapping keeps image bytes out of the request and rejects unsuppor
   assert.equal(rejected.ok, false);
 });
 
-test("preview modal lifecycle stays local and save stays disabled", () => {
+test("preview modal stays local and only a measured candidate can be saved", () => {
   const closed = closedPreviewModal();
   const fixture = openGlbPreview(closed, { kind: "fixture", label: "Local test fixture" });
   assert.equal(fixture.open, true);
@@ -312,26 +322,64 @@ test("preview modal lifecycle stays local and save stays disabled", () => {
   assert.equal(reopened.session, 2);
 
   assert.equal(previewSaveState({ kind: "fixture", label: "Local test fixture" }).shown, false);
-  assert.equal(previewSaveState({ kind: "fixture", label: "Local test fixture" }).enabled, false);
+  assert.equal(previewSaveState({ kind: "fixture", label: "Local test fixture" }).available, false);
   const candidate = previewSaveState({
     kind: "candidate",
     label: "Generated chair",
     url: "https://signed.example/candidate.glb",
+    jobId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   });
   assert.equal(candidate.shown, true);
-  assert.equal(candidate.enabled, false);
-  assert.match(candidate.reason, /trusted finalization/);
+  assert.equal(candidate.available, true);
+  assert.match(candidate.reason, /one real-world measurement/);
+  assert.equal(previewSaveState({
+    kind: "candidate",
+    label: "Generated chair",
+    url: "https://signed.example/candidate.glb",
+    jobId: "not-a-job",
+  }).available, false);
 
-  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "https://signed.example/a.glb" }).action, "load");
-  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "https://assets.meshy.ai/model.glb" }).action, "refuse");
-  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "https://api.meshy.ai/model.glb" }).action, "refuse");
-  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "javascript:alert(1)" }).action, "refuse");
-  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "http://files.example/model.glb" }).action, "refuse");
-  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "https://user:pass@signed.example/a.glb" }).action, "refuse");
+  assert.equal(previewLoadPlan({
+    kind: "candidate",
+    label: "Generated",
+    url: "https://signed.example/a.glb",
+    jobId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  }).action, "load");
+  assert.equal(previewLoadPlan({
+    kind: "candidate",
+    label: "Generated",
+    url: "https://assets.meshy.ai/model.glb",
+    jobId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  }).action, "refuse");
+  assert.equal(previewLoadPlan({
+    kind: "candidate",
+    label: "Generated",
+    url: "https://api.meshy.ai/model.glb",
+    jobId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  }).action, "refuse");
+  assert.equal(previewLoadPlan({
+    kind: "candidate",
+    label: "Generated",
+    url: "javascript:alert(1)",
+    jobId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  }).action, "refuse");
+  assert.equal(previewLoadPlan({
+    kind: "candidate",
+    label: "Generated",
+    url: "http://files.example/model.glb",
+    jobId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  }).action, "refuse");
+  assert.equal(previewLoadPlan({
+    kind: "candidate",
+    label: "Generated",
+    url: "https://user:pass@signed.example/a.glb",
+    jobId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  }).action, "refuse");
   assert.equal(previewLoadPlan({
     kind: "candidate",
     label: "Generated",
     url: "http://127.0.0.1:54321/storage/v1/object/sign/model.glb",
+    jobId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   }).action, "load");
   assert.equal(formatGeneratedDimensions({ widthM: 1.798, depthM: 1.486, heightM: 1.903 }), "1.798 m wide · 1.486 m deep · 1.903 m high");
   assert.equal(generationCandidateStillPreviewable(2_000, 1_000), true);
@@ -546,7 +594,12 @@ test("generator and preview markup stay disconnected from Meshy and from STAGE",
   assert.match(fixtureDialog, /data-save-enabled="false"/);
 
   const candidateDialog = renderToStaticMarkup(createElement(FurnitureGlbPreviewDialog, {
-    request: { kind: "candidate", label: "Generated chair", url: "https://signed.example/candidate.glb" },
+    request: {
+      kind: "candidate",
+      label: "Generated chair",
+      url: "https://signed.example/candidate.glb",
+      jobId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    },
     titleId: "candidate-title",
     phase: { status: "ready" },
     bounds: { widthM: 1.798, heightM: 1.903, depthM: 1.486, minY: 0, centerX: 0, centerZ: 0 },
@@ -554,18 +607,45 @@ test("generator and preview markup stay disconnected from Meshy and from STAGE",
     onReset: () => undefined,
   }));
   assert.match(candidateDialog, /1\.798 m wide · 1\.486 m deep · 1\.903 m high/);
+  assert.match(candidateDialog, /179\.8 × 148\.6 × 190\.3 cm/);
   assert.match(candidateDialog, /Uncalibrated generated measurements, not verified product sizes/);
-  assert.match(candidateDialog, /real-world calibration wait for a later step/);
+  assert.match(candidateDialog, /scale width, depth, and height together/);
   assert.match(candidateDialog, /Save to My Furniture/);
+  assert.match(candidateDialog, /placeholder="Metres"/);
+  assert.match(candidateDialog, /data-calibration-axis="height"/);
   assert.match(candidateDialog, /disabled=""/);
-  assert.match(candidateDialog, /trusted finalization/);
   assert.match(candidateDialog, /Reset camera/);
   assert.match(candidateDialog, /data-save-enabled="false"/);
+  assert.match(candidateDialog, /data-calibration="candidate"/);
   assert.match(candidateDialog, /data-preview-kind="candidate"/);
+  assert.doesNotMatch(candidateDialog, /0\.85/);
   assert.doesNotMatch(candidateDialog, /https:\/\/signed\.example/);
 
+  const libraryDialog = renderToStaticMarkup(createElement(FurnitureGlbPreviewDialog, {
+    request: {
+      kind: "library",
+      label: "Uploaded chair",
+      url: "https://signed.example/library.glb",
+      assetId: "vibode-furniture/personal/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    },
+    titleId: "library-title",
+    phase: { status: "ready" },
+    bounds: { widthM: 0.8, heightM: 0.8, depthM: 0.78, minY: 0, centerX: 0, centerZ: 0 },
+    onClose: () => undefined,
+    onReset: () => undefined,
+  }));
+  assert.match(libraryDialog, /0\.80 m wide/);
+  assert.doesNotMatch(libraryDialog, /data-calibration="candidate"/);
+  assert.doesNotMatch(libraryDialog, /Save to My Furniture/);
+  assert.match(libraryDialog, /data-save-enabled="false"/);
+
   const refusedCandidate = renderToStaticMarkup(createElement(FurnitureGlbPreviewDialog, {
-    request: { kind: "candidate", label: "Generated chair", url: "https://assets.meshy.ai/model.glb" },
+    request: {
+      kind: "candidate",
+      label: "Generated chair",
+      url: "https://assets.meshy.ai/model.glb",
+      jobId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    },
     titleId: "refused-title",
     phase: { status: "error", message: "This preview link cannot be opened." },
     bounds: null,
@@ -598,6 +678,11 @@ test("generator and preview markup stay disconnected from Meshy and from STAGE",
   assert.doesNotMatch(requestSource, /fetch\(|MESHY_API_KEY|process\.env/);
   assert.match(source("components/stage/StageMyFurniturePanel.tsx"), /Upload GLB/);
   assert.match(source("components/stage/StageMyFurniturePanel.tsx"), /Archive/);
+  assert.match(source("components/stage/StageMyFurniturePanel.tsx"), /onCandidateSaved/);
+  assert.match(source("components/stage/StageMyFurniturePanel.tsx"), /setFurnitureSubmode\("library"\)/);
+  assert.doesNotMatch(modalSource, /console\.|localStorage|c097b220-ed48-463e-aca0-5403d3ca0414/);
+  assert.doesNotMatch(source("lib/vibode-furniture/generator/calibrated-save-client.ts"), /console\.|localStorage|previewUrl/);
+  assert.doesNotMatch(source("components/stage/FurnitureGeneratorPanel.tsx"), /paidSubmissionAuthorized|grantPaidSubmission|credit/);
 });
 
 test("an upward pointer drag looks upward and a sideways drag keeps its direction", () => {
@@ -703,4 +788,284 @@ test("an owned candidate preview fetches a fresh private link and rejects the re
   });
   assert.equal(offline.ok, false);
   if (!offline.ok) assert.equal(offline.message, "The preview could not be opened.");
+});
+
+const GENERATED_CHAIR = { widthM: 1.798, heightM: 1.903, depthM: 1.486 };
+const SAVE_JOB = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+function chairCalibration(axis: "height" | "width" | "depth", targetText: string, displayName = "Armchair", category = "Seating") {
+  return buildCalibrationPreview({
+    measured: GENERATED_CHAIR,
+    axis,
+    targetText,
+    displayName,
+    category,
+  });
+}
+
+test("calibration accepts one real measurement on each axis and rejects the rest", () => {
+  assert.equal(parseCalibrationTargetMetres(""), null);
+  assert.equal(parseCalibrationTargetMetres("0"), null);
+  assert.equal(parseCalibrationTargetMetres("-0.2"), null);
+  assert.equal(parseCalibrationTargetMetres("abc"), null);
+  assert.equal(parseCalibrationTargetMetres("0.85 metres"), null);
+  assert.equal(parseCalibrationTargetMetres("85cm"), 0.85);
+  assert.equal(parseCalibrationTargetMetres("0.8500004"), 0.8500004);
+
+  const empty = chairCalibration("height", "");
+  assert.equal(empty.ready, false);
+  assert.equal(empty.result, null);
+  assert.equal(empty.measurementIssue, null);
+
+  const height = chairCalibration("height", "0.85");
+  assert.equal(height.ready, true);
+  assert.equal(height.axis, "height");
+  assert.equal(height.targetM, 0.85);
+  assert.ok(height.result);
+  if (!height.result) return;
+  const factor = height.result.heightM / GENERATED_CHAIR.heightM;
+  assert.ok(Math.abs(factor - 0.4467) < 0.0001);
+  assert.ok(Math.abs(height.result.heightM - 0.85) < 1e-9);
+  assert.ok(Math.abs(height.result.widthM - 0.803) < 0.001);
+  assert.ok(Math.abs(height.result.depthM - 0.664) < 0.001);
+  assert.ok(Math.abs(height.result.widthM / GENERATED_CHAIR.widthM - factor) < 1e-12);
+  assert.ok(Math.abs(height.result.depthM / GENERATED_CHAIR.depthM - factor) < 1e-12);
+  assert.match(height.resultLabel ?? "", /0\.803 × 0\.664 × 0\.850 m/);
+  assert.match(height.resultLabel ?? "", /80\.3 × 66\.4 × 85\.0 cm/);
+  assert.equal(chairCalibration("height", "85cm").targetM, height.targetM);
+
+  const width = chairCalibration("width", "0.9");
+  assert.equal(width.ready, true);
+  assert.ok(width.result);
+  if (!width.result) return;
+  assert.ok(Math.abs(width.result.widthM - 0.9) < 1e-9);
+  const widthFactor = 0.9 / GENERATED_CHAIR.widthM;
+  assert.ok(Math.abs(width.result.heightM - GENERATED_CHAIR.heightM * widthFactor) < 1e-9);
+  assert.ok(Math.abs(width.result.depthM - GENERATED_CHAIR.depthM * widthFactor) < 1e-9);
+
+  const depth = chairCalibration("depth", "0.7");
+  assert.equal(depth.ready, true);
+  assert.ok(depth.result);
+  if (!depth.result) return;
+  assert.ok(Math.abs(depth.result.depthM - 0.7) < 1e-9);
+  const depthFactor = 0.7 / GENERATED_CHAIR.depthM;
+  assert.ok(Math.abs(depth.result.widthM - GENERATED_CHAIR.widthM * depthFactor) < 1e-9);
+  assert.ok(Math.abs(depth.result.heightM - GENERATED_CHAIR.heightM * depthFactor) < 1e-9);
+
+  assert.equal(chairCalibration("height", "0.04").ready, false);
+  assert.match(chairCalibration("height", "0.04").measurementIssue ?? "", /0\.05 m to 8 m/);
+  assert.equal(chairCalibration("height", "9").ready, false);
+  assert.equal(chairCalibration("width", "0.05").ready, false);
+  assert.match(chairCalibration("height", "0.85", "").detailIssue ?? "", /^$/);
+  assert.equal(chairCalibration("height", "0.85", "").ready, false);
+  assert.ok(chairCalibration("height", "0.85", "").result);
+  assert.equal(chairCalibration("height", "0.85", "Armchair", "x".repeat(41)).ready, false);
+  assert.match(chairCalibration("height", "0.85", "Armchair", "x".repeat(41)).detailIssue ?? "", /40 characters/);
+
+  let phase: "edit" | "confirm" | "saving" = "edit";
+  phase = nextCalibrationPhase(phase, "review", false);
+  assert.equal(phase, "edit");
+  phase = nextCalibrationPhase(phase, "review", true);
+  assert.equal(phase, "confirm");
+  phase = nextCalibrationPhase(phase, "commit", true);
+  assert.equal(phase, "saving");
+  phase = nextCalibrationPhase(phase, "commit", true);
+  assert.equal(phase, "saving");
+  const gate = { pending: false };
+  assert.equal(claimCalibrationSubmit(gate), true);
+  assert.equal(claimCalibrationSubmit(gate), false);
+  assert.equal(calibrationFailureLocks("CANDIDATE_EXPIRED"), true);
+  assert.equal(calibrationFailureLocks("ALREADY_SAVED"), true);
+  assert.equal(calibrationFailureLocks("NETWORK"), false);
+
+  const confirmed = renderToStaticMarkup(createElement(CandidateCalibrationForm, {
+    generatedCentimetres: "179.8 × 148.6 × 190.3 cm",
+    axis: "height",
+    targetText: "0.85",
+    displayName: "Armchair",
+    category: "Seating",
+    targetLabel: height.targetLabel,
+    resultLabel: height.resultLabel,
+    issue: null,
+    phase: "confirm",
+    notice: null,
+    canReview: true,
+    locked: false,
+    onAxis: () => undefined,
+    onTarget: () => undefined,
+    onDisplayName: () => undefined,
+    onCategory: () => undefined,
+    onReview: () => undefined,
+    onBack: () => undefined,
+    onCommit: () => undefined,
+  }));
+  assert.match(confirmed, /Create a permanent My Furniture model/);
+  assert.match(confirmed, /data-save-enabled="true"/);
+  assert.match(confirmed, /Create permanent model/);
+  assert.doesNotMatch(confirmed, /https?:/);
+
+  assert.equal(preferredAddCanonicalTransform().uniformScale, 1);
+  assert.match(source("components/stage/StageMyFurniturePanel.tsx"), /addPersonalAssetToRoom\(item\.assetId\)/);
+});
+
+test("save posts the owner measurement once and keeps private links out of the result", async () => {
+  const jobId = SAVE_JOB;
+  const item = {
+    assetId: "vibode-furniture/personal/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    displayName: "Armchair",
+    category: "Seating",
+    authoredWidthM: 0.803,
+    authoredHeightM: 0.85,
+    authoredDepthM: 0.664,
+    previewUrl: "https://signed.example/private-model.glb?token=secret",
+  };
+  let calls = 0;
+  const fetchImpl: typeof fetch = async (input, init) => {
+    calls += 1;
+    assert.equal(String(input), `/api/vibode/furniture-generations/${jobId}/save`);
+    assert.equal(init?.method, "POST");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer owner-session");
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(body).sort(), ["axis", "category", "displayName", "targetM"]);
+    assert.equal(body.displayName, "Armchair");
+    assert.equal(body.category, "Seating");
+    assert.equal(body.axis, "height");
+    assert.equal(body.targetM, 0.85);
+    assert.equal(String(init?.body).includes("signed"), false);
+    assert.equal(String(init?.body).includes("owner-session"), false);
+    return new Response(JSON.stringify({
+      ok: true,
+      idempotent: calls > 1,
+      item,
+    }), { status: 200 });
+  };
+  const first = await saveCalibratedCandidate({
+    jobId,
+    token: "owner-session",
+    displayName: "Armchair",
+    category: "Seating",
+    axis: "height",
+    targetM: 0.85,
+    fetchImpl,
+  });
+  const second = await saveCalibratedCandidate({
+    jobId,
+    token: "owner-session",
+    displayName: "Armchair",
+    category: "Seating",
+    axis: "height",
+    targetM: 0.85,
+    fetchImpl,
+  });
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (!first.ok || !second.ok) return;
+  assert.equal(first.idempotent, false);
+  assert.equal(second.idempotent, true);
+  assert.equal(first.assetId, second.assetId);
+  assert.deepEqual(Object.keys(first).sort(), ["assetId", "displayName", "idempotent", "ok"]);
+  assert.equal(JSON.stringify(first).includes("signed"), false);
+  assert.equal(JSON.stringify(first).includes("owner-session"), false);
+  assert.equal(calls, 2);
+
+  const conflict = await saveCalibratedCandidate({
+    jobId,
+    token: "owner-session",
+    displayName: "Armchair",
+    category: null,
+    axis: "width",
+    targetM: 0.9,
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: false,
+      error: "see https://signed.example/secret",
+      errorCode: "ALREADY_SAVED",
+    }), { status: 409 }),
+  });
+  assert.equal(conflict.ok, false);
+  if (conflict.ok) return;
+  assert.equal(conflict.errorCode, "ALREADY_SAVED");
+  assert.match(conflict.message, /different size/);
+  assert.equal(conflict.message.includes("http"), false);
+
+  const expired = await saveCalibratedCandidate({
+    jobId,
+    token: "owner-session",
+    displayName: "Armchair",
+    category: null,
+    axis: "height",
+    targetM: 0.85,
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: false,
+      errorCode: "CANDIDATE_EXPIRED",
+      error: "expired",
+    }), { status: 409 }),
+  });
+  assert.equal(expired.ok, false);
+  if (!expired.ok) assert.match(expired.message, /expired/);
+
+  const denied = await saveCalibratedCandidate({
+    jobId,
+    token: "owner-session",
+    displayName: "Armchair",
+    category: null,
+    axis: "height",
+    targetM: 0.85,
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: false,
+      error: "Unauthorized.",
+    }), { status: 401 }),
+  });
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.match(denied.message, /Sign in again/);
+
+  const foreign = await saveCalibratedCandidate({
+    jobId,
+    token: "owner-session",
+    displayName: "Armchair",
+    category: null,
+    axis: "height",
+    targetM: 0.85,
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: false,
+      error: "https://signed.example/other-account",
+      errorCode: "NOT_FOUND",
+    }), { status: 404 }),
+  });
+  assert.equal(foreign.ok, false);
+  if (!foreign.ok) {
+    assert.match(foreign.message, /another account/);
+    assert.equal(foreign.message.includes("http"), false);
+  }
+
+  const offlineSave = await saveCalibratedCandidate({
+    jobId,
+    token: "owner-session",
+    displayName: "Armchair",
+    category: null,
+    axis: "depth",
+    targetM: 0.7,
+    fetchImpl: async () => {
+      throw new Error("Bearer owner-session failed at https://signed.example/save");
+    },
+  });
+  assert.equal(offlineSave.ok, false);
+  if (!offlineSave.ok) {
+    assert.equal(offlineSave.errorCode, "NETWORK");
+    assert.match(offlineSave.message, /connection/);
+    assert.equal(offlineSave.message.includes("owner-session"), false);
+    assert.equal(offlineSave.message.includes("http"), false);
+  }
+
+  const unsigned = await saveCalibratedCandidate({
+    jobId: "not-a-job",
+    token: "owner-session",
+    displayName: "Armchair",
+    category: null,
+    axis: "height",
+    targetM: 0.85,
+    fetchImpl: async () => {
+      throw new Error("should not post");
+    },
+  });
+  assert.equal(unsigned.ok, false);
 });

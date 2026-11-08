@@ -60,6 +60,7 @@ export function CandidatePreviewEntry({
         kind: "candidate",
         label: "Generated model",
         url: result.previewUrl,
+        jobId: jobId.trim(),
       });
     } finally {
       setPending(false);

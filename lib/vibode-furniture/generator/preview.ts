@@ -2,9 +2,8 @@
  * Isolated GLB preview for the furniture generator.
  *
  * The preview loads its own object. It does not receive the STAGE scene,
- * camera, selection, or undo stack. Save stays disabled until a future
- * trusted finalization path exists. MESHY-1B never treats the bundled
- * fixture as a generated candidate.
+ * camera, selection, or undo stack. A generated candidate can be calibrated
+ * and saved by its owner. The bundled fixture is never a generated candidate.
  */
 
 import * as THREE from "three";
@@ -24,7 +23,7 @@ const PREVIEW_PHI_MAX = Math.PI - 0.18;
 export type GlbPreviewRequest =
   | Readonly<{ kind: "fixture"; label: string }>
   | Readonly<{ kind: "library"; label: string; url: string; assetId: string }>
-  | Readonly<{ kind: "candidate"; label: string; url: string }>;
+  | Readonly<{ kind: "candidate"; label: string; url: string; jobId: string }>;
 
 export type PreviewModalState =
   | Readonly<{ open: false; session: number }>
@@ -97,25 +96,36 @@ export function previewLoadPlan(request: GlbPreviewRequest):
   return { action: "load", url: request.url };
 }
 
+const CANDIDATE_JOB_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 /**
- * Save is a later trusted-server step. The client cannot enable it.
+ * Uploaded and fixture previews have no save section.
+ * A candidate save is available only for a well-formed owned job id.
  */
 export function previewSaveState(request: GlbPreviewRequest | null): Readonly<{
   shown: boolean;
-  enabled: false;
+  available: boolean;
   reason: string;
 }> {
-  if (request?.kind === "candidate") {
+  if (request?.kind !== "candidate") {
+    return {
+      shown: false,
+      available: false,
+      reason: "Only a trusted generated model can be saved.",
+    };
+  }
+  if (!CANDIDATE_JOB_ID.test(request.jobId)) {
     return {
       shown: true,
-      enabled: false,
-      reason: "Saving a generated model waits for a trusted finalization path.",
+      available: false,
+      reason: "This generated model cannot be saved.",
     };
   }
   return {
-    shown: false,
-    enabled: false,
-    reason: "Only a trusted generated model can be saved.",
+    shown: true,
+    available: true,
+    reason: "Enter one real-world measurement before saving.",
   };
 }
 
@@ -134,7 +144,7 @@ export function previewCopy(request: GlbPreviewRequest): Readonly<{
   }
   return {
     title: request.label,
-    detail: "Generated model. These dimensions are uncalibrated measurements from the file, not verified product sizes. Saving and real-world calibration wait for a later step.",
+    detail: "Generated model. Enter one real-world measurement to scale width, depth, and height together, then save a permanent copy.",
   };
 }
 

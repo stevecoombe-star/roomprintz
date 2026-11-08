@@ -46,7 +46,7 @@ export async function requestCandidatePreview(input: Readonly<{
   if (!response.ok) return { ok: false, message: candidatePreviewFailure(response.status) };
   const previewUrl = readPreviewUrl(payload);
   if (!previewUrl) return { ok: false, message: "The preview could not be opened." };
-  const plan = previewLoadPlan({ kind: "candidate", label: "Generated model", url: previewUrl });
+  const plan = previewLoadPlan({ kind: "candidate", label: "Generated model", url: previewUrl, jobId });
   if (plan.action !== "load") return { ok: false, message: plan.message };
   return { ok: true, previewUrl };
 }
