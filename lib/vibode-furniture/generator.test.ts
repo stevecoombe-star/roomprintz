@@ -13,6 +13,8 @@ import {
 } from "@/lib/afc-v2-runtime/pi5d-lounge-chair-geometry";
 
 import { PERSONAL_FURNITURE_GLB_MAX_BYTES } from "./asset-id";
+import { generationCandidateStillPreviewable } from "./generation/preview-access";
+import { requestCandidatePreview } from "./generator/candidate-preview";
 import { FurnitureGeneratorPanel } from "@/components/stage/FurnitureGeneratorPanel";
 import { FurnitureGlbPreviewDialog } from "@/components/stage/FurnitureGlbPreviewModal";
 import {
@@ -33,6 +35,7 @@ import {
   disposePreviewObject,
   FURNITURE_PREVIEW_FIXTURE_URL,
   formatFurnitureDimensions,
+  formatGeneratedDimensions,
   groundAlignPreviewModel,
   initialPreviewCamera,
   nudgePreviewOrbit,
@@ -317,7 +320,21 @@ test("preview modal lifecycle stays local and save stays disabled", () => {
   assert.equal(candidate.enabled, false);
   assert.match(candidate.reason, /trusted finalization/);
 
-  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "https://signed.example/a.glb" }).action, "refuse");
+  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "https://signed.example/a.glb" }).action, "load");
+  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "https://assets.meshy.ai/model.glb" }).action, "refuse");
+  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "https://api.meshy.ai/model.glb" }).action, "refuse");
+  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "javascript:alert(1)" }).action, "refuse");
+  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "http://files.example/model.glb" }).action, "refuse");
+  assert.equal(previewLoadPlan({ kind: "candidate", label: "Generated", url: "https://user:pass@signed.example/a.glb" }).action, "refuse");
+  assert.equal(previewLoadPlan({
+    kind: "candidate",
+    label: "Generated",
+    url: "http://127.0.0.1:54321/storage/v1/object/sign/model.glb",
+  }).action, "load");
+  assert.equal(formatGeneratedDimensions({ widthM: 1.798, depthM: 1.486, heightM: 1.903 }), "1.798 m wide · 1.486 m deep · 1.903 m high");
+  assert.equal(generationCandidateStillPreviewable(2_000, 1_000), true);
+  assert.equal(generationCandidateStillPreviewable(1_000, 1_000), false);
+  assert.equal(generationCandidateStillPreviewable(null, 1_000), false);
   assert.equal(previewLoadPlan({
     kind: "library",
     label: "Chair",
@@ -527,15 +544,33 @@ test("generator and preview markup stay disconnected from Meshy and from STAGE",
   const candidateDialog = renderToStaticMarkup(createElement(FurnitureGlbPreviewDialog, {
     request: { kind: "candidate", label: "Generated chair", url: "https://signed.example/candidate.glb" },
     titleId: "candidate-title",
-    phase: { status: "error", message: "Generated models are not available to preview yet." },
+    phase: { status: "ready" },
+    bounds: { widthM: 1.798, heightM: 1.903, depthM: 1.486, minY: 0, centerX: 0, centerZ: 0 },
+    onClose: () => undefined,
+    onReset: () => undefined,
+  }));
+  assert.match(candidateDialog, /1\.798 m wide · 1\.486 m deep · 1\.903 m high/);
+  assert.match(candidateDialog, /Uncalibrated generated measurements, not verified product sizes/);
+  assert.match(candidateDialog, /real-world calibration wait for a later step/);
+  assert.match(candidateDialog, /Save to My Furniture/);
+  assert.match(candidateDialog, /disabled=""/);
+  assert.match(candidateDialog, /trusted finalization/);
+  assert.match(candidateDialog, /Reset camera/);
+  assert.match(candidateDialog, /data-save-enabled="false"/);
+  assert.match(candidateDialog, /data-preview-kind="candidate"/);
+  assert.doesNotMatch(candidateDialog, /https:\/\/signed\.example/);
+
+  const refusedCandidate = renderToStaticMarkup(createElement(FurnitureGlbPreviewDialog, {
+    request: { kind: "candidate", label: "Generated chair", url: "https://assets.meshy.ai/model.glb" },
+    titleId: "refused-title",
+    phase: { status: "error", message: "This preview link cannot be opened." },
     bounds: null,
     onClose: () => undefined,
     onReset: () => undefined,
   }));
-  assert.match(candidateDialog, /Save to My Furniture/);
-  assert.match(candidateDialog, /disabled=""/);
-  assert.match(candidateDialog, /trusted finalization/);
-  assert.match(candidateDialog, /role="alert"/);
+  assert.match(refusedCandidate, /role="alert"/);
+  assert.match(refusedCandidate, /This preview link cannot be opened/);
+  assert.doesNotMatch(refusedCandidate, /assets\.meshy\.ai/);
 
   const previewSource = source("lib/vibode-furniture/generator/preview.ts");
   const modalSource = source("components/stage/FurnitureGlbPreviewModal.tsx");
@@ -546,8 +581,94 @@ test("generator and preview markup stay disconnected from Meshy and from STAGE",
   assert.match(modalSource, /disposePreviewObject/);
   assert.match(modalSource, /forceContextLoss/);
   assert.match(modalSource, /cancelAnimationFrame/);
+  assert.match(modalSource, /stopPropagation/);
+  assert.match(modalSource, /The private preview link could not be loaded/);
   assert.doesNotMatch(panelSource, /fetch\(|api\.meshy\.ai|supabase|pose_mode/);
+  assert.match(panelSource, /data-generate="unavailable"/);
+  assert.match(panelSource, /CandidatePreviewEntry/);
+  const entrySource = source("components/stage/CandidatePreviewEntry.tsx");
+  assert.match(entrySource, /\/api\/auth\/admin-access/);
+  assert.match(entrySource, /requestCandidatePreview/);
+  assert.doesNotMatch(entrySource, /localStorage|sessionStorage|console\.|c097b220-ed48-463e-aca0-5403d3ca0414/);
+  assert.match(source("lib/vibode-furniture/generator/candidate-preview.ts"), /\/api\/vibode\/furniture-generations\//);
   assert.doesNotMatch(requestSource, /fetch\(|MESHY_API_KEY|process\.env/);
   assert.match(source("components/stage/StageMyFurniturePanel.tsx"), /Upload GLB/);
   assert.match(source("components/stage/StageMyFurniturePanel.tsx"), /Archive/);
+});
+
+test("an owned candidate preview fetches a fresh private link and rejects the rest", async () => {
+  const jobId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  let opens = 0;
+  const fetchImpl: typeof fetch = async (input, init) => {
+    opens += 1;
+    assert.equal(String(input), `/api/vibode/furniture-generations/${jobId}/preview`);
+    assert.equal(init?.method, "POST");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer owner-session");
+    return new Response(JSON.stringify({
+      ok: true,
+      previewUrl: `https://signed.example/candidate.glb?open=${opens}`,
+    }), { status: 200 });
+  };
+  const first = await requestCandidatePreview({ jobId, token: "owner-session", fetchImpl });
+  const second = await requestCandidatePreview({ jobId, token: "owner-session", fetchImpl });
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (first.ok && second.ok) assert.notEqual(first.previewUrl, second.previewUrl);
+  assert.equal(opens, 2);
+
+  const calls = { count: 0 };
+  const blocked: typeof fetch = async () => {
+    calls.count += 1;
+    return new Response("no", { status: 500 });
+  };
+  const invalidJob = await requestCandidatePreview({ jobId: "not-a-job", token: "owner-session", fetchImpl: blocked });
+  assert.equal(invalidJob.ok, false);
+  if (!invalidJob.ok) assert.match(invalidJob.message, /valid generation job ID/);
+  const signedOut = await requestCandidatePreview({ jobId, token: "", fetchImpl: blocked });
+  assert.equal(signedOut.ok, false);
+  if (!signedOut.ok) assert.match(signedOut.message, /Sign in again/);
+  assert.equal(calls.count, 0);
+
+  const unauthorized = await requestCandidatePreview({
+    jobId,
+    token: "owner-session",
+    fetchImpl: async () => new Response(JSON.stringify({ ok: false, error: "Unauthorized." }), { status: 401 }),
+  });
+  assert.equal(unauthorized.ok, false);
+  if (!unauthorized.ok) assert.match(unauthorized.message, /Sign in again/);
+
+  const missing = await requestCandidatePreview({
+    jobId,
+    token: "owner-session",
+    fetchImpl: async () => new Response(JSON.stringify({ ok: false, error: "That preview is not available." }), { status: 404 }),
+  });
+  assert.equal(missing.ok, false);
+  if (!missing.ok) {
+    assert.match(missing.message, /another account or may have expired/);
+    assert.equal(missing.message.includes("http"), false);
+  }
+
+  const providerLink = await requestCandidatePreview({
+    jobId,
+    token: "owner-session",
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: true,
+      previewUrl: "https://assets.meshy.ai/model.glb",
+    }), { status: 200 }),
+  });
+  assert.equal(providerLink.ok, false);
+  if (!providerLink.ok) {
+    assert.match(providerLink.message, /cannot be opened/);
+    assert.equal(providerLink.message.includes("meshy"), false);
+  }
+
+  const offline = await requestCandidatePreview({
+    jobId,
+    token: "owner-session",
+    fetchImpl: async () => {
+      throw new Error("offline");
+    },
+  });
+  assert.equal(offline.ok, false);
+  if (!offline.ok) assert.equal(offline.message, "The preview could not be opened.");
 });

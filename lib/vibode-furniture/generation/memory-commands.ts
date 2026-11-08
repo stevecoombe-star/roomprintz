@@ -30,8 +30,9 @@ import {
   type GenerationDatabase,
   type GenerationJob,
 } from "./engine";
-import { pathOwnedBy } from "./output";
 import { generationObjectAllowed } from "./objects";
+import { pathOwnedBy } from "./output";
+import { generationCandidateStillPreviewable } from "./preview-access";
 
 const ACTIVE = new Set(["reserved", "submitting", "ambiguous", "running", "ingesting", "ready", "needs_review"]);
 
@@ -67,6 +68,9 @@ export function createMemoryGenerationCommands(
         return { ok: false, code: "not_found" };
       }
       if (!generationObjectAllowed(job.outputBucket, job.outputObjectPath, userId)) {
+        return { ok: false, code: "not_found" };
+      }
+      if (!generationCandidateStillPreviewable(job.outputExpiresAtMs, clock.nowMs)) {
         return { ok: false, code: "not_found" };
       }
       return { ok: true, bucket: job.outputBucket, path: job.outputObjectPath };

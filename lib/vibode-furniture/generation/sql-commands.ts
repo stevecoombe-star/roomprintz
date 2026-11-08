@@ -17,6 +17,7 @@ import type {
 } from "./contracts";
 import type { GenerationStatus } from "./engine";
 import { generationObjectAllowed } from "./objects";
+import { generationCandidateStillPreviewable } from "./preview-access";
 import { furnitureSettingsFromJson, furnitureSlotsFromJson } from "./settings-json";
 
 export const GENERATION_RPC_ARGUMENTS = {
@@ -154,6 +155,10 @@ export function createSqlGenerationCommands(rpc: PositionalGenerationRpc): Gener
       const bucket = typeof data.output_bucket === "string" ? data.output_bucket : "";
       const path = typeof data.output_object_path === "string" ? data.output_object_path : "";
       if (!generationObjectAllowed(bucket, path, userId)) return { ok: false, code: "not_found" };
+      const expiresAtMs = typeof data.output_expires_at === "string" ? Date.parse(data.output_expires_at) : Number.NaN;
+      if (!generationCandidateStillPreviewable(Number.isFinite(expiresAtMs) ? expiresAtMs : null, Date.now())) {
+        return { ok: false, code: "not_found" };
+      }
       return { ok: true, bucket, path };
     },
     async discard(input) {

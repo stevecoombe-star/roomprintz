@@ -86,10 +86,10 @@ export function previewLoadPlan(request: GlbPreviewRequest):
     return { action: "load", url: FURNITURE_PREVIEW_FIXTURE_URL };
   }
   if (request.kind === "candidate") {
-    return {
-      action: "refuse",
-      message: "Generated models are not available to preview yet.",
-    };
+    if (!isAuthorizedPreviewUrl(request.url) || isProviderAssetPreviewUrl(request.url)) {
+      return { action: "refuse", message: "This preview link cannot be opened." };
+    }
+    return { action: "load", url: request.url };
   }
   if (!isAuthorizedPreviewUrl(request.url)) {
     return { action: "refuse", message: "This preview link cannot be opened." };
@@ -134,8 +134,17 @@ export function previewCopy(request: GlbPreviewRequest): Readonly<{
   }
   return {
     title: request.label,
-    detail: "Generated candidate. Saving is not available yet.",
+    detail: "Generated model. These dimensions are uncalibrated measurements from the file, not verified product sizes. Saving and real-world calibration wait for a later step.",
   };
+}
+
+function isProviderAssetPreviewUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "meshy.ai" || host.endsWith(".meshy.ai");
+  } catch {
+    return true;
+  }
 }
 
 export function isAuthorizedPreviewUrl(url: string): boolean {
@@ -198,7 +207,23 @@ export function formatFurnitureDimensions(bounds: Readonly<{
   depthM: number;
   heightM: number;
 }>): string {
-  const metres = (value: number) => `${value.toFixed(2)} m`;
+  return formatPreviewDimensions(bounds, 2);
+}
+
+export function formatGeneratedDimensions(bounds: Readonly<{
+  widthM: number;
+  depthM: number;
+  heightM: number;
+}>): string {
+  return formatPreviewDimensions(bounds, 3);
+}
+
+function formatPreviewDimensions(bounds: Readonly<{
+  widthM: number;
+  depthM: number;
+  heightM: number;
+}>, digits: number): string {
+  const metres = (value: number) => `${value.toFixed(digits)} m`;
   return `${metres(bounds.widthM)} wide · ${metres(bounds.depthM)} deep · ${metres(bounds.heightM)} high`;
 }
 

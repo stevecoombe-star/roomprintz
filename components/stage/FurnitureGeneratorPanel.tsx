@@ -11,6 +11,7 @@ import {
   validateFurniturePhotoPixels,
   type FurnitureViewSlot,
 } from "@/lib/vibode-furniture/generator/images";
+import { CandidatePreviewEntry } from "@/components/stage/CandidatePreviewEntry";
 import type { GlbPreviewRequest } from "@/lib/vibode-furniture/generator/preview";
 import {
   generatorCapabilities,
@@ -414,6 +415,8 @@ export function FurnitureGeneratorPanel({
           {state.notices.map((notice) => <li key={notice}>{notice}</li>)}
         </ul>
       ) : null}
+
+      <CandidatePreviewEntry onOpenPreview={onOpenPreview} />
 
       <button
         type="button"

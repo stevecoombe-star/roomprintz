@@ -246,6 +246,28 @@ test("a single image reaches a private preview without a second post", async () 
   );
   assert.equal(preview.status, 200);
   assert.match((preview.body as { previewUrl: string }).previewUrl, /^signed:\/\/vibode-private\//);
+  const previewAgain = await postFurnitureGenerationPreview(
+    new Request("https://vibode.local/preview", { method: "POST" }),
+    ctx.deps,
+    createdBody.job.jobId,
+  );
+  assert.equal(previewAgain.status, 200);
+  const stored = ctx.db.jobs[0];
+  assert.ok(stored);
+  const checksum = stored.outputSha256;
+  const byteSize = stored.outputByteSize;
+  const expiresAt = stored.outputExpiresAtMs;
+  stored.outputExpiresAtMs = ctx.clock.nowMs - 1;
+  const expired = await postFurnitureGenerationPreview(
+    new Request("https://vibode.local/preview", { method: "POST" }),
+    ctx.deps,
+    createdBody.job.jobId,
+  );
+  assert.equal(expired.status, 404);
+  assert.equal(stored.status, "ready");
+  assert.equal(stored.outputSha256, checksum);
+  assert.equal(stored.outputByteSize, byteSize);
+  stored.outputExpiresAtMs = expiresAt;
   const stranger = await postFurnitureGenerationPreview(
     new Request("https://vibode.local/preview", { method: "POST" }),
     asCaller(ctx.deps, USER_B, "admin@example.com"),

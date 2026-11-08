@@ -8,6 +8,7 @@ import {
   clampPreviewOrbit,
   disposePreviewObject,
   formatFurnitureDimensions,
+  formatGeneratedDimensions,
   initialPreviewCamera,
   nudgePreviewOrbit,
   orbitPreviewPosition,
@@ -133,7 +134,12 @@ export function FurnitureGlbPreviewModal({
         setPhase({ status: "ready" });
       } catch (error) {
         if (cancelled || (error instanceof DOMException && error.name === "AbortError")) return;
-        setPhase({ status: "error", message: "The model could not be loaded." });
+        setPhase({
+          status: "error",
+          message: activeRequest.kind === "candidate"
+            ? "The private preview link could not be loaded. Open preview again."
+            : "The model could not be loaded.",
+        });
       }
     })();
     return () => {
@@ -255,8 +261,15 @@ export function FurnitureGlbPreviewDialog({
         </div>
         <div className="shrink-0 border-t border-neutral-800 px-4 py-3">
           <p className="text-xs text-neutral-200" data-preview-dimensions={bounds ? "ready" : "pending"}>
-            {bounds ? formatFurnitureDimensions(bounds) : "Dimensions appear after the model loads."}
+            {bounds
+              ? (request.kind === "candidate" ? formatGeneratedDimensions(bounds) : formatFurnitureDimensions(bounds))
+              : "Dimensions appear after the model loads."}
           </p>
+          {request.kind === "candidate" ? (
+            <p className="mt-1 text-[11px] leading-5 text-neutral-500" data-dimension-authority="generated">
+              Uncalibrated generated measurements, not verified product sizes.
+            </p>
+          ) : null}
           <p className="mt-1 text-[11px] leading-5 text-neutral-500">
             Drag to orbit. Scroll to zoom. Arrow keys orbit when the view is focused.
           </p>
