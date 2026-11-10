@@ -362,6 +362,9 @@ function failureStatus(code: string): number {
     || code === "idempotency_conflict"
     || code === "not_claimable"
     || code === "allowance_closed"
+    || code === "allowance_required"
+    || code === "allowance_disabled"
+    || code === "allowance_exhausted"
     || code === "submission_not_authorized"
   ) {
     return 409;

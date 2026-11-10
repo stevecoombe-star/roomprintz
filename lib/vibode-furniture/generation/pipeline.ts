@@ -42,6 +42,7 @@ import {
 } from "./output";
 import { buildMeshyCreateRequest } from "./payload";
 import { GENERATION_INPUT_BUCKET, generationAccessDecision } from "./policy";
+import { betaFrontPhotoBytesAllowed } from "./transport";
 import { generationRequestSha256 } from "./workflow";
 
 export type GenerationPass = Readonly<{
@@ -93,6 +94,9 @@ export async function createOwnedGeneration(input: {
   if (!draft.ok) return { ok: false, errorClass: "invalid_input", message: draft.errors[0] ?? "The photos could not be used." };
   const credits = estimateMeshy71Credits(input.settings, draft.draft.operation);
   if (credits == null) return { ok: false, errorClass: "unsupported_settings", message: "Those settings are not available." };
+  if (inspected.some((image) => !betaFrontPhotoBytesAllowed(image.byteLength))) {
+    return { ok: false, errorClass: "invalid_input", message: "The photo is too large to send." };
+  }
   const reserved = await input.commands.reserve({
     userId: input.actor.userId,
     jobId: input.jobId,
@@ -511,6 +515,9 @@ function reserveMessage(code: string): string {
   if (code === "disabled") return "Generation is turned off.";
   if (code === "idempotency_conflict") return "This generation request does not match the earlier one.";
   if (code === "unsupported_settings") return "Those settings are not available.";
+  if (code === "allowance_required") return "A generation allowance is required.";
+  if (code === "allowance_disabled") return "Generation access is turned off for this account.";
+  if (code === "allowance_exhausted") return "No generations remain on this account.";
   return "The generation request could not be stored.";
 }
 

@@ -13,6 +13,11 @@ export const GENERATION_REQUEST_BODY_MAX_BYTES = 4_500_000;
 
 export const FIRST_GENERATION_JPEG_MAX_BYTES = 3 * 1024 * 1024;
 
+/** Photo bytes are not an argument to the reservation RPC. */
+export function betaFrontPhotoBytesAllowed(byteLength: number): boolean {
+  return Number.isInteger(byteLength) && byteLength > 0 && byteLength <= FIRST_GENERATION_JPEG_MAX_BYTES;
+}
+
 const TRANSPORT_ENVELOPE_BYTES = 2_048;
 
 export function generationRequestBodyLimit(

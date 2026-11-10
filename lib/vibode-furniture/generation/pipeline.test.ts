@@ -30,6 +30,7 @@ import { createMemoryBucketStore } from "./objects";
 import { cleanupTemporaryGenerationObjects, executeFurnitureGenerationClaim } from "./pipeline";
 import { createGenerationDatabase } from "./engine";
 import { GENERATION_INPUT_BUCKET } from "./policy";
+import { betaFrontPhotoBytesAllowed, FIRST_GENERATION_JPEG_MAX_BYTES, imagesFitGenerationTransport } from "./transport";
 
 const USER_A = "11111111-1111-4111-8111-111111111111";
 const USER_B = "22222222-2222-4222-8222-222222222222";
@@ -652,6 +653,50 @@ test("quota blocks another reservation after the budget is consumed", async () =
   assert.equal(result.status, 409);
   assert.equal(ctx.db.jobs.length, 0);
 });
+
+test("a photo over 3 MB is refused before a reservation", async () => {
+  const bytes = await jpegJustOverBetaLimit();
+  assert.equal(betaFrontPhotoBytesAllowed(bytes.byteLength), false);
+  assert.equal(imagesFitGenerationTransport([bytes.byteLength]), true);
+  const ctx = harness();
+  await allowOne(ctx);
+  const result = await postFurnitureGeneration(
+    request("idem-key-oversize", bytes, defaultFurnitureGeneratorSettings()),
+    ctx.deps,
+  );
+  assert.equal(result.status, 400);
+  assert.equal((result.body as { error: string }).error, "The photo is too large to send.");
+  assert.equal(ctx.db.jobs.length, 0);
+  assert.equal(ctx.db.controls.creditsReserved, 0);
+});
+
+async function jpegJustOverBetaLimit(): Promise<Uint8Array> {
+  const jpeg = new Uint8Array(await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 40, g: 80, b: 120 } },
+  }).jpeg().toBuffer());
+  const target = FIRST_GENERATION_JPEG_MAX_BYTES + 1024;
+  const chunks: Uint8Array[] = [jpeg.subarray(0, 2)];
+  let size = jpeg.byteLength;
+  while (size < target) {
+    const need = Math.min(65533, target - size - 4);
+    const marker = new Uint8Array(4 + need);
+    marker[0] = 0xff;
+    marker[1] = 0xfe;
+    const length = need + 2;
+    marker[2] = (length >> 8) & 0xff;
+    marker[3] = length & 0xff;
+    chunks.push(marker);
+    size += marker.byteLength;
+  }
+  chunks.push(jpeg.subarray(2));
+  const out = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
 
 test("routes keep recovery separate and the worker cannot post", () => {
   const root = process.cwd();

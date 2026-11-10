@@ -47,6 +47,7 @@ import {
   type MutationResult,
 } from "./engine";
 import { imageExtension, inspectFurnitureImage, type InspectedFurnitureImage } from "./images";
+import { betaFrontPhotoBytesAllowed } from "./transport";
 import type { MeshyAdapter } from "./meshy-adapter";
 import { matchListedMeshyTask, normalizeMeshyTaskFailure } from "./meshy-task";
 import { generationAccessDecision } from "./policy";
@@ -142,6 +143,9 @@ export async function createFurnitureGeneration(input: {
   const credits = estimateMeshy71Credits(input.settings, draft.draft.operation);
   if (credits == null) {
     return { ok: false, errorClass: "unsupported_settings", message: "Those settings are not available." };
+  }
+  if (inspected.some((image) => !betaFrontPhotoBytesAllowed(image.byteLength))) {
+    return { ok: false, errorClass: "invalid_input", message: "The photo is too large to send." };
   }
   const reserved = reserveGeneration(input.db, {
     userId: input.actor.userId,

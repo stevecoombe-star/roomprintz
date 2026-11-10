@@ -17,6 +17,7 @@ import { postFurnitureGeneration } from "./http";
 import { createMemoryGenerationCommands } from "./memory-commands";
 import { createMemoryBucketStore } from "./objects";
 import {
+  betaFrontPhotoBytesAllowed,
   FIRST_GENERATION_JPEG_MAX_BYTES,
   GENERATION_REQUEST_BODY_MAX_BYTES,
   generationRequestBodyLimit,
@@ -25,6 +26,9 @@ import {
 
 test("the first production JPEG fits the platform body and reserves 30 credits", () => {
   assert.equal(FIRST_GENERATION_JPEG_MAX_BYTES, 3 * 1024 * 1024);
+  assert.equal(betaFrontPhotoBytesAllowed(FIRST_GENERATION_JPEG_MAX_BYTES), true);
+  assert.equal(betaFrontPhotoBytesAllowed(FIRST_GENERATION_JPEG_MAX_BYTES + 1), false);
+  assert.equal(betaFrontPhotoBytesAllowed(0), false);
   assert.equal(imagesFitGenerationTransport([FIRST_GENERATION_JPEG_MAX_BYTES]), true);
   assert.equal(imagesFitGenerationTransport([4 * 1024 * 1024]), false);
   assert.equal(imagesFitGenerationTransport([MESHY_IMAGE_MAX_BYTES]), false);
