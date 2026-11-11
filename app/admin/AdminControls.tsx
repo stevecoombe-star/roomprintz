@@ -738,6 +738,21 @@ export default function AdminControls() {
         </header>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-base font-medium text-slate-100">AI Furniture Generation</h2>
+              <p className="mt-1 text-xs text-slate-400">Beta Access & Usage Management</p>
+            </div>
+            <Link
+              href="/admin/furniture-generation"
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+            >
+              Open AI Furniture Generation
+            </Link>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-medium text-slate-100">AFC Diagnostics</h2>
