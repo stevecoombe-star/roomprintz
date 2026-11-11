@@ -66,6 +66,7 @@ export type ClaimedGeneration = Readonly<{
   providerTaskName: string;
   providerContactedAtMs: number | null;
   createdAtMs: number | null;
+  errorClass: string | null;
   settings: FurnitureGeneratorSettings;
   imageSlots: readonly FurnitureViewSlot[];
 }>;
@@ -133,6 +134,21 @@ export type GenerationCommands = {
     claimNonce: string;
     nowMs: number;
   }>): Promise<GenerationCommandResult<{ claimNonce: string; status: string }>>;
+  reviewContactedInput(input: Readonly<{
+    userId: string;
+    jobId: string;
+    claimNonce: string;
+    nowMs: number;
+  }>): Promise<GenerationCommandResult<{ status: string }>>;
+  resolveProviderCredits(input: Readonly<{
+    actorUserId: string;
+    jobId: string;
+    providerTaskId: string;
+    consumedCredits: number;
+    reason: string;
+    evidenceRef: string;
+    nowMs: number;
+  }>): Promise<GenerationCommandResult<{ status: string; consumedCredits: number; idempotent: boolean }>>;
   readOwner(userId: string, jobId: string): Promise<GenerationCommandResult<{ job: PublicGenerationJob }>>;
   previewSource(userId: string, jobId: string): Promise<GenerationCommandResult<{ bucket: string; path: string }>>;
   readSaveSource(userId: string, jobId: string): Promise<GenerationCommandResult<GenerationSaveSource>>;

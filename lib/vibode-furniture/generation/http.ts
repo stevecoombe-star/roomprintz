@@ -204,6 +204,53 @@ export async function postFurnitureGenerationRecovery(
   }
 }
 
+const CREDIT_RESOLUTION_FIELDS = new Set(["providerTaskId", "consumedCredits", "reason", "evidenceRef"]);
+
+export async function postFurnitureGenerationCreditResolution(
+  request: Request,
+  deps: GenerationHttpDeps,
+  jobId: string,
+): Promise<GenerationHttpResult> {
+  const caller = await deps.authorize(request);
+  if (!caller.ok) return caller.response;
+  if (!deps.isAdmin(caller.email) || !caller.userId) {
+    return json(401, { ok: false, error: "That provider credit cannot be recorded." });
+  }
+  if (!UUID.test(jobId)) return json(404, { ok: false, error: "That provider credit cannot be recorded." });
+  const body = await readJson(request);
+  if (!body.ok) return json(400, { ok: false, error: "That provider credit cannot be recorded." });
+  if (Object.keys(body.value).some((field) => !CREDIT_RESOLUTION_FIELDS.has(field))) {
+    return json(400, { ok: false, error: "That provider credit cannot be recorded." });
+  }
+  const providerTaskId = typeof body.value.providerTaskId === "string" ? body.value.providerTaskId.trim() : "";
+  const reason = typeof body.value.reason === "string" ? body.value.reason : "";
+  const evidenceRef = typeof body.value.evidenceRef === "string" ? body.value.evidenceRef : "";
+  const consumedCredits = body.value.consumedCredits;
+  if (!Number.isInteger(consumedCredits) || typeof consumedCredits !== "number") {
+    return json(400, { ok: false, error: "That provider credit cannot be recorded." });
+  }
+  try {
+    const resolved = await deps.commands.resolveProviderCredits({
+      actorUserId: caller.userId,
+      jobId,
+      providerTaskId,
+      consumedCredits,
+      reason,
+      evidenceRef,
+      nowMs: deps.nowMs(),
+    });
+    if (!resolved.ok) return json(failureStatus(resolved.code), { ok: false, error: "That provider credit cannot be recorded." });
+    return json(200, {
+      ok: true,
+      status: resolved.status,
+      consumedCredits: resolved.consumedCredits,
+      idempotent: resolved.idempotent,
+    });
+  } catch {
+    return json(500, { ok: false, error: "That provider credit cannot be recorded." });
+  }
+}
+
 export async function postFurnitureGenerationAllowance(
   request: Request,
   deps: GenerationHttpDeps,
@@ -366,6 +413,8 @@ function failureStatus(code: string): number {
     || code === "allowance_disabled"
     || code === "allowance_exhausted"
     || code === "submission_not_authorized"
+    || code === "conflict"
+    || code === "credit_unreported"
   ) {
     return 409;
   }

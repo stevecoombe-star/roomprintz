@@ -148,10 +148,22 @@ export type GenerationControls = {
   paidSubmissionsUsed: number;
 };
 
+export type CreditResolution = {
+  jobId: string;
+  userId: string;
+  actorUserId: string;
+  providerTaskId: string;
+  providerStatus: string;
+  consumedCredits: number;
+  reason: string;
+  evidenceRef: string;
+};
+
 export type GenerationDatabase = {
   controls: GenerationControls;
   jobs: GenerationJob[];
   inputs: GenerationInputRecord[];
+  creditResolutions?: CreditResolution[];
 };
 
 export type ReserveInput = {
@@ -176,7 +188,7 @@ export type ClaimResult =
 
 export type MutationResult =
   | { ok: true; job: GenerationJob }
-  | { ok: false; code: "not_found" | "lease_held" | "not_claimable" | "task_immutable" | "needs_reconciliation" | "concurrency_limited" | "submission_not_authorized" | "unsupported_settings" | "disabled" };
+  | { ok: false; code: "not_found" | "lease_held" | "not_claimable" | "task_immutable" | "needs_reconciliation" | "concurrency_limited" | "submission_not_authorized" | "unsupported_settings" | "disabled" | "credit_unreported" | "conflict" };
 
 const KEY = /^[a-z0-9-]{8,80}$/;
 const SHA = /^[a-f0-9]{64}$/;
@@ -192,6 +204,7 @@ export function createGenerationDatabase(): GenerationDatabase {
       paidSubmissionsUsed: 0,
     },
     jobs: [],
+    creditResolutions: [],
     inputs: [],
   };
 }
@@ -318,7 +331,7 @@ export function prepareGenerationLease(
   if (job.status !== "reserved" || job.providerTaskId) return { ok: false, code: "not_claimable" };
   if (job.attemptCount >= MESHY_MAX_SUBMIT_ATTEMPTS) return { ok: false, code: "not_claimable" };
   if (job.attemptCount > 0 && !job.resubmitAuthorized) return { ok: false, code: "not_claimable" };
-  if (db.controls.paidSubmissionsUsed >= db.controls.paidSubmissionsAuthorized) {
+  if (db.controls.paidSubmissionsUsed >= db.controls.paidSubmissionsAuthorized && job.providerContactedAtMs == null) {
     return { ok: false, code: "submission_not_authorized" };
   }
   hold(job, input.nowMs);
@@ -386,6 +399,11 @@ export function bindGenerationTask(
   if (!/^[A-Za-z0-9-]{8,80}$/.test(input.providerTaskId)) return { ok: false, code: "not_claimable" };
   if (job.job.providerTaskId && job.job.providerTaskId !== input.providerTaskId) {
     return { ok: false, code: "task_immutable" };
+  }
+  if (job.job.errorClass === "credit_unreported" && job.job.consumedCredits == null) {
+    releaseClaim(job.job);
+    touch(job.job, input.nowMs);
+    return { ok: false, code: "credit_unreported" };
   }
   const taken = db.jobs.some((other) => other.jobId !== job.job.jobId && other.providerTaskId === input.providerTaskId);
   if (taken) return { ok: false, code: "task_immutable" };
@@ -515,25 +533,60 @@ export function applyGenerationObservation(
     || row.status === "discarded"
     || row.status === "expired"
     || row.status === "cancelled"
-    || row.status === "needs_review"
   ) {
     return { ok: true, job: row };
   }
+  const unresolved = row.status === "needs_review"
+    && row.errorClass === "credit_unreported"
+    && row.consumedCredits == null
+    && row.quotaState === "reserved";
+  if (row.status === "needs_review" && !unresolved) return { ok: true, job: row };
   if (row.status === "ingesting") {
     if (input.providerStatus !== "SUCCEEDED") return { ok: false, code: "not_claimable" };
     return { ok: true, job: row };
   }
-  if (row.status !== "running") return { ok: false, code: "not_claimable" };
+  if (row.status !== "running" && !unresolved) return { ok: false, code: "not_claimable" };
   row.providerStatus = input.providerStatus;
   row.progress = Math.max(0, Math.min(100, Math.trunc(input.progress)));
   if (input.providerStatus === "PENDING" || input.providerStatus === "IN_PROGRESS") {
-    row.status = "running";
+    if (!unresolved) row.status = "running";
+    releaseClaim(row);
+    touch(row, input.nowMs);
+    return { ok: true, job: row };
+  }
+  if (input.consumedCredits == null) {
+    if (row.consumedCredits != null || row.quotaState !== "reserved") {
+      if (input.providerStatus === "SUCCEEDED" && row.status === "running") {
+        row.status = "ingesting";
+        row.errorClass = null;
+        touch(row, input.nowMs);
+        return { ok: true, job: row };
+      }
+      releaseClaim(row);
+      touch(row, input.nowMs);
+      return { ok: true, job: row };
+    }
+    row.status = "needs_review";
+    row.errorClass = "credit_unreported";
+    row.errorCode = "credit_unreported";
+    row.resubmitAuthorized = false;
+    releaseClaim(row);
+    touch(row, input.nowMs);
+    return { ok: true, job: row };
+  }
+  if (row.consumedCredits != null || row.quotaState !== "reserved") {
+    if (input.providerStatus === "SUCCEEDED" && row.status === "running") {
+      row.status = "ingesting";
+      row.errorClass = null;
+      touch(row, input.nowMs);
+      return { ok: true, job: row };
+    }
     releaseClaim(row);
     touch(row, input.nowMs);
     return { ok: true, job: row };
   }
   if (input.providerStatus === "FAILED" || input.providerStatus === "CANCELED") {
-    releaseReservation(db, row, input.consumedCredits ?? 0, "failure");
+    releaseReservation(db, row, input.consumedCredits, "failure");
     row.status = "failed";
     row.errorClass = "provider_failed";
     row.errorCode = (input.errorCode ?? input.providerStatus).slice(0, 80);
@@ -541,16 +594,10 @@ export function applyGenerationObservation(
     touch(row, input.nowMs);
     return { ok: true, job: row };
   }
-  if (input.consumedCredits == null) {
-    row.errorClass = "credit_unreported";
-    row.status = "running";
-    releaseClaim(row);
-    touch(row, input.nowMs);
-    return { ok: true, job: row };
-  }
   releaseReservation(db, row, input.consumedCredits, "success");
   row.status = "ingesting";
   row.errorClass = null;
+  row.errorCode = null;
   touch(row, input.nowMs);
   return { ok: true, job: row };
 }
@@ -783,6 +830,13 @@ export function authorizeGenerationResubmit(
   if (!input.duplicateChargeRiskAccepted) return { ok: false, code: "not_claimable" };
   if (job.status !== "needs_review" || job.providerTaskId || job.savedAssetId) return { ok: false, code: "not_claimable" };
   if (job.attemptCount >= MESHY_MAX_SUBMIT_ATTEMPTS) return { ok: false, code: "not_claimable" };
+  if (job.errorClass === "credit_unreported") return { ok: false, code: "not_claimable" };
+  if (
+    job.consumedCredits == null
+    && (job.providerStatus === "FAILED" || job.providerStatus === "CANCELED" || job.providerStatus === "SUCCEEDED")
+  ) {
+    return { ok: false, code: "not_claimable" };
+  }
   job.resubmitAuthorized = true;
   job.status = "reserved";
   job.errorClass = null;
@@ -790,6 +844,106 @@ export function authorizeGenerationResubmit(
   releaseClaim(job);
   touch(job, input.nowMs);
   return { ok: true, job };
+}
+
+export function reviewGenerationContactedInput(
+  db: GenerationDatabase,
+  input: { userId: string; jobId: string; claimNonce: string; nowMs: number },
+): MutationResult {
+  const held = ownedLease(db, input);
+  if (!held.ok) return held;
+  const job = held.job;
+  if (job.status !== "reserved" || job.providerTaskId || job.providerContactedAtMs == null) {
+    return { ok: false, code: "not_claimable" };
+  }
+  job.status = "needs_review";
+  job.errorClass = "input_storage_failed";
+  job.errorCode = "input_unreadable";
+  job.resubmitAuthorized = false;
+  releaseClaim(job);
+  touch(job, input.nowMs);
+  return { ok: true, job };
+}
+
+export function resolveGenerationProviderCredits(
+  db: GenerationDatabase,
+  input: {
+    actorUserId: string;
+    jobId: string;
+    providerTaskId: string;
+    consumedCredits: number;
+    reason: string;
+    evidenceRef: string;
+    nowMs: number;
+  },
+): { ok: true; status: string; consumedCredits: number; idempotent: boolean } | { ok: false; code: "not_found" | "not_claimable" | "conflict" } {
+  const reason = input.reason.trim();
+  const evidence = input.evidenceRef.trim();
+  if (
+    !/^[A-Za-z0-9-]{8,80}$/.test(input.providerTaskId)
+    || !Number.isInteger(input.consumedCredits)
+    || input.consumedCredits < 0
+    || input.consumedCredits > 1000
+    || reason.length < 8
+    || reason.length > 200
+    || evidence.length < 8
+    || evidence.length > 200
+    || /msy_|:\/\//i.test(reason)
+    || /msy_|:\/\//i.test(evidence)
+  ) {
+    return { ok: false, code: "not_claimable" };
+  }
+  const job = db.jobs.find((item) => item.jobId === input.jobId);
+  if (!job) return { ok: false, code: "not_found" };
+  const resolutions = db.creditResolutions ?? [];
+  db.creditResolutions = resolutions;
+  const existing = resolutions.find((item) => item.jobId === job.jobId);
+  if (existing) {
+    if (existing.providerTaskId === input.providerTaskId && existing.consumedCredits === input.consumedCredits) {
+      return { ok: true, status: job.status, consumedCredits: job.consumedCredits ?? existing.consumedCredits, idempotent: true };
+    }
+    return { ok: false, code: "conflict" };
+  }
+  if (job.providerTaskId !== input.providerTaskId) return { ok: false, code: "not_claimable" };
+  if (job.consumedCredits != null || job.quotaState !== "reserved") {
+    if (job.consumedCredits === input.consumedCredits) {
+      return { ok: true, status: job.status, consumedCredits: job.consumedCredits, idempotent: true };
+    }
+    return { ok: false, code: "conflict" };
+  }
+  if (
+    job.status !== "needs_review"
+    || job.errorClass !== "credit_unreported"
+    || (job.providerStatus !== "FAILED" && job.providerStatus !== "CANCELED" && job.providerStatus !== "SUCCEEDED")
+  ) {
+    return { ok: false, code: "not_claimable" };
+  }
+  const providerStatus = job.providerStatus;
+  if (providerStatus === "FAILED" || providerStatus === "CANCELED") {
+    releaseReservation(db, job, input.consumedCredits, "failure");
+    job.status = "failed";
+    job.errorClass = "provider_failed";
+    job.errorCode = providerStatus;
+  } else {
+    releaseReservation(db, job, input.consumedCredits, "success");
+    const slotBusy = db.jobs.some((other) => other.jobId !== job.jobId && isProcessing(other.status));
+    job.status = slotBusy ? "needs_review" : "ingesting";
+    job.errorClass = null;
+    job.errorCode = null;
+  }
+  releaseClaim(job);
+  touch(job, input.nowMs);
+  resolutions.push({
+    jobId: job.jobId,
+    userId: job.userId,
+    actorUserId: input.actorUserId,
+    providerTaskId: input.providerTaskId,
+    providerStatus,
+    consumedCredits: input.consumedCredits,
+    reason,
+    evidenceRef: evidence,
+  });
+  return { ok: true, status: job.status, consumedCredits: input.consumedCredits, idempotent: false };
 }
 
 export function discardGenerationCandidate(

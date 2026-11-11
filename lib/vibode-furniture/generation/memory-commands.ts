@@ -17,6 +17,8 @@ import {
   claimGeneration,
   commitGenerationSubmission,
   prepareGenerationLease,
+  resolveGenerationProviderCredits,
+  reviewGenerationContactedInput,
   discardGenerationCandidate,
   dropGenerationClaim,
   failGenerationBeforeProvider,
@@ -69,6 +71,21 @@ export function createMemoryGenerationCommands(
       const committed = commitGenerationSubmission(db, input);
       if (!committed.ok || !committed.job.claimNonce) return { ok: false, code: committed.ok ? "not_claimable" : committed.code };
       return { ok: true, claimNonce: committed.job.claimNonce, status: committed.job.status };
+    },
+    async reviewContactedInput(input) {
+      const reviewed = reviewGenerationContactedInput(db, input);
+      if (!reviewed.ok) return { ok: false, code: reviewed.code };
+      return { ok: true, status: reviewed.job.status };
+    },
+    async resolveProviderCredits(input) {
+      const resolved = resolveGenerationProviderCredits(db, input);
+      if (!resolved.ok) return resolved;
+      return {
+        ok: true,
+        status: resolved.status,
+        consumedCredits: resolved.consumedCredits,
+        idempotent: resolved.idempotent,
+      };
     },
     async readOwner(userId, jobId) {
       const job = readGeneration(db, userId, jobId);
@@ -324,6 +341,7 @@ function claimedView(
     providerTaskName: job.providerTaskName,
     providerContactedAtMs: job.providerContactedAtMs,
     createdAtMs: job.createdAtMs,
+    errorClass: job.errorClass,
     settings: job.settings,
     imageSlots: job.imageSlots,
   };

@@ -19,6 +19,7 @@ import {
   getFurnitureGenerationOperator,
   postFurnitureGeneration,
   postFurnitureGenerationAllowance,
+  postFurnitureGenerationCreditResolution,
   postFurnitureGenerationDiscard,
   postFurnitureGenerationPreview,
   postFurnitureGenerationRecovery,
@@ -756,4 +757,75 @@ test("routes keep recovery separate and the worker cannot post", () => {
   assert.doesNotMatch(onePost, /paid_submissions_used\s*=/);
   const memory = read("lib/vibode-furniture/generation/memory-commands.ts");
   assert.doesNotMatch(memory, /paidSubmissionsUsed - 1/);
+});
+
+test("only an operator can record a missing provider credit, and zero stays explicit", async () => {
+  const ctx = harness();
+  await allowOne(ctx);
+  await postFurnitureGeneration(request("idem-key-0001", await png()), ctx.deps);
+  const job = ctx.db.jobs[0];
+  assert.ok(job);
+  const reserved = ctx.db.controls.creditsReserved;
+  job.status = "needs_review";
+  job.errorClass = "credit_unreported";
+  job.errorCode = "credit_unreported";
+  job.providerTaskId = TASK_ID;
+  job.providerStatus = "FAILED";
+  job.consumedCredits = null;
+  const body = {
+    providerTaskId: TASK_ID,
+    consumedCredits: 0,
+    reason: "dashboard export",
+    evidenceRef: "operator-note-01",
+  };
+  const customer = await postFurnitureGenerationCreditResolution(
+    new Request("https://vibode.local/credits", { method: "POST", body: JSON.stringify(body) }),
+    asCaller(ctx.deps, USER_A, "person@example.com"),
+    job.jobId,
+  );
+  assert.equal(customer.status, 401);
+  assert.equal(job.status, "needs_review");
+  assert.equal(job.consumedCredits, null);
+  assert.equal(ctx.db.controls.creditsReserved, reserved);
+  const malformed = await postFurnitureGenerationCreditResolution(
+    new Request("https://vibode.local/credits", {
+      method: "POST",
+      body: JSON.stringify({ ...body, consumedCredits: "0" }),
+    }),
+    ctx.deps,
+    job.jobId,
+  );
+  assert.equal(malformed.status, 400);
+  assert.equal(job.consumedCredits, null);
+  const recorded = await postFurnitureGenerationCreditResolution(
+    new Request("https://vibode.local/credits", { method: "POST", body: JSON.stringify(body) }),
+    ctx.deps,
+    job.jobId,
+  );
+  assert.equal(recorded.status, 200);
+  assert.equal((recorded.body as { idempotent: boolean }).idempotent, false);
+  assert.equal(job.status, "failed");
+  assert.equal(job.consumedCredits, 0);
+  assert.equal(ctx.db.controls.creditsReserved, 0);
+  assert.equal(ctx.db.controls.creditsConsumed, 0);
+  const again = await postFurnitureGenerationCreditResolution(
+    new Request("https://vibode.local/credits", { method: "POST", body: JSON.stringify(body) }),
+    ctx.deps,
+    job.jobId,
+  );
+  assert.equal(again.status, 200);
+  assert.equal((again.body as { idempotent: boolean }).idempotent, true);
+  const changed = await postFurnitureGenerationCreditResolution(
+    new Request("https://vibode.local/credits", {
+      method: "POST",
+      body: JSON.stringify({ ...body, consumedCredits: 30 }),
+    }),
+    ctx.deps,
+    job.jobId,
+  );
+  assert.equal(changed.status, 409);
+  assert.equal(job.consumedCredits, 0);
+  assert.equal(ctx.db.controls.creditsConsumed, 0);
+  const generate = readFileSync("app/api/vibode/furniture-generations/route.ts", "utf8");
+  assert.doesNotMatch(generate, /CreditResolution|provider-credits/);
 });

@@ -238,6 +238,9 @@ export async function executeFurnitureGenerationClaim(input: {
   const claim = claimed.claim;
   if (claim.purpose === "prepare") return prepareAndCommit(input, claim);
   if (claim.purpose === "submit") return submitClaim(input, claim);
+  if (claim.purpose === "reconcile" && claim.providerTaskId && claim.errorClass === "credit_unreported") {
+    return pollClaim(input, claim);
+  }
   if (claim.purpose === "reconcile") return reconcileClaim(input, claim);
   return pollClaim(input, claim);
 }
@@ -279,6 +282,24 @@ async function prepareAndCommit(
     return { ok: true, action: "waiting", jobId: claim.jobId };
   }
   if (prepared.kind === "invalid") {
+    if (claim.providerContactedAtMs != null) {
+      const reviewed = await input.commands.reviewContactedInput({
+        userId: claim.userId,
+        jobId: claim.jobId,
+        claimNonce: claim.claimNonce,
+        nowMs: input.nowMs,
+      });
+      if (!reviewed.ok) {
+        await input.commands.dropClaim({
+          userId: claim.userId,
+          jobId: claim.jobId,
+          claimNonce: claim.claimNonce,
+          nowMs: input.nowMs,
+        });
+        return { ok: true, action: "waiting", jobId: claim.jobId };
+      }
+      return { ok: true, action: "needs_review", jobId: claim.jobId };
+    }
     const failed = await input.commands.failPreparedInput({
       userId: claim.userId,
       jobId: claim.jobId,
@@ -486,7 +507,10 @@ async function pollClaim(
   });
   if (!applied.ok) return { ok: true, action: "waiting", jobId: claim.jobId };
   if (applied.status === "failed") return { ok: true, action: "failed", jobId: claim.jobId };
-  if (applied.errorClass === "credit_unreported" || applied.status !== "ingesting") {
+  if (applied.errorClass === "credit_unreported" || applied.status === "needs_review") {
+    return { ok: true, action: "needs_review", jobId: claim.jobId };
+  }
+  if (applied.status !== "ingesting") {
     return { ok: true, action: "running", jobId: claim.jobId };
   }
   if (!read.task.glbUrl) {

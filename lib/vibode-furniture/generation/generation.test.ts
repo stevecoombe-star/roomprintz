@@ -579,7 +579,9 @@ test("task progress, failure, and a missing credit report stay server-owned", as
     });
     assert.equal(unreported.ok, false);
     if (!unreported.ok) assert.equal(unreported.errorClass, "credit_unreported");
-    assert.equal(db.jobs[0]?.status, "running");
+    assert.equal(db.jobs[0]?.status, "needs_review");
+    assert.equal(db.jobs[0]?.consumedCredits, null);
+    assert.equal(db.controls.creditsReserved > 0, true);
     assert.equal(db.jobs[0]?.savedAssetId, null);
 
     const failed = await advanceFurnitureGeneration({

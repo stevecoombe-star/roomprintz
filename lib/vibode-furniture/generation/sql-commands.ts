@@ -48,6 +48,15 @@ export const GENERATION_RPC_ARGUMENTS = {
   fail_vibode_furniture_generation_before_provider: ["p_user_id", "p_job_id"],
   fail_vibode_furniture_generation_prepared_input: ["p_user_id", "p_job_id", "p_claim_nonce"],
   commit_vibode_furniture_generation_submission: ["p_user_id", "p_job_id", "p_claim_nonce"],
+  review_vibode_furniture_generation_contacted_input: ["p_user_id", "p_job_id", "p_claim_nonce"],
+  resolve_vibode_furniture_generation_provider_credits: [
+    "p_actor_user_id",
+    "p_job_id",
+    "p_provider_task_id",
+    "p_consumed_credits",
+    "p_reason",
+    "p_evidence_ref",
+  ],
   read_vibode_furniture_generation: ["p_user_id", "p_job_id"],
   discard_vibode_furniture_generation_candidate: ["p_user_id", "p_job_id"],
   admin_authorize_vibode_furniture_generation_resubmit: ["p_job_id", "p_duplicate_charge_risk_accepted"],
@@ -173,6 +182,32 @@ export function createSqlGenerationCommands(rpc: PositionalGenerationRpc): Gener
         return fail(data);
       }
       return { ok: true, claimNonce: data.claim_nonce, status: data.status };
+    },
+    async reviewContactedInput(input) {
+      return statusResult(await rpc("review_vibode_furniture_generation_contacted_input", [
+        input.userId,
+        input.jobId,
+        input.claimNonce,
+      ]));
+    },
+    async resolveProviderCredits(input) {
+      const data = asRecord(await rpc("resolve_vibode_furniture_generation_provider_credits", [
+        input.actorUserId,
+        input.jobId,
+        input.providerTaskId,
+        input.consumedCredits,
+        input.reason,
+        input.evidenceRef,
+      ]));
+      if (!data || data.ok !== true || typeof data.status !== "string" || typeof data.consumed_credits !== "number") {
+        return fail(data);
+      }
+      return {
+        ok: true,
+        status: data.status,
+        consumedCredits: data.consumed_credits,
+        idempotent: data.idempotent === true,
+      };
     },
     async readOwner(userId, jobId) {
       const data = asRecord(await rpc("read_vibode_furniture_generation", [userId, jobId]));
@@ -498,6 +533,7 @@ function claimedFrom(data: Record<string, unknown>): ClaimedGeneration | null {
     providerTaskName: data.provider_task_name,
     providerContactedAtMs: epoch(data.provider_contacted_at),
     createdAtMs: epoch(data.created_at),
+    errorClass: typeof data.error_class === "string" ? data.error_class : null,
     settings,
     imageSlots,
   };

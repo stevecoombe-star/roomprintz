@@ -313,7 +313,7 @@ export async function advanceFurnitureGeneration(input: {
   if (!claim.ok) return { ok: false, errorClass: claim.code, message: "That generation cannot be continued." };
   const nonce = claim.job.claimNonce;
   if (!nonce) return { ok: false, errorClass: "not_claimable", message: "That generation cannot be continued." };
-  if (claim.purpose === "reconcile") {
+  if (claim.purpose === "reconcile" && !(claim.job.providerTaskId && claim.job.errorClass === "credit_unreported")) {
     return reconcile(input, claim.job, nonce);
   }
   const taskId = claim.job.providerTaskId;
