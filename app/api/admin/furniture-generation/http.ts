@@ -7,11 +7,29 @@ import {
   type AdminReadClient,
   type AdminReadResult,
 } from "@/lib/vibode-furniture/generation/admin-dashboard";
+import {
+  adminWriteGateway,
+  type AdminWriteClient,
+} from "@/lib/vibode-furniture/generation/admin-tester";
 
 export function furnitureGenerationServiceClient(): AdminReadClient | null {
   const client = getServiceRoleSupabaseClient();
   if (!client) return null;
   return adminReadGateway({
+    async rpc(fn, args) {
+      const result = await client.rpc(fn, args);
+      return {
+        data: result.data,
+        error: result.error ? { message: result.error.message } : null,
+      };
+    },
+  });
+}
+
+export function furnitureGenerationWriteClient(): AdminWriteClient | null {
+  const client = getServiceRoleSupabaseClient();
+  if (!client) return null;
+  return adminWriteGateway({
     async rpc(fn, args) {
       const result = await client.rpc(fn, args);
       return {

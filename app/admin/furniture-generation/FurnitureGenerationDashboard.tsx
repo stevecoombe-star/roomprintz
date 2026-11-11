@@ -11,9 +11,11 @@ import {
   readAdminError,
   type DashboardOverview,
   type JobDetailRecord,
+  type TesterClassification,
   type TesterJobPage,
   type TesterPage,
 } from "@/lib/vibode-furniture/generation/admin-dashboard";
+import { parseTesterMutation } from "@/lib/vibode-furniture/generation/admin-tester";
 
 import {
   FurnitureGenerationDashboardView,
@@ -40,6 +42,20 @@ export default function FurnitureGenerationDashboard() {
   const [detailMessage, setDetailMessage] = useState<string | null>(null);
   const jobsTicket = useRef(0);
   const detailTicket = useRef(0);
+  const [approveEmail, setApproveEmail] = useState("");
+  const [approveClassification, setApproveClassification] = useState<TesterClassification>("individual_beta");
+  const [approveAllowance, setApproveAllowance] = useState("1");
+  const [approveEnabled, setApproveEnabled] = useState(true);
+  const [approveReason, setApproveReason] = useState("");
+  const [approveConfirmed, setApproveConfirmed] = useState(false);
+  const [editUserId, setEditUserId] = useState<string | null>(null);
+  const [editClassification, setEditClassification] = useState<TesterClassification>("individual_beta");
+  const [editAllowance, setEditAllowance] = useState("");
+  const [editEnabled, setEditEnabled] = useState(true);
+  const [editReason, setEditReason] = useState("");
+  const [editConfirmed, setEditConfirmed] = useState(false);
+  const [managementMessage, setManagementMessage] = useState<string | null>(null);
+  const [managementSaving, setManagementSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,6 +148,83 @@ export default function FurnitureGenerationDashboard() {
     }
   }
 
+  async function refreshDashboard(focusUserId: string | null) {
+    const [overviewBody, testerBody] = await Promise.all([
+      getJson("/api/admin/furniture-generation"),
+      getJson(`/api/admin/furniture-generation/testers?limit=${TESTER_PAGE_SIZE}&offset=0${appliedQuery ? `&q=${encodeURIComponent(appliedQuery)}` : ""}`),
+    ]);
+    const parsedOverview = parseDashboardOverview(overviewBody);
+    const parsedTesters = parseTesterPage(testerBody);
+    if (!parsedOverview || !parsedTesters) throw new Error(ADMIN_UNAVAILABLE);
+    setOverview(parsedOverview);
+    setTesters(parsedTesters);
+    if (focusUserId && focusUserId === jobsUserId) await loadJobs(focusUserId, 0);
+  }
+
+  async function approveTester() {
+    const allowance = readWholeAllowance(approveAllowance);
+    if (allowance == null) {
+      setManagementMessage("Allowance must be a whole number from 0 to 50.");
+      return;
+    }
+    setManagementSaving(true);
+    setManagementMessage(null);
+    try {
+      const body = await sendJson("/api/admin/furniture-generation/testers", "POST", {
+        email: approveEmail,
+        classification: approveClassification,
+        authorizedGenerations: allowance,
+        enabled: approveEnabled,
+        reason: approveReason,
+        confirmed: approveConfirmed,
+      });
+      const saved = parseTesterMutation(body);
+      if (!saved) throw new Error(ADMIN_UNAVAILABLE);
+      await refreshDashboard(saved.tester.userId);
+      setApproveConfirmed(false);
+      setManagementMessage(saved.idempotent ? "That approval was already recorded." : "Tester access was saved.");
+    } catch (error) {
+      setManagementMessage(error instanceof Error ? error.message : ADMIN_UNAVAILABLE);
+    } finally {
+      setManagementSaving(false);
+    }
+  }
+
+  async function saveTester() {
+    if (!editUserId) return;
+    const allowance = readWholeAllowance(editAllowance);
+    if (allowance == null) {
+      setManagementMessage("Allowance must be a whole number from 0 to 50.");
+      return;
+    }
+    const current = testers?.testers.find((tester) => tester.userId === editUserId);
+    if (!current) return;
+    setManagementSaving(true);
+    setManagementMessage(null);
+    try {
+      const body = await sendJson(`/api/admin/furniture-generation/testers/${editUserId}`, "PATCH", {
+        classification: editClassification,
+        authorizedGenerations: allowance,
+        enabled: editEnabled,
+        reason: editReason,
+        confirmed: editConfirmed,
+        expectedUpdatedAt: current.updatedAt,
+      });
+      const saved = parseTesterMutation(body);
+      if (!saved) throw new Error(ADMIN_UNAVAILABLE);
+      await refreshDashboard(saved.tester.userId);
+      setEditConfirmed(false);
+      setEditAllowance(String(saved.tester.authorizedGenerations));
+      setEditClassification(saved.tester.classification);
+      setEditEnabled(saved.tester.enabled);
+      setManagementMessage(saved.unchanged ? "No tester fields changed." : "Tester access was saved.");
+    } catch (error) {
+      setManagementMessage(error instanceof Error ? error.message : ADMIN_UNAVAILABLE);
+    } finally {
+      setManagementSaving(false);
+    }
+  }
+
   return (
     <FurnitureGenerationDashboardView
       phase={phase}
@@ -168,15 +261,70 @@ export default function FurnitureGenerationDashboard() {
       onOpenJob={(jobId) => {
         void loadDetail(jobId);
       }}
+      approveEmail={approveEmail}
+      approveClassification={approveClassification}
+      approveAllowance={approveAllowance}
+      approveEnabled={approveEnabled}
+      approveReason={approveReason}
+      approveConfirmed={approveConfirmed}
+      editUserId={editUserId}
+      editClassification={editClassification}
+      editAllowance={editAllowance}
+      editEnabled={editEnabled}
+      editReason={editReason}
+      editConfirmed={editConfirmed}
+      managementMessage={managementMessage}
+      managementSaving={managementSaving}
+      onApproveEmail={setApproveEmail}
+      onApproveClassification={setApproveClassification}
+      onApproveAllowance={setApproveAllowance}
+      onApproveEnabled={setApproveEnabled}
+      onApproveReason={setApproveReason}
+      onApproveConfirmed={setApproveConfirmed}
+      onApprove={() => {
+        void approveTester();
+      }}
+      onManageTester={(userId) => {
+        const tester = testers?.testers.find((item) => item.userId === userId);
+        if (!tester) return;
+        setEditUserId(tester.userId);
+        setEditClassification(tester.classification);
+        setEditAllowance(String(tester.authorizedGenerations));
+        setEditEnabled(tester.enabled);
+        setEditReason("");
+        setEditConfirmed(false);
+        setManagementMessage(null);
+      }}
+      onEditClassification={setEditClassification}
+      onEditAllowance={setEditAllowance}
+      onEditEnabled={setEditEnabled}
+      onEditReason={setEditReason}
+      onEditConfirmed={setEditConfirmed}
+      onSaveTester={() => {
+        void saveTester();
+      }}
     />
   );
 }
 
+function readWholeAllowance(value: string): number | null {
+  if (!/^\d+$/.test(value.trim())) return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 50) return null;
+  return parsed;
+}
+
 async function getJson(url: string): Promise<unknown> {
+  return sendJson(url, "GET");
+}
+
+async function sendJson(url: string, method: "GET" | "POST" | "PATCH", payload?: unknown): Promise<unknown> {
   const response = await fetch(url, {
-    method: "GET",
+    method,
     credentials: "same-origin",
     cache: "no-store",
+    headers: payload === undefined ? undefined : { "content-type": "application/json" },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
   });
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new Error(readAdminError(body));

@@ -59,13 +59,28 @@ test("cookie admin routes are read-only and do not observe the worker or call Me
   assert.match(source("lib/adminServer.ts"), /if \(!isAdminEmail\(data\.user\.email\)\) return null/);
   for (const route of ROUTES) {
     const body = source(route);
-    const handler = body.slice(body.indexOf("export async function GET"));
+    const handlerStart = body.indexOf("export async function GET");
+    const nextHandler = body.indexOf("export async function ", handlerStart + 1);
+    const handler = body.slice(handlerStart, nextHandler === -1 ? undefined : nextHandler);
     assert.match(body, /export async function GET/);
-    assert.doesNotMatch(body, /export async function (POST|PUT|PATCH|DELETE)/);
+    if (route.endsWith("testers/route.ts")) {
+      assert.match(body, /export async function POST/);
+      assert.doesNotMatch(body, /export async function (PUT|PATCH|DELETE)/);
+      const post = body.slice(body.indexOf("export async function POST"));
+      assert.ok(post.indexOf("getAuthenticatedAdminUser") < post.indexOf("furnitureGenerationWriteClient"));
+      assert.doesNotMatch(post, /authorization|bearer|getFurnitureGenerationOperator|adminId/i);
+    } else {
+      assert.doesNotMatch(body, /export async function (POST|PUT|PATCH|DELETE)/);
+    }
     assert.match(handler, /getAuthenticatedAdminUser/);
     assert.ok(handler.indexOf("getAuthenticatedAdminUser") < handler.indexOf("furnitureGenerationServiceClient"));
     assert.doesNotMatch(handler, /authorization|bearer|getFurnitureGenerationOperator|adminId/i);
   }
+  const testerUpdate = source("app/api/admin/furniture-generation/testers/[userId]/route.ts");
+  assert.match(testerUpdate, /export async function PATCH/);
+  assert.doesNotMatch(testerUpdate, /export async function (GET|POST|PUT|DELETE)/);
+  assert.ok(testerUpdate.indexOf("getAuthenticatedAdminUser") < testerUpdate.indexOf("furnitureGenerationWriteClient"));
+  assert.doesNotMatch(testerUpdate, /authorization|bearer|getFurnitureGenerationOperator|adminId|live_enabled|credit_ceiling|paid_submissions/i);
   assert.equal(generationEnabledFromEnv({}), false);
   assert.equal(generationEnabledFromEnv({ VIBODE_MESHY_GENERATION_ENABLED: "TRUE" }), false);
   assert.equal(generationEnabledFromEnv({
@@ -221,8 +236,10 @@ test("mismatched counters and a write function are refused", async () => {
     },
   });
   const refused = await gateway!.rpc("reserve_vibode_furniture_generation" as AdminReadName, {});
+  const refusedApproval = await gateway!.rpc("admin_approve_vibode_furniture_generation_tester" as AdminReadName, {});
   assert.equal(calls, 0);
   assert.equal(refused.error?.message, "rpc_failed");
+  assert.equal(refusedApproval.error?.message, "rpc_failed");
   const jobs = parseTesterJobs({
     ok: true,
     user_id: USER,

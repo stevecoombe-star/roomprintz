@@ -33,6 +33,34 @@ export type FurnitureGenerationDashboardViewProps = {
   onOpenTester?: (userId: string) => void;
   onJobPage?: (offset: number) => void;
   onOpenJob?: (jobId: string) => void;
+  approveEmail?: string;
+  approveClassification?: "individual_beta" | "furniture_partner";
+  approveAllowance?: string;
+  approveEnabled?: boolean;
+  approveReason?: string;
+  approveConfirmed?: boolean;
+  editUserId?: string | null;
+  editClassification?: "individual_beta" | "furniture_partner";
+  editAllowance?: string;
+  editEnabled?: boolean;
+  editReason?: string;
+  editConfirmed?: boolean;
+  managementMessage?: string | null;
+  managementSaving?: boolean;
+  onApproveEmail?: (value: string) => void;
+  onApproveClassification?: (value: "individual_beta" | "furniture_partner") => void;
+  onApproveAllowance?: (value: string) => void;
+  onApproveEnabled?: (value: boolean) => void;
+  onApproveReason?: (value: string) => void;
+  onApproveConfirmed?: (value: boolean) => void;
+  onApprove?: () => void;
+  onManageTester?: (userId: string) => void;
+  onEditClassification?: (value: "individual_beta" | "furniture_partner") => void;
+  onEditAllowance?: (value: string) => void;
+  onEditEnabled?: (value: boolean) => void;
+  onEditReason?: (value: string) => void;
+  onEditConfirmed?: (value: boolean) => void;
+  onSaveTester?: () => void;
 };
 
 const METRICS: Array<[string, keyof DashboardOverview]> = [
@@ -96,6 +124,34 @@ export function FurnitureGenerationDashboardView(props: FurnitureGenerationDashb
               onFilter={props.onFilter}
               onTesterPage={props.onTesterPage}
               onOpenTester={props.onOpenTester}
+              approveEmail={props.approveEmail ?? ""}
+              approveClassification={props.approveClassification ?? "individual_beta"}
+              approveAllowance={props.approveAllowance ?? "1"}
+              approveEnabled={props.approveEnabled ?? true}
+              approveReason={props.approveReason ?? ""}
+              approveConfirmed={props.approveConfirmed ?? false}
+              editUserId={props.editUserId ?? null}
+              editClassification={props.editClassification ?? "individual_beta"}
+              editAllowance={props.editAllowance ?? ""}
+              editEnabled={props.editEnabled ?? true}
+              editReason={props.editReason ?? ""}
+              editConfirmed={props.editConfirmed ?? false}
+              managementMessage={props.managementMessage ?? null}
+              managementSaving={props.managementSaving ?? false}
+              onApproveEmail={props.onApproveEmail}
+              onApproveClassification={props.onApproveClassification}
+              onApproveAllowance={props.onApproveAllowance}
+              onApproveEnabled={props.onApproveEnabled}
+              onApproveReason={props.onApproveReason}
+              onApproveConfirmed={props.onApproveConfirmed}
+              onApprove={props.onApprove}
+              onManageTester={props.onManageTester}
+              onEditClassification={props.onEditClassification}
+              onEditAllowance={props.onEditAllowance}
+              onEditEnabled={props.onEditEnabled}
+              onEditReason={props.onEditReason}
+              onEditConfirmed={props.onEditConfirmed}
+              onSaveTester={props.onSaveTester}
             />
             <HistorySection
               jobs={props.jobs}
@@ -173,6 +229,34 @@ function TesterSection(props: {
   onFilter?: () => void;
   onTesterPage?: (offset: number) => void;
   onOpenTester?: (userId: string) => void;
+  approveEmail: string;
+  approveClassification: "individual_beta" | "furniture_partner";
+  approveAllowance: string;
+  approveEnabled: boolean;
+  approveReason: string;
+  approveConfirmed: boolean;
+  editUserId: string | null;
+  editClassification: "individual_beta" | "furniture_partner";
+  editAllowance: string;
+  editEnabled: boolean;
+  editReason: string;
+  editConfirmed: boolean;
+  managementMessage: string | null;
+  managementSaving: boolean;
+  onApproveEmail?: (value: string) => void;
+  onApproveClassification?: (value: "individual_beta" | "furniture_partner") => void;
+  onApproveAllowance?: (value: string) => void;
+  onApproveEnabled?: (value: boolean) => void;
+  onApproveReason?: (value: string) => void;
+  onApproveConfirmed?: (value: boolean) => void;
+  onApprove?: () => void;
+  onManageTester?: (userId: string) => void;
+  onEditClassification?: (value: "individual_beta" | "furniture_partner") => void;
+  onEditAllowance?: (value: string) => void;
+  onEditEnabled?: (value: boolean) => void;
+  onEditReason?: (value: string) => void;
+  onEditConfirmed?: (value: boolean) => void;
+  onSaveTester?: () => void;
 }) {
   const testers = props.testers;
   const empty = testers != null && testers.testers.length === 0;
@@ -212,6 +296,7 @@ function TesterSection(props: {
           </button>
         </form>
       </div>
+      <TesterManagement {...props} />
 
       {testers == null ? (
         <p className="text-sm text-slate-300">Tester records are unavailable.</p>
@@ -239,7 +324,7 @@ function TesterSection(props: {
             </thead>
             <tbody>
               {testers.testers.map((tester) => (
-                <TesterRow key={tester.userId} tester={tester} onOpen={props.onOpenTester} />
+                <TesterRow key={tester.userId} tester={tester} onOpen={props.onOpenTester} onManage={props.onManageTester} />
               ))}
             </tbody>
           </table>
@@ -261,7 +346,186 @@ function TesterSection(props: {
   );
 }
 
-function TesterRow({ tester, onOpen }: { tester: BetaTesterRecord; onOpen?: (userId: string) => void }) {
+function TesterManagement(props: {
+  testers: TesterPage | null;
+  approveEmail: string;
+  approveClassification: "individual_beta" | "furniture_partner";
+  approveAllowance: string;
+  approveEnabled: boolean;
+  approveReason: string;
+  approveConfirmed: boolean;
+  editUserId: string | null;
+  editClassification: "individual_beta" | "furniture_partner";
+  editAllowance: string;
+  editEnabled: boolean;
+  editReason: string;
+  editConfirmed: boolean;
+  managementMessage: string | null;
+  managementSaving: boolean;
+  onApproveEmail?: (value: string) => void;
+  onApproveClassification?: (value: "individual_beta" | "furniture_partner") => void;
+  onApproveAllowance?: (value: string) => void;
+  onApproveEnabled?: (value: boolean) => void;
+  onApproveReason?: (value: string) => void;
+  onApproveConfirmed?: (value: boolean) => void;
+  onApprove?: () => void;
+  onEditClassification?: (value: "individual_beta" | "furniture_partner") => void;
+  onEditAllowance?: (value: string) => void;
+  onEditEnabled?: (value: boolean) => void;
+  onEditReason?: (value: string) => void;
+  onEditConfirmed?: (value: boolean) => void;
+  onSaveTester?: () => void;
+}) {
+  const editing = props.testers?.testers.find((tester) => tester.userId === props.editUserId) ?? null;
+  return (
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <form
+        className="space-y-3 rounded-xl border border-slate-800 p-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          props.onApprove?.();
+        }}
+      >
+        <h3 className="text-sm font-medium text-slate-100">Approve an existing account</h3>
+        <p className="text-xs text-slate-400">Exact email. Production switches and spending limits stay unchanged.</p>
+        <label className="flex flex-col gap-1 text-xs text-slate-400">
+          Exact email
+          <input
+            aria-label="Exact email"
+            value={props.approveEmail}
+            onChange={(event) => props.onApproveEmail?.(event.target.value)}
+            className={fieldClass}
+          />
+        </label>
+        <ClassificationField
+          label="Initial classification"
+          value={props.approveClassification}
+          onChange={props.onApproveClassification}
+        />
+        <label className="flex flex-col gap-1 text-xs text-slate-400">
+          Initial generation allowance
+          <input
+            aria-label="Initial generation allowance"
+            inputMode="numeric"
+            value={props.approveAllowance}
+            onChange={(event) => props.onApproveAllowance?.(event.target.value)}
+            className={fieldClass}
+          />
+        </label>
+        <AccessField checked={props.approveEnabled} onChange={props.onApproveEnabled} />
+        <ReasonField label="Approval reason" value={props.approveReason} onChange={props.onApproveReason} />
+        <ConfirmField checked={props.approveConfirmed} onChange={props.onApproveConfirmed} />
+        <button type="submit" disabled={props.managementSaving || !props.approveConfirmed} className={buttonClass}>
+          Approve account
+        </button>
+      </form>
+      <form
+        className="space-y-3 rounded-xl border border-slate-800 p-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          props.onSaveTester?.();
+        }}
+      >
+        <h3 className="text-sm font-medium text-slate-100">Adjust an approved tester</h3>
+        {editing ? (
+          <p className="text-xs text-slate-400">
+            {editing.email ?? editing.userId} · reserved {formatCount(editing.reservedGenerations)} · consumed {formatCount(editing.consumedGenerations)} · remaining {formatCount(editing.remainingGenerations)}
+          </p>
+        ) : (
+          <p className="text-xs text-slate-400">Choose Manage on an approved account.</p>
+        )}
+        <ClassificationField label="Classification" value={props.editClassification} onChange={props.onEditClassification} />
+        <label className="flex flex-col gap-1 text-xs text-slate-400">
+          Authorized generations
+          <input
+            aria-label="Authorized generations"
+            inputMode="numeric"
+            value={props.editAllowance}
+            onChange={(event) => props.onEditAllowance?.(event.target.value)}
+            className={fieldClass}
+          />
+        </label>
+        <AccessField checked={props.editEnabled} onChange={props.onEditEnabled} />
+        <ReasonField label="Change reason" value={props.editReason} onChange={props.onEditReason} />
+        <ConfirmField checked={props.editConfirmed} onChange={props.onEditConfirmed} />
+        <button type="submit" disabled={props.managementSaving || !props.editConfirmed || !editing} className={buttonClass}>
+          Save tester changes
+        </button>
+      </form>
+      {props.managementMessage ? (
+        <p className="text-sm text-slate-200 xl:col-span-2" aria-live="polite">{props.managementMessage}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function ClassificationField(props: {
+  label: string;
+  value: "individual_beta" | "furniture_partner";
+  onChange?: (value: "individual_beta" | "furniture_partner") => void;
+}) {
+  return (
+    <label className="flex flex-col gap-1 text-xs text-slate-400">
+      {props.label}
+      <select
+        aria-label={props.label}
+        value={props.value}
+        onChange={(event) => props.onChange?.(event.target.value === "furniture_partner" ? "furniture_partner" : "individual_beta")}
+        className={fieldClass}
+      >
+        <option value="individual_beta">Individual Beta</option>
+        <option value="furniture_partner">Furniture Partner</option>
+      </select>
+    </label>
+  );
+}
+
+function AccessField(props: { checked: boolean; onChange?: (value: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-2 text-xs text-slate-300">
+      <input
+        aria-label="Allow new generations"
+        type="checkbox"
+        checked={props.checked}
+        onChange={(event) => props.onChange?.(event.target.checked)}
+      />
+      Allow new generations
+    </label>
+  );
+}
+
+function ReasonField(props: { label: string; value: string; onChange?: (value: string) => void }) {
+  return (
+    <label className="flex flex-col gap-1 text-xs text-slate-400">
+      {props.label}
+      <input aria-label={props.label} value={props.value} onChange={(event) => props.onChange?.(event.target.value)} className={fieldClass} />
+    </label>
+  );
+}
+
+function ConfirmField(props: { checked: boolean; onChange?: (value: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-2 text-xs text-slate-300">
+      <input
+        aria-label="I confirm this tester change."
+        type="checkbox"
+        checked={props.checked}
+        onChange={(event) => props.onChange?.(event.target.checked)}
+      />
+      I confirm this tester change.
+    </label>
+  );
+}
+
+function TesterRow({
+  tester,
+  onOpen,
+  onManage,
+}: {
+  tester: BetaTesterRecord;
+  onOpen?: (userId: string) => void;
+  onManage?: (userId: string) => void;
+}) {
   return (
     <tr className="border-t border-slate-800">
       <td className="px-2 py-2 align-top">
@@ -280,9 +544,14 @@ function TesterRow({ tester, onOpen }: { tester: BetaTesterRecord; onOpen?: (use
         <time dateTime={tester.updatedAt}>{formatTimestamp(tester.updatedAt)}</time>
       </td>
       <td className="px-2 py-2 align-top">
-        <button type="button" onClick={() => onOpen?.(tester.userId)} className={buttonClass}>
-          View history
-        </button>
+        <div className="flex flex-col gap-1">
+          <button type="button" onClick={() => onOpen?.(tester.userId)} className={buttonClass}>
+            View history
+          </button>
+          <button type="button" onClick={() => onManage?.(tester.userId)} className={buttonClass}>
+            Manage
+          </button>
+        </div>
       </td>
     </tr>
   );
@@ -485,7 +754,8 @@ function EventList({ title, events }: { title: string; events: AllowanceEventRec
         <ul className="mt-2 space-y-1 text-xs text-slate-300">
           {events.map((event) => (
             <li key={event.eventId}>
-              {event.action} · {event.actorKind} · {event.reason ?? "Reason withheld"} · {formatTimestamp(event.createdAt)}
+              {event.action} · {event.actorKind} · {event.reason ?? "Reason withheld"}
+              {eventContext(event) ? ` · ${eventContext(event)}` : ""} · {formatTimestamp(event.createdAt)}
             </li>
           ))}
         </ul>
@@ -550,6 +820,21 @@ function PageControls(props: {
   );
 }
 
+function eventContext(event: AllowanceEventRecord): string | null {
+  const parts: string[] = [];
+  if (event.classificationBefore !== event.classificationAfter && (event.classificationBefore || event.classificationAfter)) {
+    parts.push(event.classificationBefore
+      ? `Classification ${classificationLabel(event.classificationBefore)} to ${event.classificationAfter ? classificationLabel(event.classificationAfter) : "unset"}`
+      : `Classification set to ${event.classificationAfter ? classificationLabel(event.classificationAfter) : "unset"}`);
+  }
+  if (event.enabledBefore !== event.enabledAfter && (event.enabledBefore != null || event.enabledAfter != null)) {
+    const from = event.enabledBefore == null ? "unset" : event.enabledBefore ? "enabled" : "disabled";
+    const to = event.enabledAfter == null ? "unset" : event.enabledAfter ? "enabled" : "disabled";
+    parts.push(event.enabledBefore == null ? `Access set to ${to}` : `Access ${from} to ${to}`);
+  }
+  return parts.length > 0 ? parts.join("; ") : null;
+}
+
 function classificationLabel(value: BetaTesterRecord["classification"]): string {
   return value === "individual_beta" ? "Individual Beta" : "Furniture Partner";
 }
@@ -596,4 +881,5 @@ function formatTimestamp(value: string): string {
   }).format(parsed);
 }
 
+const fieldClass = "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400";
 const buttonClass = "rounded-lg border border-slate-700 px-2 py-1 text-[11px] text-slate-200 hover:border-emerald-400/80 hover:text-emerald-200 disabled:opacity-40";

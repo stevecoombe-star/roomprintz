@@ -40,7 +40,7 @@ const PROVIDER_STATUSES = ["PENDING", "IN_PROGRESS", "SUCCEEDED", "FAILED", "CAN
 const CREDIT_REVIEWS = ["reported", "unreported", "operator_resolved", "pending", "not_contacted"] as const;
 const SAVED_STATES = ["permanently_saved", "candidate_ready", "not_saved"] as const;
 const CLASSIFICATIONS = ["individual_beta", "furniture_partner"] as const;
-const ALLOWANCE_ACTIONS = ["grant", "adjust", "enable", "disable", "restore", "reserve", "release", "consume"] as const;
+const ALLOWANCE_ACTIONS = ["grant", "adjust", "enable", "disable", "restore", "classify", "reserve", "release", "consume"] as const;
 const ACTOR_KINDS = ["administrator", "system"] as const;
 const RESUBMIT_ACTIONS = ["authorize", "revoke", "consume"] as const;
 const RESUBMIT_REASONS = ["operator_recovery", "submission_budget_exhausted", "submission_committed"] as const;
@@ -103,6 +103,10 @@ export type AllowanceEventRecord = {
   deltaConsumed: number;
   jobId: string | null;
   createdAt: string;
+  classificationBefore: TesterClassification | null;
+  classificationAfter: TesterClassification | null;
+  enabledBefore: boolean | null;
+  enabledAfter: boolean | null;
 };
 
 export type ResubmitEventRecord = {
@@ -469,7 +473,7 @@ export function parseTesterPage(value: unknown): TesterPage | null {
   const offset = readCount(readField(body, "offset", "offset"));
   if (total == null || limit == null || offset == null || limit < 1 || limit > 50) return null;
   const testers = readArray(readField(body, "testers", "testers"), 50)
-    .map(parseTester)
+    .map(parseBetaTester)
     .filter((item): item is BetaTesterRecord => item != null);
   if (total < testers.length) return null;
   return { total, limit, offset, testers };
@@ -555,7 +559,7 @@ function parseDeletedAudit(value: unknown): DeletedAccountAudit | null {
   return { userId, allowanceEvents, resubmitEvents, creditResolutions };
 }
 
-function parseTester(value: unknown): BetaTesterRecord | null {
+export function parseBetaTester(value: unknown): BetaTesterRecord | null {
   const body = asObject(value);
   if (!body) return null;
   const userId = readUuid(readField(body, "user_id", "userId"));
@@ -700,6 +704,10 @@ function parseAllowanceEvent(value: unknown): AllowanceEventRecord | null {
     deltaConsumed,
     jobId,
     createdAt,
+    classificationBefore: readClassification(readField(body, "classification_before", "classificationBefore")),
+    classificationAfter: readClassification(readField(body, "classification_after", "classificationAfter")),
+    enabledBefore: readOptionalBool(readField(body, "enabled_before", "enabledBefore")),
+    enabledAfter: readOptionalBool(readField(body, "enabled_after", "enabledAfter")),
   };
 }
 
@@ -760,6 +768,11 @@ function readArray(value: unknown, max: number): unknown[] {
 
 function readChoice<T extends string>(value: unknown, choices: readonly T[]): T | null {
   return typeof value === "string" && choices.includes(value as T) ? value as T : null;
+}
+
+function readClassification(value: unknown): TesterClassification | null {
+  if (value == null) return null;
+  return readChoice(value, CLASSIFICATIONS);
 }
 
 function readCount(value: unknown): number | null {

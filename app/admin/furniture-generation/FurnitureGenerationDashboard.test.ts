@@ -114,6 +114,14 @@ test("empty, error, and populated dashboard states stay read-only", () => {
   assert.match(populated, /submission_budget_exhausted/);
   assert.match(populated, /submission_committed/);
   assert.match(populated, /Showing 1–2 of 5/);
+  assert.match(populated, /Approve account/);
+  assert.match(populated, /Exact email/);
+  assert.match(populated, /Initial generation allowance/);
+  assert.match(populated, /I confirm this tester change/);
+  assert.match(populated, /Save tester changes/);
+  assert.match(populated, /Manage/);
+  assert.match(populated, /Allow new generations/);
+  assert.match(populated, /Production switches and spending limits stay unchanged/);
   assert.equal(populated.includes(USER_C), true);
   assert.doesNotMatch(populated, /legacy@example.com|candidate\.glb|users\/hidden|MESHY_API_KEY|method="post"/);
 });
@@ -142,6 +150,10 @@ test("a removed account shows retained audit events without a tester allowance",
         deltaConsumed: 0,
         jobId: null,
         createdAt: "2026-11-01T00:00:00.000Z",
+        classificationBefore: "individual_beta",
+        classificationAfter: "furniture_partner",
+        enabledBefore: true,
+        enabledAfter: false,
       }],
       resubmitEvents: [],
       creditResolutions: [],
@@ -151,6 +163,8 @@ test("a removed account shows retained audit events without a tester allowance",
   assert.match(html, /No beta allowance on this account/);
   assert.match(html, /No generation jobs for this account/);
   assert.match(html, /Initial beta allowance/);
+  assert.match(html, /Classification Individual Beta to Furniture Partner/);
+  assert.match(html, /Access enabled to disabled/);
 });
 
 function render(props: FurnitureGenerationDashboardViewProps): string {
