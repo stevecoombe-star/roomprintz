@@ -445,11 +445,50 @@ test("an ambiguous create stays held after administrator recovery", async () => 
   );
   assert.equal(authorized.status, 200);
   assert.equal((authorized.body as { duplicateChargeRisk: boolean }).duplicateChargeRisk, true);
+  const reservedCredits = ctx.db.controls.creditsReserved;
   const blocked = await runPass(ctx, provider, okGlb);
   assert.equal(blocked.action, "submission_not_authorized");
   assert.equal(provider.posts(), 1);
   assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
-  assert.equal(ctx.db.jobs[0]?.status, "reserved");
+  assert.equal(ctx.db.controls.creditsReserved, reservedCredits);
+  assert.equal(ctx.db.jobs[0]?.status, "needs_review");
+  assert.equal(ctx.db.jobs[0]?.errorClass, "submission_budget_exhausted");
+  assert.equal(ctx.db.jobs[0]?.resubmitAuthorized, false);
+  assert.equal(ctx.db.jobs[0]?.attemptCount, 1);
+  const again = scripted([response(200, [])]);
+  assert.equal((await runPass(ctx, again, okGlb)).action, "needs_review");
+  assert.equal(again.posts(), 0);
+  assert.equal(ctx.db.jobs[0]?.errorClass, "submission_budget_exhausted");
+  ctx.db.controls.paidSubmissionsUsed = 0;
+  const raised = scripted([response(200, [])]);
+  assert.equal((await runPass(ctx, raised, okGlb)).action, "needs_review");
+  assert.equal(raised.posts(), 0);
+  assert.equal(ctx.db.jobs[0]?.status, "needs_review");
+  assert.equal(ctx.db.jobs[0]?.attemptCount, 1);
+  ctx.db.controls.paidSubmissionsUsed = 1;
+  const operator = await getFurnitureGenerationOperator(
+    new Request("https://vibode.local/operator"),
+    ctx.deps,
+    jobId,
+  );
+  assert.equal(operator.status, 200);
+  assert.equal((operator.body as { job: { errorClass: string } }).job.errorClass, "submission_budget_exhausted");
+  const resolved = await postFurnitureGenerationCreditResolution(
+    new Request("https://vibode.local/credits", {
+      method: "POST",
+      body: JSON.stringify({
+        providerTaskId: TASK_ID,
+        consumedCredits: 0,
+        reason: "dashboard export",
+        evidenceRef: "operator-note-01",
+      }),
+    }),
+    ctx.deps,
+    jobId,
+  );
+  assert.equal(resolved.status, 409);
+  assert.equal(ctx.db.jobs[0]?.resubmitAuthorized, false);
+  assert.equal(ctx.db.resubmitEvents?.map((event) => event.action).join(","), "authorize,revoke");
   const closed = await ctx.commands.grantPaidSubmission(true);
   assert.equal(closed.ok, false);
   if (!closed.ok) assert.equal(closed.code, "allowance_closed");

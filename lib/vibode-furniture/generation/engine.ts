@@ -82,6 +82,7 @@ export type GenerationErrorClass =
   | "ingest_failed"
   | "input_storage_failed"
   | "credit_unreported"
+  | "submission_budget_exhausted"
   | "needs_review"
   | "discarded"
   | "expired"
@@ -159,11 +160,19 @@ export type CreditResolution = {
   evidenceRef: string;
 };
 
+export type ResubmitEvent = {
+  jobId: string;
+  userId: string;
+  action: "authorize" | "revoke" | "consume";
+  reason: "operator_recovery" | "submission_budget_exhausted" | "submission_committed";
+};
+
 export type GenerationDatabase = {
   controls: GenerationControls;
   jobs: GenerationJob[];
   inputs: GenerationInputRecord[];
   creditResolutions?: CreditResolution[];
+  resubmitEvents?: ResubmitEvent[];
 };
 
 export type ReserveInput = {
@@ -205,6 +214,7 @@ export function createGenerationDatabase(): GenerationDatabase {
     },
     jobs: [],
     creditResolutions: [],
+    resubmitEvents: [],
     inputs: [],
   };
 }
@@ -355,11 +365,19 @@ export function commitGenerationSubmission(
     return { ok: false, code: "disabled" };
   }
   if (db.controls.paidSubmissionsUsed >= db.controls.paidSubmissionsAuthorized) {
+    if (job.providerContactedAtMs != null) {
+      job.status = "needs_review";
+      job.errorClass = "submission_budget_exhausted";
+      job.errorCode = "submission_budget_exhausted";
+      job.resubmitAuthorized = false;
+      recordResubmit(db, job, "revoke", "submission_budget_exhausted");
+    }
     releaseClaim(job);
     touch(job, input.nowMs);
     return { ok: false, code: "submission_not_authorized" };
   }
   db.controls.paidSubmissionsUsed += 1;
+  if (job.resubmitAuthorized) recordResubmit(db, job, "consume", "submission_committed");
   job.resubmitAuthorized = false;
   job.attemptCount += 1;
   job.providerContactedAtMs = input.nowMs;
@@ -841,6 +859,7 @@ export function authorizeGenerationResubmit(
   job.status = "reserved";
   job.errorClass = null;
   job.errorCode = null;
+  recordResubmit(db, job, "authorize", "operator_recovery");
   releaseClaim(job);
   touch(job, input.nowMs);
   return { ok: true, job };
@@ -1064,6 +1083,17 @@ export function releaseExpiredGenerationHolds(db: GenerationDatabase, nowMs: num
       touch(job, nowMs);
     }
   }
+}
+
+function recordResubmit(
+  db: GenerationDatabase,
+  job: GenerationJob,
+  action: ResubmitEvent["action"],
+  reason: ResubmitEvent["reason"],
+): void {
+  const events = db.resubmitEvents ?? [];
+  db.resubmitEvents = events;
+  events.push({ jobId: job.jobId, userId: job.userId, action, reason });
 }
 
 function isProcessing(status: GenerationStatus): boolean {
