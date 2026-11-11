@@ -15,6 +15,7 @@ test("the generation image stays fake, idle, and off the Next.js server", () => 
   assert.match(source, /^ENV VIBODE_FURNITURE_GENERATION_PROVIDER=fake$/m);
   assert.match(source, /^ENV VIBODE_FURNITURE_GENERATION_WORKER_ENABLED=false$/m);
   assert.match(source, /^ENV VIBODE_MESHY_GENERATION_ENABLED=false$/m);
+  assert.match(source, /^ENV VIBODE_FURNITURE_GENERATION_CLEANUP_ENABLED=false$/m);
   assert.match(
     source,
     /^CMD \["node", "--conditions=react-server", "--import", "tsx", "furniture-generation-worker\/src\/index.ts"\]$/m,

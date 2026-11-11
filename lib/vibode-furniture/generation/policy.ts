@@ -22,6 +22,13 @@ export const MESHY_ASSET_HOST = "assets.meshy.ai";
 
 export const MESHY_GENERATION_ENABLED_ENV = "VIBODE_MESHY_GENERATION_ENABLED";
 
+/**
+ * Temporary-object maintenance. Independent of paid generation, the
+ * database live switch, provider mode, and Meshy credentials.
+ * Unset and "false" stay off. Any other value is invalid.
+ */
+export const FURNITURE_GENERATION_CLEANUP_ENABLED_ENV = "VIBODE_FURNITURE_GENERATION_CLEANUP_ENABLED";
+
 /** One in-flight generation for the whole deployment. */
 export const MESHY_MAX_CONCURRENT_GENERATIONS = 1;
 
@@ -84,6 +91,15 @@ export type GenerationAccess = "ok" | "unauthorized" | "disabled";
  */
 export function generationEnabledFromEnv(env: Readonly<Record<string, string | undefined>>): boolean {
   return env[MESHY_GENERATION_ENABLED_ENV] === "true";
+}
+
+export function furnitureGenerationCleanupDecision(
+  env: Readonly<Record<string, string | undefined>>,
+): { ok: true; enabled: boolean } | { ok: false; missing: "cleanup_flag" } {
+  const raw = env[FURNITURE_GENERATION_CLEANUP_ENABLED_ENV];
+  if (raw == null || raw === "" || raw === "false") return { ok: true, enabled: false };
+  if (raw === "true") return { ok: true, enabled: true };
+  return { ok: false, missing: "cleanup_flag" };
 }
 
 export function generationAccessDecision(input: Readonly<{

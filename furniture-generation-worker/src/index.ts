@@ -11,6 +11,7 @@ import {
 import { productionFurnitureGenerationDeps } from "@/lib/vibode-furniture/generation/production.server";
 import { validatePersonalFurnitureGlb } from "@/lib/vibode-furniture/validate.server";
 
+import { runFurnitureGenerationMaintenance } from "./maintenance";
 import { createFurnitureGenerationWorkerRuntime } from "./provider";
 import { runFurnitureGenerationWorker } from "./run";
 import { evaluateFurnitureGenerationWorkerStartup } from "./startup";
@@ -59,19 +60,36 @@ async function main(): Promise<void> {
     provider: runtime.runtime.mode,
     postsEnabled: runtime.runtime.submitAllowed,
     processingEnabled: startup.processingEnabled,
+    cleanupEnabled: startup.cleanupEnabled,
     action: "started",
     jobId: null,
   });
   const code = await runFurnitureGenerationWorker({
-    enabled: () => startup.processingEnabled,
+    enabled: () => startup.processingEnabled || startup.cleanupEnabled,
     once: startup.once,
-    execute: async () => {
-      await cleanupTemporaryGenerationObjects({
-        commands: deps.commands,
-        objects: deps.objects,
-        nowMs: Date.now(),
-      });
-      return executeFurnitureGenerationClaim({
+    execute: () => runFurnitureGenerationMaintenance({
+      cleanupEnabled: startup.cleanupEnabled,
+      processingEnabled: startup.processingEnabled,
+      cleanup: async () => {
+        const cleaned = await cleanupTemporaryGenerationObjects({
+          commands: deps.commands,
+          objects: deps.objects,
+          nowMs: Date.now(),
+          log,
+        });
+        log("cleanup_pass", {
+          processed: cleaned.processed,
+          deleted: cleaned.deleted,
+          skipped: cleaned.skipped,
+          failed: cleaned.failed,
+          retainedForReview: cleaned.retainedForReview,
+          action: "cleanup",
+          jobId: null,
+        });
+        return cleaned;
+      },
+      sweep: () => deps.commands.sweep(Date.now()),
+      claim: () => executeFurnitureGenerationClaim({
         commands: deps.commands,
         objects: deps.objects,
         adapter: runtime.runtime.adapter,
@@ -79,8 +97,8 @@ async function main(): Promise<void> {
         validate: validatePersonalFurnitureGlb,
         nowMs: Date.now(),
         submitAllowed: runtime.runtime.submitAllowed,
-      });
-    },
+      }),
+    }),
     pollIntervalMs: startup.pollIntervalMs,
     shouldStop: () => stop,
     sleep: (ms) => interruptibleSleep(ms, () => stop),

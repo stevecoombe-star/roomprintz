@@ -17,15 +17,18 @@
 # Disabled installation needs only runtime Supabase credentials:
 #   SUPABASE_URL
 #   SUPABASE_SERVICE_ROLE_KEY
-# Provider stays fake, processing stays off, and generation stays off.
-# Do not set MESHY_API_KEY. Do not set the provider to meshy, do not set
-# either generation switch to true, and do not grant a paid submission
-# while installing the service. A key added later does not select real mode.
+# Provider stays fake, processing stays off, generation stays off, and
+# temporary cleanup stays off. Do not set MESHY_API_KEY. Do not set the
+# provider to meshy, do not set either generation switch to true, do not
+# set cleanup to true, and do not grant a paid submission while installing
+# the service. A key added later does not select real mode.
 #
 # Processing runs only when VIBODE_FURNITURE_GENERATION_WORKER_ENABLED is
-# exactly "true". Real mode also requires the provider to be exactly
-# "meshy", VIBODE_MESHY_GENERATION_ENABLED to be exactly "true", and
-# MESHY_API_KEY at runtime. Pass those only in a later, separate approval.
+# exactly "true". Cleanup runs only when
+# VIBODE_FURNITURE_GENERATION_CLEANUP_ENABLED is exactly "true". Real mode
+# also requires the provider to be exactly "meshy",
+# VIBODE_MESHY_GENERATION_ENABLED to be exactly "true", and MESHY_API_KEY
+# at runtime. Pass those only in a later, separate approval.
 #
 # tsx is a devDependency and this process runs TypeScript, matching the
 # other workers. Install the lockfile before NODE_ENV=production so the
@@ -43,4 +46,5 @@ ENV NODE_ENV=production
 ENV VIBODE_FURNITURE_GENERATION_PROVIDER=fake
 ENV VIBODE_FURNITURE_GENERATION_WORKER_ENABLED=false
 ENV VIBODE_MESHY_GENERATION_ENABLED=false
+ENV VIBODE_FURNITURE_GENERATION_CLEANUP_ENABLED=false
 CMD ["node", "--conditions=react-server", "--import", "tsx", "furniture-generation-worker/src/index.ts"]

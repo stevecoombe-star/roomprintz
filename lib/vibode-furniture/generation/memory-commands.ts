@@ -36,7 +36,6 @@ import {
   type GenerationJob,
 } from "./engine";
 import { generationObjectAllowed } from "./objects";
-import { pathOwnedBy } from "./output";
 import { generationCandidateStillPreviewable } from "./preview-access";
 
 const CLAIMABLE = new Set(["reserved", "submitting", "ambiguous", "running", "ingesting", "needs_review"]);
@@ -264,49 +263,23 @@ export function createMemoryGenerationCommands(
       releaseExpiredGenerationHolds(db, nowMs);
     },
     async listTemporaryObjects(limit) {
-      const objects: TemporaryGenerationObject[] = [];
-      for (const input of db.inputs) {
-        if (input.purgedAtMs != null || input.expiresAtMs > clock.nowMs) continue;
-        if (!generationObjectAllowed(input.storageBucket, input.storageObjectPath, input.userId)) continue;
-        objects.push({
-          kind: "input",
-          bucket: input.storageBucket,
-          path: input.storageObjectPath,
-          jobId: input.jobId,
-          userId: input.userId,
-          slot: input.slot,
-        });
-      }
-      for (const job of db.jobs) {
-        if (job.savedAssetId || !job.outputBucket || !job.outputObjectPath) continue;
-        if (job.status !== "discarded" && job.status !== "expired" && job.status !== "failed" && job.status !== "cancelled") {
-          continue;
-        }
-        if (!generationObjectAllowed(job.outputBucket, job.outputObjectPath, job.userId)) continue;
-        objects.push({
-          kind: "candidate",
-          bucket: job.outputBucket,
-          path: job.outputObjectPath,
-          jobId: job.jobId,
-          userId: job.userId,
-          slot: null,
-        });
-      }
-      return objects.slice(0, Math.max(1, Math.min(100, limit)));
+      return (await this.listCleanupBatch(limit)).objects;
+    },
+    async listCleanupBatch(limit) {
+      return selectCleanupBatch(db, clock.nowMs, limit);
     },
     async markTemporaryPurged(object) {
       if (object.kind === "input") {
-        const row = db.inputs.find((item) => item.jobId === object.jobId && item.slot === object.slot);
-        if (!row || row.storageObjectPath !== object.path) return false;
+        const row = db.inputs.find((item) => item.jobId === object.jobId && item.slot === object.slot && item.userId === object.userId);
+        const job = db.jobs.find((item) => item.jobId === object.jobId && item.userId === object.userId);
+        if (!row || !job || row.storageObjectPath !== object.path || row.expiresAtMs > clock.nowMs) return false;
+        if (!INPUT_PURGE_STATUSES.has(job.status)) return false;
+        if (!generationObjectAllowed(row.storageBucket, row.storageObjectPath, row.userId)) return false;
         row.purgedAtMs = clock.nowMs;
         return true;
       }
-      const job = db.jobs.find((item) => item.jobId === object.jobId);
-      if (!job || job.savedAssetId || job.outputObjectPath !== object.path) return false;
-      if (job.status !== "discarded" && job.status !== "expired" && job.status !== "failed" && job.status !== "cancelled") {
-        return false;
-      }
-      if (!pathOwnedBy(object.path, job.userId) || object.path.includes("/assets/")) return false;
+      const job = db.jobs.find((item) => item.jobId === object.jobId && item.userId === object.userId);
+      if (!job || !candidatePurgeable(job) || job.outputObjectPath !== object.path) return false;
       job.outputBucket = null;
       job.outputObjectPath = null;
       job.outputSha256 = null;
@@ -314,6 +287,57 @@ export function createMemoryGenerationCommands(
       return true;
     },
   };
+}
+
+const INPUT_PURGE_STATUSES = new Set(["ready", "saved", "failed", "discarded", "expired", "cancelled"]);
+const CANDIDATE_TERMINAL_STATUSES = new Set(["discarded", "expired", "failed", "cancelled"]);
+const CLEANUP_BATCH_LIMIT = 50;
+
+function selectCleanupBatch(db: GenerationDatabase, nowMs: number, limit: number): {
+  objects: TemporaryGenerationObject[];
+  retainedForReview: number;
+} {
+  const bounded = limit < 1 || limit > CLEANUP_BATCH_LIMIT ? CLEANUP_BATCH_LIMIT : limit;
+  const objects: TemporaryGenerationObject[] = [];
+  let retainedForReview = 0;
+  for (const input of db.inputs) {
+    if (input.purgedAtMs != null || input.expiresAtMs > nowMs) continue;
+    const job = db.jobs.find((item) => item.jobId === input.jobId && item.userId === input.userId);
+    if (!job || !generationObjectAllowed(input.storageBucket, input.storageObjectPath, input.userId)) continue;
+    if (job.status === "needs_review") {
+      retainedForReview += 1;
+      continue;
+    }
+    if (!INPUT_PURGE_STATUSES.has(job.status)) continue;
+    objects.push({
+      kind: "input",
+      bucket: input.storageBucket,
+      path: input.storageObjectPath,
+      jobId: input.jobId,
+      userId: input.userId,
+      slot: input.slot,
+    });
+  }
+  for (const job of db.jobs) {
+    if (!candidatePurgeable(job)) continue;
+    objects.push({
+      kind: "candidate",
+      bucket: job.outputBucket ?? "",
+      path: job.outputObjectPath ?? "",
+      jobId: job.jobId,
+      userId: job.userId,
+      slot: null,
+    });
+  }
+  return { objects: objects.slice(0, bounded), retainedForReview };
+}
+
+function candidatePurgeable(job: GenerationJob): boolean {
+  if (!job.outputBucket || !job.outputObjectPath) return false;
+  if (!generationObjectAllowed(job.outputBucket, job.outputObjectPath, job.userId)) return false;
+  if (job.outputObjectPath.includes("/assets/")) return false;
+  if (job.status === "saved" && job.savedAssetId) return true;
+  return job.savedAssetId == null && CANDIDATE_TERMINAL_STATUSES.has(job.status);
 }
 
 function publicJob(job: GenerationJob): PublicGenerationJob {

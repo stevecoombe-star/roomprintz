@@ -379,14 +379,10 @@ export function createSqlGenerationCommands(rpc: PositionalGenerationRpc): Gener
       await rpc("sweep_vibode_furniture_generation_holds", []);
     },
     async listTemporaryObjects(limit) {
-      const data = asRecord(await rpc("list_vibode_furniture_generation_temporary_objects", [limit]));
-      if (!data || data.ok !== true || !Array.isArray(data.objects)) return [];
-      const objects: TemporaryGenerationObject[] = [];
-      for (const item of data.objects) {
-        const parsed = temporaryFrom(item);
-        if (parsed) objects.push(parsed);
-      }
-      return objects;
+      return (await readCleanupBatch(rpc, limit)).objects;
+    },
+    async listCleanupBatch(limit) {
+      return readCleanupBatch(rpc, limit);
     },
     async markTemporaryPurged(object) {
       const data = asRecord(await rpc("mark_vibode_furniture_generation_temporary_object_purged", [
@@ -558,6 +554,26 @@ function inputFrom(value: unknown): StoredGenerationInput | null {
     byteSize,
     widthPx,
     heightPx,
+  };
+}
+
+async function readCleanupBatch(
+  rpc: PositionalGenerationRpc,
+  limit: number,
+): Promise<{ objects: TemporaryGenerationObject[]; retainedForReview: number }> {
+  const data = asRecord(await rpc("list_vibode_furniture_generation_temporary_objects", [limit]));
+  if (!data || data.ok !== true || !Array.isArray(data.objects)) {
+    return { objects: [], retainedForReview: 0 };
+  }
+  const objects: TemporaryGenerationObject[] = [];
+  for (const item of data.objects) {
+    const parsed = temporaryFrom(item);
+    if (parsed) objects.push(parsed);
+  }
+  const retained = data.retained_for_review;
+  return {
+    objects,
+    retainedForReview: typeof retained === "number" && Number.isInteger(retained) && retained >= 0 ? retained : 0,
   };
 }
 

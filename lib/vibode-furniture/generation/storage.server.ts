@@ -35,7 +35,10 @@ export function createSupabaseGenerationObjectStore(supabase: SupabaseClient): B
     },
     async remove(input) {
       if (!generationObjectAllowed(input.bucket, input.path, ownerFromPath(input.path))) return;
-      await supabase.storage.from(input.bucket).remove([input.path]);
+      const { error } = await supabase.storage.from(input.bucket).remove([input.path]);
+      if (!error) return;
+      if (/not found|does not exist|no such|404|already deleted/i.test(error.message)) return;
+      throw new Error("generation_object_delete_failed");
     },
     async sign(input) {
       if (!generationObjectAllowed(input.bucket, input.path, input.ownerUserId)) return null;

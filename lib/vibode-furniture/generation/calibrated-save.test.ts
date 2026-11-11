@@ -648,17 +648,23 @@ test("a ready candidate becomes one permanent scaled asset", async () => {
   assert.equal(ctx.job.status, "saved");
   assert.equal(ctx.job.outputSha256, candidateSha);
   assert.equal(ctx.job.outputExpiresAtMs, EXPIRES);
+  const candidatePath = ctx.job.outputObjectPath;
+  assert.ok(candidatePath);
   const temporary = await ctx.commands.listTemporaryObjects(10);
-  assert.equal(temporary.some((item) => item.kind === "candidate"), false);
+  assert.equal(temporary.some((item) => item.kind === "candidate" && item.path.endsWith("/candidate.glb")), true);
+  assert.equal(temporary.some((item) => item.path.includes("/assets/")), false);
   assert.equal(await ctx.commands.markTemporaryPurged({
     kind: "candidate",
     bucket: PERSONAL_FURNITURE_BUCKET,
-    path: ctx.job.outputObjectPath!,
+    path: candidatePath,
     jobId: HEIGHT_JOB,
     userId: USER_A,
     slot: null,
-  }), false);
-  await ctx.inner.remove({ bucket: ctx.job.outputBucket!, path: ctx.job.outputObjectPath! });
+  }), true);
+  assert.equal(ctx.job.outputObjectPath, null);
+  assert.equal(ctx.job.status, "saved");
+  assert.equal(ctx.job.savedAssetId, saved.item.assetId);
+  await ctx.inner.remove({ bucket: PERSONAL_FURNITURE_BUCKET, path: candidatePath });
   const afterCleanup = await saveCalibratedFurnitureCandidate(ctx.request());
   assert.equal(afterCleanup.ok, true);
   if (!afterCleanup.ok) return;

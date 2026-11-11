@@ -242,5 +242,9 @@ export type GenerationCommands = {
   }>): Promise<GenerationCommandResult<{ status: string }>>;
   sweep(nowMs: number): Promise<void>;
   listTemporaryObjects(limit: number): Promise<readonly TemporaryGenerationObject[]>;
+  listCleanupBatch(limit: number): Promise<{
+    objects: readonly TemporaryGenerationObject[];
+    retainedForReview: number;
+  }>;
   markTemporaryPurged(object: TemporaryGenerationObject): Promise<boolean>;
 };

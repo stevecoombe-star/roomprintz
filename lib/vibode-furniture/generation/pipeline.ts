@@ -245,21 +245,56 @@ export async function executeFurnitureGenerationClaim(input: {
   return pollClaim(input, claim);
 }
 
+export type CleanupPassResult = {
+  removed: number;
+  processed: number;
+  deleted: number;
+  skipped: number;
+  failed: number;
+  retainedForReview: number;
+};
+
+const CLEANUP_BATCH_LIMIT = 50;
+
 export async function cleanupTemporaryGenerationObjects(input: {
   commands: GenerationCommands;
   objects: BucketObjectStore;
   nowMs: number;
-}): Promise<{ removed: number }> {
+  log?: (event: string, fields: Record<string, string | number | boolean | null>) => void;
+}): Promise<CleanupPassResult> {
   await input.commands.sweep(input.nowMs);
-  const listed = await input.commands.listTemporaryObjects(50);
-  let removed = 0;
-  for (const object of listed) {
-    if (!cleanupAllowed(object)) continue;
-    await input.objects.remove({ bucket: object.bucket, path: object.path });
+  const batch = await input.commands.listCleanupBatch(CLEANUP_BATCH_LIMIT);
+  let deleted = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const object of batch.objects) {
+    if (!cleanupAllowed(object)) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      await input.objects.remove({ bucket: object.bucket, path: object.path });
+    } catch (error) {
+      failed += 1;
+      input.log?.("cleanup_object_failed", {
+        errorClass: cleanupErrorClass(error),
+        action: "failed",
+        jobId: null,
+      });
+      continue;
+    }
     const marked = await input.commands.markTemporaryPurged(object);
-    if (marked) removed += 1;
+    if (marked) deleted += 1;
+    else skipped += 1;
   }
-  return { removed };
+  return {
+    removed: deleted,
+    processed: batch.objects.length,
+    deleted,
+    skipped,
+    failed,
+    retainedForReview: batch.retainedForReview,
+  };
 }
 
 async function prepareAndCommit(
@@ -557,7 +592,11 @@ async function pollClaim(
     nowMs: input.nowMs,
   });
   if (!recorded.ok) {
-    await input.objects.remove({ bucket: candidateBucket(), path });
+    try {
+      await input.objects.remove({ bucket: candidateBucket(), path });
+    } catch {
+      // The candidate was not recorded. A later maintenance pass can retry it.
+    }
     return { ok: true, action: "waiting", jobId: claim.jobId };
   }
   return { ok: true, action: "ready", jobId: claim.jobId };
@@ -673,4 +712,11 @@ function reserveMessage(code: string): string {
 
 function cleanupAllowed(object: TemporaryGenerationObject): boolean {
   return generationObjectAllowed(object.bucket, object.path, object.userId) && !object.path.includes("/assets/");
+}
+
+function cleanupErrorClass(error: unknown): string {
+  if (error instanceof Error && error.message === "generation_object_delete_failed") {
+    return "generation_object_delete_failed";
+  }
+  return "cleanup_failed";
 }
