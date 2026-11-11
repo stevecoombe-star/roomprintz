@@ -35,7 +35,7 @@ import { generationObjectAllowed } from "./objects";
 import { pathOwnedBy } from "./output";
 import { generationCandidateStillPreviewable } from "./preview-access";
 
-const ACTIVE = new Set(["reserved", "submitting", "ambiguous", "running", "ingesting", "ready", "needs_review"]);
+const CLAIMABLE = new Set(["reserved", "submitting", "ambiguous", "running", "ingesting", "needs_review"]);
 
 export function createMemoryGenerationCommands(
   db: GenerationDatabase,
@@ -149,7 +149,7 @@ export function createMemoryGenerationCommands(
     },
     async claimNext(submitAllowed, nowMs) {
       const job = db.jobs
-        .filter((item) => ACTIVE.has(item.status))
+        .filter((item) => CLAIMABLE.has(item.status))
         .filter((item) => item.claimExpiresAtMs == null || item.claimExpiresAtMs <= nowMs)
         .sort((left, right) => left.createdAtMs - right.createdAtMs)[0];
       if (!job) return { ok: true, outcome: "idle" };

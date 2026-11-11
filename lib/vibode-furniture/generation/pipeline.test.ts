@@ -276,8 +276,12 @@ test("a single image reaches a private preview without a second post", async () 
   );
   assert.equal(stranger.status, 404);
 
-  const blocked = await postFurnitureGeneration(request("idem-key-0002", bytes), ctx.deps);
-  assert.equal(blocked.status, 409);
+  const next = await postFurnitureGeneration(request("idem-key-0002", bytes), ctx.deps);
+  assert.equal(next.status, 200);
+  assert.equal((next.body as { created: boolean }).created, true);
+  assert.equal(ctx.db.jobs[0]?.status, "ready");
+  assert.equal(ctx.db.controls.creditsConsumed, 20);
+  assert.equal(provider.posts(), 1);
 
   const discarded = await postFurnitureGenerationDiscard(
     new Request("https://vibode.local/discard", {

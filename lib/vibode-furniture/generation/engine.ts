@@ -3,8 +3,10 @@
  * lease, and retry rules. A create that already contacted Meshy is never
  * submitted again after an ambiguous create. Read-only reconciliation may
  * bind a task Meshy already created. An inconclusive list becomes
- * needs_review. A later POST requires an operator to accept the
- * duplicate-charge risk. An HTTP timeout is not proof that Meshy created nothing.
+ * needs_review. A ready or needs_review job does not occupy the single
+ * processing slot. needs_review still blocks that user and keeps its holds.
+ * A later POST requires an operator to accept the duplicate-charge risk.
+ * An HTTP timeout is not proof that Meshy created nothing.
  */
 
 import { randomUUID } from "node:crypto";
@@ -42,12 +44,17 @@ import {
 import { meshyTaskNameForJob } from "./payload";
 import type { MeshyTaskStatus } from "./meshy-task";
 
-export const ACTIVE_GENERATION_STATUSES = [
+export const PROCESSING_GENERATION_STATUSES = [
   "reserved",
   "submitting",
   "ambiguous",
   "running",
   "ingesting",
+] as const;
+
+/** Non-terminal statuses. `ready` and `needs_review` are not the processing slot. */
+export const ACTIVE_GENERATION_STATUSES = [
+  ...PROCESSING_GENERATION_STATUSES,
   "ready",
   "needs_review",
 ] as const;
@@ -169,7 +176,7 @@ export type ClaimResult =
 
 export type MutationResult =
   | { ok: true; job: GenerationJob }
-  | { ok: false; code: "not_found" | "lease_held" | "not_claimable" | "task_immutable" | "needs_reconciliation" };
+  | { ok: false; code: "not_found" | "lease_held" | "not_claimable" | "task_immutable" | "needs_reconciliation" | "concurrency_limited" };
 
 const KEY = /^[a-z0-9-]{8,80}$/;
 const SHA = /^[a-f0-9]{64}$/;
@@ -208,7 +215,10 @@ export function reserveGeneration(db: GenerationDatabase, input: ReserveInput): 
   if (estimate == null || estimate !== input.reservedCredits) return { ok: false, code: "unsupported_settings" };
   releaseExpiredGenerationHolds(db, input.nowMs);
   if (!db.controls.liveEnabled) return { ok: false, code: "disabled" };
-  if (db.jobs.some((job) => isActive(job.status))) return { ok: false, code: "concurrency_limited" };
+  if (db.jobs.some((job) => job.userId === input.userId && userOccupiesGeneration(job.status))) {
+    return { ok: false, code: "concurrency_limited" };
+  }
+  if (db.jobs.some((job) => isProcessing(job.status))) return { ok: false, code: "concurrency_limited" };
   if (db.controls.creditsReserved + db.controls.creditsConsumed + estimate > db.controls.creditCeiling) {
     return { ok: false, code: "quota_exhausted" };
   }
@@ -328,6 +338,13 @@ export function bindGenerationTask(
   }
   const taken = db.jobs.some((other) => other.jobId !== job.job.jobId && other.providerTaskId === input.providerTaskId);
   if (taken) return { ok: false, code: "task_immutable" };
+  if (job.job.status === "needs_review" && db.jobs.some((other) => other.jobId !== job.job.jobId && isProcessing(other.status))) {
+    job.job.providerTaskId = input.providerTaskId;
+    job.job.providerStatus = input.providerStatus;
+    releaseClaim(job.job);
+    touch(job.job, input.nowMs);
+    return { ok: false, code: "concurrency_limited" };
+  }
   job.job.providerTaskId = input.providerTaskId;
   job.job.providerStatus = input.providerStatus;
   job.job.status = "running";
@@ -836,8 +853,12 @@ export function releaseExpiredGenerationHolds(db: GenerationDatabase, nowMs: num
   }
 }
 
-function isActive(status: GenerationStatus): boolean {
-  return (ACTIVE_GENERATION_STATUSES as readonly string[]).includes(status);
+function isProcessing(status: GenerationStatus): boolean {
+  return (PROCESSING_GENERATION_STATUSES as readonly string[]).includes(status);
+}
+
+function userOccupiesGeneration(status: GenerationStatus): boolean {
+  return isProcessing(status) || status === "needs_review";
 }
 
 function slotsMatchOperation(operation: MeshyGenerationOperation, slots: readonly FurnitureViewSlot[]): boolean {
