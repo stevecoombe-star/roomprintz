@@ -15,6 +15,8 @@ import {
   authorizeGenerationResubmit,
   bindGenerationTask,
   claimGeneration,
+  commitGenerationSubmission,
+  prepareGenerationLease,
   discardGenerationCandidate,
   dropGenerationClaim,
   failGenerationBeforeProvider,
@@ -57,6 +59,16 @@ export function createMemoryGenerationCommands(
     },
     async failBeforeProvider(input) {
       failGenerationBeforeProvider(db, input);
+    },
+    async failPreparedInput(input) {
+      const failed = failGenerationBeforeProvider(db, input);
+      if (!failed.ok) return { ok: false, code: failed.code };
+      return { ok: true, status: failed.job.status };
+    },
+    async commitSubmission(input) {
+      const committed = commitGenerationSubmission(db, input);
+      if (!committed.ok || !committed.job.claimNonce) return { ok: false, code: committed.ok ? "not_claimable" : committed.code };
+      return { ok: true, claimNonce: committed.job.claimNonce, status: committed.job.status };
     },
     async readOwner(userId, jobId) {
       const job = readGeneration(db, userId, jobId);
@@ -156,22 +168,21 @@ export function createMemoryGenerationCommands(
       if (job.status === "reserved" && (submitAllowed !== true || db.controls.liveEnabled !== true)) {
         return { ok: true, outcome: "disabled" };
       }
-      if (
-        job.status === "reserved"
-        && db.controls.paidSubmissionsUsed >= db.controls.paidSubmissionsAuthorized
-      ) {
-        return { ok: false, code: "submission_not_authorized" };
+      const claimed = job.status === "reserved"
+        ? prepareGenerationLease(db, { userId: job.userId, jobId: job.jobId, nowMs })
+        : claimGeneration(db, {
+          userId: job.userId,
+          jobId: job.jobId,
+          nowMs,
+          intent: "follow",
+        });
+      if (!claimed.ok) {
+        if (claimed.code === "submission_not_authorized") return { ok: false, code: claimed.code };
+        return { ok: true, outcome: "idle" };
       }
-      const claimed = claimGeneration(db, {
-        userId: job.userId,
-        jobId: job.jobId,
-        nowMs,
-        intent: job.status === "reserved" ? "submit" : "follow",
-      });
-      if (!claimed.ok || !claimed.job.claimNonce) return { ok: true, outcome: "idle" };
+      if (!claimed.job.claimNonce) return { ok: true, outcome: "idle" };
       const view = claimedView(claimed.job, claimed.purpose);
       if (!view) return { ok: false, code: "not_claimable" };
-      if (claimed.purpose === "submit") db.controls.paidSubmissionsUsed += 1;
       return { ok: true, outcome: "claimed", claim: view };
     },
     async listInputs(userId, jobId) {
@@ -300,7 +311,7 @@ function publicJob(job: GenerationJob): PublicGenerationJob {
 
 function claimedView(
   job: GenerationJob,
-  purpose: "submit" | "poll" | "reconcile",
+  purpose: "prepare" | "submit" | "poll" | "reconcile",
 ): ClaimedGeneration | null {
   if (!job.claimNonce) return null;
   return {
@@ -312,6 +323,7 @@ function claimedView(
     providerTaskId: job.providerTaskId,
     providerTaskName: job.providerTaskName,
     providerContactedAtMs: job.providerContactedAtMs,
+    createdAtMs: job.createdAtMs,
     settings: job.settings,
     imageSlots: job.imageSlots,
   };

@@ -171,12 +171,12 @@ export type ReserveResult =
   | { ok: false; code: "disabled" | "unsupported_settings" | "quota_exhausted" | "concurrency_limited" | "idempotency_conflict" | "invalid_input" };
 
 export type ClaimResult =
-  | { ok: true; purpose: "submit" | "poll" | "reconcile"; job: GenerationJob }
-  | { ok: false; code: "not_found" | "lease_held" | "not_claimable" | "needs_reconciliation" };
+  | { ok: true; purpose: "prepare" | "submit" | "poll" | "reconcile"; job: GenerationJob }
+  | { ok: false; code: "not_found" | "lease_held" | "not_claimable" | "needs_reconciliation" | "submission_not_authorized" };
 
 export type MutationResult =
   | { ok: true; job: GenerationJob }
-  | { ok: false; code: "not_found" | "lease_held" | "not_claimable" | "task_immutable" | "needs_reconciliation" | "concurrency_limited" };
+  | { ok: false; code: "not_found" | "lease_held" | "not_claimable" | "task_immutable" | "needs_reconciliation" | "concurrency_limited" | "submission_not_authorized" | "unsupported_settings" | "disabled" };
 
 const KEY = /^[a-z0-9-]{8,80}$/;
 const SHA = /^[a-f0-9]{64}$/;
@@ -306,6 +306,57 @@ export function claimGeneration(
   hold(job, input.nowMs);
   touch(job, input.nowMs);
   return { ok: true, purpose: "submit", job };
+}
+
+export function prepareGenerationLease(
+  db: GenerationDatabase,
+  input: { userId: string; jobId: string; nowMs: number },
+): ClaimResult {
+  const job = readGeneration(db, input.userId, input.jobId);
+  if (!job) return { ok: false, code: "not_found" };
+  if (leaseFresh(job, input.nowMs)) return { ok: false, code: "lease_held" };
+  if (job.status !== "reserved" || job.providerTaskId) return { ok: false, code: "not_claimable" };
+  if (job.attemptCount >= MESHY_MAX_SUBMIT_ATTEMPTS) return { ok: false, code: "not_claimable" };
+  if (job.attemptCount > 0 && !job.resubmitAuthorized) return { ok: false, code: "not_claimable" };
+  if (db.controls.paidSubmissionsUsed >= db.controls.paidSubmissionsAuthorized) {
+    return { ok: false, code: "submission_not_authorized" };
+  }
+  hold(job, input.nowMs);
+  touch(job, input.nowMs);
+  return { ok: true, purpose: "prepare", job };
+}
+
+export function commitGenerationSubmission(
+  db: GenerationDatabase,
+  input: { userId: string; jobId: string; claimNonce: string; nowMs: number },
+): MutationResult {
+  const held = ownedLease(db, input);
+  if (!held.ok) return held;
+  const job = held.job;
+  if (job.status !== "reserved" || job.providerTaskId) return { ok: false, code: "not_claimable" };
+  if (job.attemptCount >= MESHY_MAX_SUBMIT_ATTEMPTS) return { ok: false, code: "not_claimable" };
+  if (job.attemptCount > 0 && !job.resubmitAuthorized) return { ok: false, code: "not_claimable" };
+  if (!db.controls.liveEnabled) {
+    releaseClaim(job);
+    touch(job, input.nowMs);
+    return { ok: false, code: "disabled" };
+  }
+  if (db.controls.paidSubmissionsUsed >= db.controls.paidSubmissionsAuthorized) {
+    releaseClaim(job);
+    touch(job, input.nowMs);
+    return { ok: false, code: "submission_not_authorized" };
+  }
+  db.controls.paidSubmissionsUsed += 1;
+  job.resubmitAuthorized = false;
+  job.attemptCount += 1;
+  job.providerContactedAtMs = input.nowMs;
+  job.absenceReconciledAtMs = null;
+  job.status = "submitting";
+  job.errorClass = null;
+  job.errorCode = null;
+  hold(job, input.nowMs);
+  touch(job, input.nowMs);
+  return { ok: true, job };
 }
 
 export function markGenerationAmbiguous(
@@ -662,10 +713,17 @@ export function attachGenerationInput(
 
 export function failGenerationBeforeProvider(
   db: GenerationDatabase,
-  input: { userId: string; jobId: string; nowMs: number },
+  input: { userId: string; jobId: string; nowMs: number; claimNonce?: string },
 ): MutationResult {
   const job = readGeneration(db, input.userId, input.jobId);
   if (!job) return { ok: false, code: "not_found" };
+  if (input.claimNonce) {
+    if (!job.claimNonce || job.claimNonce !== input.claimNonce || !leaseFresh(job, input.nowMs)) {
+      return { ok: false, code: "lease_held" };
+    }
+  } else if (leaseFresh(job, input.nowMs)) {
+    return { ok: false, code: "lease_held" };
+  }
   if (job.status !== "reserved" || job.providerContactedAtMs != null || job.providerTaskId) {
     return { ok: false, code: "not_claimable" };
   }
@@ -673,6 +731,7 @@ export function failGenerationBeforeProvider(
   job.status = "failed";
   job.errorClass = "input_storage_failed";
   job.errorCode = "input_storage_failed";
+  releaseClaim(job);
   touch(job, input.nowMs);
   return { ok: true, job };
 }

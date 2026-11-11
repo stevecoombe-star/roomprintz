@@ -460,12 +460,27 @@ test("a second worker cannot post while a submit claim is outstanding", async ()
   await postFurnitureGeneration(request("idem-key-0001", await png()), ctx.deps);
   const first = await ctx.commands.claimNext(true, ctx.clock.nowMs);
   assert.equal(first.ok, true);
-  if (first.ok) assert.equal(first.outcome, "claimed");
+  if (!first.ok || first.outcome !== "claimed") assert.fail("expected a preparation claim");
+  assert.equal(first.claim.purpose, "prepare");
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 0);
+  assert.equal(ctx.db.jobs[0]?.status, "reserved");
   const provider = scripted([response(202, { result: TASK_ID })]);
   const blocked = await runPass(ctx, provider, okGlb);
   assert.equal(blocked.action, "idle");
   assert.equal(provider.posts(), 0);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 0);
+  const committed = await ctx.commands.commitSubmission({
+    userId: first.claim.userId,
+    jobId: first.claim.jobId,
+    claimNonce: first.claim.claimNonce,
+    nowMs: ctx.clock.nowMs,
+  });
+  assert.equal(committed.ok, true);
   assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
+  assert.equal(ctx.db.jobs[0]?.status, "submitting");
+  const duringSubmit = await runPass(ctx, provider, okGlb);
+  assert.equal(duringSubmit.action, "idle");
+  assert.equal(provider.posts(), 0);
   const job = ctx.db.jobs[0];
   assert.ok(job);
   job.claimExpiresAtMs = ctx.clock.nowMs - 1;

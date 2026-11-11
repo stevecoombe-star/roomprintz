@@ -51,6 +51,14 @@ export const MESHY_MIN_OVERALL_WAIT_MS = 60 * 60 * 1000;
 
 export const MESHY_CLAIM_LEASE_MS = 2 * 60 * 1000;
 
+/**
+ * A reserved job may still be receiving its private photo. The worker
+ * waits this long before treating a missing input as a definite failure.
+ * The create request attaches the photo before it returns, so this only
+ * covers a worker that starts during that upload.
+ */
+export const GENERATION_INPUT_UPLOAD_GRACE_MS = 2 * 60 * 1000;
+
 /** Reference photos are temporary. They are not personal furniture assets. */
 export const GENERATION_INPUT_TTL_MS = 24 * 60 * 60 * 1000;
 

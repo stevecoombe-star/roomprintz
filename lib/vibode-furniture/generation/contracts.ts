@@ -59,12 +59,13 @@ export type StoredGenerationInput = Readonly<{
 export type ClaimedGeneration = Readonly<{
   userId: string;
   jobId: string;
-  purpose: "submit" | "poll" | "reconcile";
+  purpose: "prepare" | "submit" | "poll" | "reconcile";
   claimNonce: string;
   operation: MeshyGenerationOperation;
   providerTaskId: string | null;
   providerTaskName: string;
   providerContactedAtMs: number | null;
+  createdAtMs: number | null;
   settings: FurnitureGeneratorSettings;
   imageSlots: readonly FurnitureViewSlot[];
 }>;
@@ -119,7 +120,19 @@ export type GenerationCommands = {
     sha256: string;
     nowMs: number;
   }>): Promise<GenerationCommandResult<Record<never, never>>>;
-  failBeforeProvider(input: Readonly<{ userId: string; jobId: string; nowMs: number }>): Promise<void>;
+  failBeforeProvider(input: Readonly<{ userId: string; jobId: string; nowMs: number; claimNonce?: string }>): Promise<void>;
+  failPreparedInput(input: Readonly<{
+    userId: string;
+    jobId: string;
+    claimNonce: string;
+    nowMs: number;
+  }>): Promise<GenerationCommandResult<{ status: string }>>;
+  commitSubmission(input: Readonly<{
+    userId: string;
+    jobId: string;
+    claimNonce: string;
+    nowMs: number;
+  }>): Promise<GenerationCommandResult<{ claimNonce: string; status: string }>>;
   readOwner(userId: string, jobId: string): Promise<GenerationCommandResult<{ job: PublicGenerationJob }>>;
   previewSource(userId: string, jobId: string): Promise<GenerationCommandResult<{ bucket: string; path: string }>>;
   readSaveSource(userId: string, jobId: string): Promise<GenerationCommandResult<GenerationSaveSource>>;

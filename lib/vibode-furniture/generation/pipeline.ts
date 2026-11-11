@@ -1,7 +1,8 @@
 /**
- * Executable generation pipeline. One automatic provider POST is performed
- * only after a submit claim. An ambiguous result is reconciled from the
- * task list. This module does not read provider credentials.
+ * Executable generation pipeline. A reserved job is prepared under a lease
+ * before any paid attempt is recorded. The provider POST happens only after
+ * that commit, and only with the new submit lease. An ambiguous result is
+ * reconciled from the task list. This module does not read provider credentials.
  */
 
 import { createHash } from "node:crypto";
@@ -40,8 +41,8 @@ import {
   intakeProviderGlb,
   type GenerationDownloader,
 } from "./output";
-import { buildMeshyCreateRequest } from "./payload";
-import { GENERATION_INPUT_BUCKET, generationAccessDecision } from "./policy";
+import { buildMeshyCreateRequest, type MeshyCreateRequest } from "./payload";
+import { GENERATION_INPUT_BUCKET, GENERATION_INPUT_UPLOAD_GRACE_MS, generationAccessDecision } from "./policy";
 import { betaFrontPhotoBytesAllowed } from "./transport";
 import { generationRequestSha256 } from "./workflow";
 
@@ -235,6 +236,7 @@ export async function executeFurnitureGenerationClaim(input: {
   }
   if (claimed.outcome !== "claimed") return { ok: true, action: claimed.outcome, jobId: null };
   const claim = claimed.claim;
+  if (claim.purpose === "prepare") return prepareAndCommit(input, claim);
   if (claim.purpose === "submit") return submitClaim(input, claim);
   if (claim.purpose === "reconcile") return reconcileClaim(input, claim);
   return pollClaim(input, claim);
@@ -257,6 +259,68 @@ export async function cleanupTemporaryGenerationObjects(input: {
   return { removed };
 }
 
+async function prepareAndCommit(
+  input: {
+    commands: GenerationCommands;
+    objects: BucketObjectStore;
+    adapter: MeshyAdapter;
+    nowMs: number;
+  },
+  claim: ClaimedGeneration,
+): Promise<GenerationPass> {
+  const prepared = await classifyPreparation(input.commands, input.objects, claim, input.nowMs);
+  if (prepared.kind === "waiting" || prepared.kind === "transient") {
+    await input.commands.dropClaim({
+      userId: claim.userId,
+      jobId: claim.jobId,
+      claimNonce: claim.claimNonce,
+      nowMs: input.nowMs,
+    });
+    return { ok: true, action: "waiting", jobId: claim.jobId };
+  }
+  if (prepared.kind === "invalid") {
+    const failed = await input.commands.failPreparedInput({
+      userId: claim.userId,
+      jobId: claim.jobId,
+      claimNonce: claim.claimNonce,
+      nowMs: input.nowMs,
+    });
+    if (!failed.ok) {
+      await input.commands.dropClaim({
+        userId: claim.userId,
+        jobId: claim.jobId,
+        claimNonce: claim.claimNonce,
+        nowMs: input.nowMs,
+      });
+      return { ok: true, action: "waiting", jobId: claim.jobId };
+    }
+    return { ok: true, action: "failed", jobId: claim.jobId };
+  }
+  const committed = await input.commands.commitSubmission({
+    userId: claim.userId,
+    jobId: claim.jobId,
+    claimNonce: claim.claimNonce,
+    nowMs: input.nowMs,
+  });
+  if (!committed.ok) {
+    if (committed.code === "submission_not_authorized") {
+      return { ok: true, action: "submission_not_authorized", jobId: claim.jobId };
+    }
+    if (committed.code === "disabled") return { ok: true, action: "disabled", jobId: claim.jobId };
+    if (committed.code === "unsupported_settings") {
+      const failed = await input.commands.failPreparedInput({
+        userId: claim.userId,
+        jobId: claim.jobId,
+        claimNonce: claim.claimNonce,
+        nowMs: input.nowMs,
+      });
+      return { ok: true, action: failed.ok ? "failed" : "waiting", jobId: claim.jobId };
+    }
+    return { ok: true, action: "waiting", jobId: claim.jobId };
+  }
+  return postCreate(input, { ...claim, purpose: "submit", claimNonce: committed.claimNonce }, prepared.request);
+}
+
 async function submitClaim(
   input: {
     commands: GenerationCommands;
@@ -277,9 +341,21 @@ async function submitClaim(
     });
     return { ok: true, action: "ambiguous", jobId: claim.jobId };
   }
+  return postCreate(input, claim, prepared);
+}
+
+async function postCreate(
+  input: {
+    commands: GenerationCommands;
+    adapter: MeshyAdapter;
+    nowMs: number;
+  },
+  claim: ClaimedGeneration,
+  request: MeshyCreateRequest,
+): Promise<GenerationPass> {
   let outcome: MeshyCreateOutcome;
   try {
-    outcome = await input.adapter.createTask(prepared);
+    outcome = await input.adapter.createTask(request);
   } catch {
     outcome = { kind: "ambiguous", errorCode: "create_network", message: "Meshy did not confirm that the task was created." };
   }
@@ -461,6 +537,56 @@ async function pollClaim(
     return { ok: true, action: "waiting", jobId: claim.jobId };
   }
   return { ok: true, action: "ready", jobId: claim.jobId };
+}
+
+async function classifyPreparation(
+  commands: GenerationCommands,
+  objects: BucketObjectStore,
+  claim: ClaimedGeneration,
+  nowMs: number,
+): Promise<
+  | { kind: "ready"; request: MeshyCreateRequest }
+  | { kind: "waiting" }
+  | { kind: "invalid" }
+  | { kind: "transient" }
+> {
+  const withinGrace = claim.createdAtMs == null || nowMs - claim.createdAtMs < GENERATION_INPUT_UPLOAD_GRACE_MS;
+  try {
+    const records = await commands.listInputs(claim.userId, claim.jobId);
+    if (records.length !== claim.imageSlots.length || claim.imageSlots.some((slot) => !records.some((record) => record.slot === slot))) {
+      return withinGrace ? { kind: "waiting" } : { kind: "invalid" };
+    }
+    const images: InspectedFurnitureImage[] = [];
+    for (const record of records) {
+      const bytes = await objects.get({ bucket: record.bucket, path: record.path });
+      if (!bytes) return withinGrace ? { kind: "waiting" } : { kind: "invalid" };
+      const inspected = await inspectFurnitureImage({ slot: record.slot, bytes });
+      if (
+        !inspected.ok
+        || inspected.image.sha256 !== record.sha256
+        || inspected.image.byteLength !== record.byteSize
+        || inspected.image.widthPx !== record.widthPx
+        || inspected.image.heightPx !== record.heightPx
+        || inspected.image.mimeType !== record.mimeType
+        || !betaFrontPhotoBytesAllowed(inspected.image.byteLength)
+      ) {
+        return { kind: "invalid" };
+      }
+      images.push(inspected.image);
+    }
+    let photoSet = emptyFurniturePhotoSet();
+    for (const image of images) photoSet = setFurniturePhoto(photoSet, photoRecord(image));
+    const draft = mapMeshyGenerationDraft({ photos: photoSet, settings: claim.settings });
+    if (!draft.ok) return { kind: "invalid" };
+    const request = buildMeshyCreateRequest({
+      draft: draft.draft,
+      images,
+      taskName: claim.providerTaskName,
+    });
+    return request.ok ? { kind: "ready", request: request.request } : { kind: "invalid" };
+  } catch {
+    return { kind: "transient" };
+  }
 }
 
 async function prepareCreate(

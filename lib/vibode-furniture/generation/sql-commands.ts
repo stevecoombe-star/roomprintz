@@ -46,6 +46,8 @@ export const GENERATION_RPC_ARGUMENTS = {
     "p_sha256",
   ],
   fail_vibode_furniture_generation_before_provider: ["p_user_id", "p_job_id"],
+  fail_vibode_furniture_generation_prepared_input: ["p_user_id", "p_job_id", "p_claim_nonce"],
+  commit_vibode_furniture_generation_submission: ["p_user_id", "p_job_id", "p_claim_nonce"],
   read_vibode_furniture_generation: ["p_user_id", "p_job_id"],
   discard_vibode_furniture_generation_candidate: ["p_user_id", "p_job_id"],
   admin_authorize_vibode_furniture_generation_resubmit: ["p_job_id", "p_duplicate_charge_risk_accepted"],
@@ -153,6 +155,24 @@ export function createSqlGenerationCommands(rpc: PositionalGenerationRpc): Gener
     },
     async failBeforeProvider(input) {
       await rpc("fail_vibode_furniture_generation_before_provider", [input.userId, input.jobId]);
+    },
+    async failPreparedInput(input) {
+      return statusResult(await rpc("fail_vibode_furniture_generation_prepared_input", [
+        input.userId,
+        input.jobId,
+        input.claimNonce,
+      ]));
+    },
+    async commitSubmission(input) {
+      const data = asRecord(await rpc("commit_vibode_furniture_generation_submission", [
+        input.userId,
+        input.jobId,
+        input.claimNonce,
+      ]));
+      if (!data || data.ok !== true || typeof data.claim_nonce !== "string" || typeof data.status !== "string") {
+        return fail(data);
+      }
+      return { ok: true, claimNonce: data.claim_nonce, status: data.status };
     },
     async readOwner(userId, jobId) {
       const data = asRecord(await rpc("read_vibode_furniture_generation", [userId, jobId]));
@@ -456,7 +476,7 @@ function claimedFrom(data: Record<string, unknown>): ClaimedGeneration | null {
   const settings = furnitureSettingsFromJson(data.settings);
   const imageSlots = furnitureSlotsFromJson(data.image_slots);
   if (
-    (purpose !== "submit" && purpose !== "poll" && purpose !== "reconcile")
+    (purpose !== "prepare" && purpose !== "submit" && purpose !== "poll" && purpose !== "reconcile")
     || (operation !== "image-to-3d" && operation !== "multi-image-to-3d")
     || typeof data.user_id !== "string"
     || typeof data.job_id !== "string"
@@ -477,6 +497,7 @@ function claimedFrom(data: Record<string, unknown>): ClaimedGeneration | null {
     providerTaskId,
     providerTaskName: data.provider_task_name,
     providerContactedAtMs: epoch(data.provider_contacted_at),
+    createdAtMs: epoch(data.created_at),
     settings,
     imageSlots,
   };
