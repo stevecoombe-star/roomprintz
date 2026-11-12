@@ -202,7 +202,7 @@ export type ReserveInput = {
 
 export type ReserveResult =
   | { ok: true; created: boolean; job: GenerationJob }
-  | { ok: false; code: "disabled" | "unsupported_settings" | "quota_exhausted" | "concurrency_limited" | "idempotency_conflict" | "invalid_input" };
+  | { ok: false; code: "disabled" | "unsupported_settings" | "quota_exhausted" | "concurrency_limited" | "idempotency_conflict" | "invalid_input" | "submission_not_authorized" };
 
 export type ClaimResult =
   | { ok: true; purpose: "prepare" | "submit" | "poll" | "reconcile"; job: GenerationJob }
@@ -251,6 +251,9 @@ export function reserveGeneration(db: GenerationDatabase, input: ReserveInput): 
   if (estimate == null || estimate !== input.reservedCredits) return { ok: false, code: "unsupported_settings" };
   releaseExpiredGenerationHolds(db, input.nowMs);
   if (!db.controls.liveEnabled) return { ok: false, code: "disabled" };
+  if (db.controls.paidSubmissionsUsed >= db.controls.paidSubmissionsAuthorized) {
+    return { ok: false, code: "submission_not_authorized" };
+  }
   if (db.jobs.some((job) => job.userId === input.userId && userOccupiesGeneration(job.status))) {
     return { ok: false, code: "concurrency_limited" };
   }
@@ -354,9 +357,6 @@ export function prepareGenerationLease(
   if (job.status !== "reserved" || job.providerTaskId) return { ok: false, code: "not_claimable" };
   if (job.attemptCount >= MESHY_MAX_SUBMIT_ATTEMPTS) return { ok: false, code: "not_claimable" };
   if (job.attemptCount > 0 && !job.resubmitAuthorized) return { ok: false, code: "not_claimable" };
-  if (db.controls.paidSubmissionsUsed >= db.controls.paidSubmissionsAuthorized && job.providerContactedAtMs == null) {
-    return { ok: false, code: "submission_not_authorized" };
-  }
   hold(job, input.nowMs);
   touch(job, input.nowMs);
   return { ok: true, purpose: "prepare", job };
@@ -384,6 +384,21 @@ export function commitGenerationSubmission(
       job.errorCode = "submission_budget_exhausted";
       job.resubmitAuthorized = false;
       recordResubmit(db, job, "revoke", "submission_budget_exhausted");
+      releaseClaim(job);
+      touch(job, input.nowMs);
+      return { ok: false, code: "submission_not_authorized" };
+    }
+    if (uncontactedFirstAttempt(job)) {
+      const heldQuota = job.quotaState === "reserved";
+      releaseReservation(db, job, 0, "failure");
+      if (heldQuota) releaseTesterAllowance(db, job.userId);
+      job.status = "failed";
+      job.errorClass = "submission_budget_exhausted";
+      job.errorCode = "submission_budget_exhausted";
+      job.consumedCredits = 0;
+      releaseClaim(job);
+      touch(job, input.nowMs);
+      return { ok: false, code: "submission_not_authorized" };
     }
     releaseClaim(job);
     touch(job, input.nowMs);
@@ -1032,6 +1047,20 @@ function ownedLease(
     return { ok: false, code: "lease_held" };
   }
   return { ok: true, job };
+}
+
+function uncontactedFirstAttempt(job: GenerationJob): boolean {
+  return job.status === "reserved"
+    && job.attemptCount === 0
+    && job.providerTaskId == null
+    && job.providerContactedAtMs == null
+    && !job.resubmitAuthorized;
+}
+
+function releaseTesterAllowance(db: GenerationDatabase, userId: string): void {
+  const row = db.allowances?.find((item) => item.userId === userId);
+  if (!row || row.reserved < 1) return;
+  row.reserved -= 1;
 }
 
 function releaseReservation(

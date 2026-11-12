@@ -717,6 +717,7 @@ function reserveMessage(code: string): string {
   if (code === "allowance_required") return "A generation allowance is required.";
   if (code === "allowance_disabled") return "Generation access is turned off for this account.";
   if (code === "allowance_exhausted") return "No generations remain on this account.";
+  if (code === "submission_not_authorized") return "A paid generation is not authorized.";
   return "The generation request could not be stored.";
 }
 

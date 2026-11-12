@@ -168,13 +168,40 @@ test("allowance admission is the signed-in tester and ignores an administrator f
   assert.equal(ready.db.jobs.length, 0);
   ready.db.controls.creditsConsumed = 0;
 
+  ready.db.controls.paidSubmissionsAuthorized = 0;
+  const unpaid = await postFurnitureGeneration(generationRequest("beta-key-unpaid", jpeg), ready.deps);
+  assert.equal(unpaid.status, 409);
+  assert.equal((unpaid.body as { error: string }).error, "A paid generation is not authorized.");
+  assert.equal(ready.db.jobs.length, 0);
+  assert.equal(ready.db.allowances?.[0]?.reserved, 0);
+  assert.equal(ready.db.controls.creditsReserved, 0);
+  assert.equal(ready.db.controls.paidSubmissionsUsed, 0);
+  ready.db.controls.paidSubmissionsAuthorized = 1;
+  ready.db.controls.paidSubmissionsUsed = 1;
+  const spentBudget = await postFurnitureGeneration(generationRequest("beta-key-spent", jpeg), ready.deps);
+  assert.equal(spentBudget.status, 409);
+  assert.equal(ready.db.jobs.length, 0);
+  assert.equal(ready.db.controls.creditsReserved, 0);
+  assert.equal(ready.db.controls.paidSubmissionsUsed, 1);
+  ready.db.controls.paidSubmissionsUsed = 0;
+
   const created = await postFurnitureGeneration(generationRequest("beta-key-0009", jpeg), ready.deps);
   assert.equal(created.status, 200);
   assert.equal((created.body as { created: boolean }).created, true);
+  ready.db.controls.paidSubmissionsUsed = 1;
   const replay = await postFurnitureGeneration(generationRequest("beta-key-0009", jpeg), ready.deps);
   assert.equal((replay.body as { created: boolean }).created, false);
   assert.equal(ready.db.jobs.length, 1);
   assert.equal(ready.db.allowances?.[0]?.reserved, 1);
+  assert.equal(ready.db.controls.creditsReserved, 30);
+  const otherJpeg = new Uint8Array(await sharp({
+    create: { width: 48, height: 48, channels: 3, background: { r: 9, g: 9, b: 9 } },
+  }).jpeg({ quality: 80 }).toBuffer());
+  const conflict = await postFurnitureGeneration(generationRequest("beta-key-0009", otherJpeg), ready.deps);
+  assert.equal(conflict.status, 409);
+  assert.equal(ready.db.jobs.length, 1);
+  assert.equal(ready.db.allowances?.[0]?.reserved, 1);
+  ready.db.controls.paidSubmissionsUsed = 0;
 
   const hidden = await getFurnitureGeneration(
     new Request("https://vibode.local/generation"),
@@ -422,6 +449,7 @@ function harness(
 ) {
   const db = createGenerationDatabase();
   db.controls.liveEnabled = options?.live ?? true;
+  db.controls.paidSubmissionsAuthorized = 1;
   db.allowances = allowances;
   const commands = createMemoryGenerationCommands(db, { nowMs: 1_700_000_000_000 });
   let sequence = 0;

@@ -107,6 +107,7 @@ function photo(slot: FurnitureViewSlot, bytes: Uint8Array): FurniturePhotoRecord
 function enabledDb() {
   const db = createGenerationDatabase();
   db.controls.liveEnabled = true;
+  db.controls.paidSubmissionsAuthorized = 1;
   return db;
 }
 
@@ -123,6 +124,7 @@ async function createJob(input?: {
 }) {
   const db = createGenerationDatabase();
   db.controls.liveEnabled = input?.live ?? true;
+  db.controls.paidSubmissionsAuthorized = 1;
   const objects = createMemoryObjectStore();
   const front = input?.images ?? [{ slot: "front" as const, bytes: await jpeg() }];
   const created = await createFurnitureGeneration({

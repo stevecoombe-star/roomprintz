@@ -281,10 +281,12 @@ test("a single image reaches a private preview without a second post", async () 
   assert.equal(stranger.status, 404);
 
   const next = await postFurnitureGeneration(request("idem-key-0002", bytes), ctx.deps);
-  assert.equal(next.status, 200);
-  assert.equal((next.body as { created: boolean }).created, true);
+  assert.equal(next.status, 409);
+  assert.equal((next.body as { error: string }).error, "A paid generation is not authorized.");
+  assert.equal(ctx.db.jobs.length, 1);
   assert.equal(ctx.db.jobs[0]?.status, "ready");
   assert.equal(ctx.db.controls.creditsConsumed, 20);
+  assert.equal(ctx.db.controls.creditsReserved, 0);
   assert.equal(provider.posts(), 1);
 
   const discarded = await postFurnitureGenerationDiscard(
@@ -536,6 +538,7 @@ test("a second worker cannot post while a submit claim is outstanding", async ()
 
 test("a disabled worker does not submit a reserved job", async () => {
   const ctx = harness();
+  await allowOne(ctx);
   await postFurnitureGeneration(request("idem-key-0001", await png()), ctx.deps);
   const provider = scripted([response(202, { result: TASK_ID })]);
   const held = await executeFurnitureGenerationClaim({
@@ -580,17 +583,25 @@ test("expiry removes the candidate and keeps the consumed credits", async () => 
   assert.equal(expired.removed, 1);
   assert.equal(ctx.db.jobs[0]?.status, "expired");
   assert.equal(ctx.db.controls.creditsConsumed, 20);
+  assert.equal(ctx.db.controls.creditsReserved, 0);
   const next = await postFurnitureGeneration(request("idem-key-0002", await png()), ctx.deps);
-  assert.equal(next.status, 200);
+  assert.equal(next.status, 409);
+  assert.equal((next.body as { error: string }).error, "A paid generation is not authorized.");
+  assert.equal(ctx.db.jobs.length, 1);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
 });
 
 test("the paid allowance starts at zero and is not replenished", async () => {
   const blocked = harness();
-  await postFurnitureGeneration(request("idem-key-0001", await png()), blocked.deps);
+  const denied = await postFurnitureGeneration(request("idem-key-0001", await png()), blocked.deps);
+  assert.equal(denied.status, 409);
+  assert.equal((denied.body as { error: string }).error, "A paid generation is not authorized.");
   const none = scripted([response(202, { result: TASK_ID })]);
-  assert.equal((await runPass(blocked, none, okGlb)).action, "submission_not_authorized");
+  assert.equal((await runPass(blocked, none, okGlb)).action, "idle");
   assert.equal(none.posts(), 0);
-  assert.equal(blocked.db.jobs[0]?.attemptCount, 0);
+  assert.equal(blocked.db.jobs.length, 0);
+  assert.equal(blocked.db.controls.creditsReserved, 0);
+  assert.equal(blocked.db.controls.paidSubmissionsAuthorized, 0);
   assert.equal(blocked.db.controls.paidSubmissionsUsed, 0);
 
   const refused = harness();
@@ -602,10 +613,13 @@ test("the paid allowance starts at zero and is not replenished", async () => {
   assert.equal(refused.db.controls.paidSubmissionsUsed, 1);
   assert.equal(refused.db.controls.creditsConsumed, 0);
   const next = await postFurnitureGeneration(request("idem-key-0002", await png()), refused.deps);
-  assert.equal(next.status, 200);
+  assert.equal(next.status, 409);
+  assert.equal((next.body as { error: string }).error, "A paid generation is not authorized.");
   const second = scripted([response(202, { result: "018a210d-8ba4-705c-b111-1f1776f7f580" })]);
-  assert.equal((await runPass(refused, second, okGlb)).action, "submission_not_authorized");
+  assert.equal((await runPass(refused, second, okGlb)).action, "idle");
   assert.equal(second.posts(), 0);
+  assert.equal(refused.db.jobs.length, 1);
+  assert.equal(refused.db.controls.creditsReserved, 0);
   assert.equal(refused.db.controls.paidSubmissionsUsed, 1);
 
   const limited = harness();
@@ -637,11 +651,61 @@ test("the paid allowance starts at zero and is not replenished", async () => {
   assert.equal(afterRestart.posts(), 0);
   assert.equal(limited.db.controls.paidSubmissionsUsed, 1);
   const another = await postFurnitureGeneration(request("idem-key-0002", await png()), limited.deps);
-  assert.equal(another.status, 200);
+  assert.equal(another.status, 409);
+  assert.equal((another.body as { error: string }).error, "A paid generation is not authorized.");
   const blockedRetry = scripted([response(202, { result: "018a210d-8ba4-705c-b111-1f1776f7f580" })]);
-  assert.equal((await runPass(limited, blockedRetry, okGlb)).action, "submission_not_authorized");
+  assert.equal((await runPass(limited, blockedRetry, okGlb)).action, "idle");
   assert.equal(blockedRetry.posts(), 0);
+  assert.equal(limited.db.jobs.length, 1);
+  assert.equal(limited.db.controls.creditsReserved, 0);
   assert.equal(limited.db.controls.paidSubmissionsUsed, 1);
+});
+
+test("an uncontacted first attempt is released once when the paid budget is exhausted", async () => {
+  const ctx = harness();
+  await allowOne(ctx);
+  const bytes = await png();
+  const created = await postFurnitureGeneration(request("idem-key-0001", bytes), ctx.deps);
+  assert.equal(created.status, 200);
+  assert.equal(ctx.db.jobs.length, 1);
+  assert.equal(ctx.db.jobs[0]?.status, "reserved");
+  assert.equal(ctx.db.jobs[0]?.attemptCount, 0);
+  const reservedCredits = ctx.db.controls.creditsReserved;
+  assert.equal(reservedCredits > 0, true);
+  ctx.db.controls.paidSubmissionsUsed = 1;
+  const replay = await postFurnitureGeneration(request("idem-key-0001", bytes), ctx.deps);
+  assert.equal(replay.status, 200);
+  assert.equal((replay.body as { created: boolean }).created, false);
+  assert.equal(ctx.db.jobs.length, 1);
+  assert.equal(ctx.db.controls.creditsReserved, reservedCredits);
+  const conflict = await postFurnitureGeneration(request("idem-key-0001", await png(64, 64)), ctx.deps);
+  assert.equal(conflict.status, 409);
+  assert.equal(ctx.db.jobs.length, 1);
+  assert.equal(ctx.db.controls.creditsReserved, reservedCredits);
+
+  const provider = scripted([response(202, { result: TASK_ID })]);
+  const released = await Promise.all([runPass(ctx, provider, okGlb), runPass(ctx, provider, okGlb)]);
+  assert.equal(provider.posts(), 0);
+  assert.equal(released.some((pass) => pass.action === "submission_not_authorized"), true);
+  assert.equal(released.every((pass) => pass.action === "submission_not_authorized" || pass.action === "idle"), true);
+  const job = ctx.db.jobs[0];
+  assert.ok(job);
+  assert.equal(job.status, "failed");
+  assert.equal(job.errorClass, "submission_budget_exhausted");
+  assert.equal(job.attemptCount, 0);
+  assert.equal(job.providerTaskId, null);
+  assert.equal(job.providerContactedAtMs, null);
+  assert.equal(ctx.db.controls.paidSubmissionsAuthorized, 1);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
+  assert.equal(ctx.db.controls.creditsReserved, 0);
+  const again = await runPass(ctx, provider, okGlb);
+  assert.equal(again.action, "idle");
+  assert.equal(provider.posts(), 0);
+  assert.equal(ctx.db.controls.creditsReserved, 0);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
+  const next = await postFurnitureGeneration(request("idem-key-0002", bytes), ctx.deps);
+  assert.equal(next.status, 409);
+  assert.equal(ctx.db.jobs.length, 1);
 });
 
 test("an owner cannot grant a paid submission and a restart does not replenish it", async () => {
@@ -702,14 +766,18 @@ test("an owner cannot grant a paid submission and a restart does not replenish i
   assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
   const restarted = scripted([response(202, { result: "018a210d-8ba4-705c-b111-1f1776f7f580" })]);
   const created = await postFurnitureGeneration(request("idem-key-0002", await png()), ctx.deps);
-  assert.equal(created.status, 200);
-  assert.equal((await runPass(ctx, restarted, okGlb)).action, "submission_not_authorized");
+  assert.equal(created.status, 409);
+  assert.equal((created.body as { error: string }).error, "A paid generation is not authorized.");
+  assert.equal((await runPass(ctx, restarted, okGlb)).action, "idle");
   assert.equal(restarted.posts(), 0);
+  assert.equal(ctx.db.jobs.length, 1);
+  assert.equal(ctx.db.controls.creditsReserved, 0);
   assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
 });
 
 test("quota blocks another reservation after the budget is consumed", async () => {
   const ctx = harness();
+  await allowOne(ctx);
   ctx.db.controls.creditsConsumed = 30;
   const result = await postFurnitureGeneration(request("idem-key-0001", await png()), ctx.deps);
   assert.equal(result.status, 409);
