@@ -9,8 +9,6 @@
  * 2026-11-06 (docs.meshy.ai, OpenAPI https://docs.meshy.ai/openapi.json).
  */
 
-import { isAdminEmail } from "@/lib/adminAccess";
-
 export const MESHY_PROVIDER_ID = "meshy" as const;
 
 /** Temporary reference photos. Not the personal GLB library bucket. */
@@ -85,9 +83,9 @@ export const MESHY_MAX_SUBMIT_ATTEMPTS = 2;
 export type GenerationAccess = "ok" | "unauthorized" | "disabled";
 
 /**
- * Non-admins are unauthorized even when both switches are on.
- * Admins see a disabled switch before any job row is created.
- * Unset, "TRUE", "1", and "on" stay off.
+ * A signed-in user reaches reservation only when both switches are exactly on.
+ * Allowance, credits, paid attempts, and concurrency are decided by SQL reserve.
+ * Being an administrator does not grant a generation. Unset, "TRUE", "1", and "on" stay off.
  */
 export function generationEnabledFromEnv(env: Readonly<Record<string, string | undefined>>): boolean {
   return env[MESHY_GENERATION_ENABLED_ENV] === "true";
@@ -104,13 +102,12 @@ export function furnitureGenerationCleanupDecision(
 
 export function generationAccessDecision(input: Readonly<{
   userId: string | null;
-  email: string | null;
+  email?: string | null;
   generationEnabledEnv: string | undefined;
   liveEnabled: boolean;
   isAdmin?: (email: string | null | undefined) => boolean;
 }>): GenerationAccess {
-  const admin = input.isAdmin ?? isAdminEmail;
-  if (!input.userId || !admin(input.email)) return "unauthorized";
+  if (!input.userId) return "unauthorized";
   if (input.generationEnabledEnv !== "true" || !input.liveEnabled) return "disabled";
   return "ok";
 }

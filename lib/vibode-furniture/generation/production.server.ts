@@ -53,6 +53,7 @@ export function productionFurnitureGenerationDeps(): GenerationHttpDeps | null {
     env: process.env,
     isAdmin: isAdminEmail,
     nowMs: () => Date.now(),
+    enforceCertifiedProfile: true,
   };
 }
 

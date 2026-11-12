@@ -12,6 +12,24 @@ import {
   type FurnitureViewSlot,
 } from "@/lib/vibode-furniture/generator/images";
 import { CandidatePreviewEntry } from "@/components/stage/CandidatePreviewEntry";
+import {
+  allowanceBalanceLine,
+  betaSubmissionKey,
+  claimBetaSubmission,
+  customerJobCopy,
+  nextPollDelayMs,
+  shouldRefreshAllowance,
+  submissionKeyAfterOutcome,
+  type CustomerEntitlement,
+  type CustomerJobSnapshot,
+} from "@/lib/vibode-furniture/generator/beta-generation";
+import {
+  readBetaEntitlement,
+  readBetaGeneration,
+  readGenerationAccessToken,
+  submitBetaGeneration,
+} from "@/lib/vibode-furniture/generator/beta-generation-client";
+import { requestCandidatePreview } from "@/lib/vibode-furniture/generator/candidate-preview";
 import type { GlbPreviewRequest } from "@/lib/vibode-furniture/generator/preview";
 import {
   generatorCapabilities,
@@ -31,6 +49,8 @@ import {
   type FurnitureGeneratorAction,
   type FurnitureGeneratorUiState,
 } from "@/lib/vibode-furniture/generator/ui-state";
+
+const BETA_PRESET_LOCKED = true;
 
 const FOCUS =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-400";
@@ -63,18 +83,32 @@ export function FurnitureGeneratorPanel({
   onOpenPreview,
   showFixturePreview = process.env.NODE_ENV !== "production",
   initialState,
+  fixture,
 }: {
   onOpenPreview: (request: GlbPreviewRequest) => void;
   showFixturePreview?: boolean;
   initialState?: FurnitureGeneratorUiState;
+  fixture?: {
+    entitlement: CustomerEntitlement;
+    job?: CustomerJobSnapshot | null;
+    notice?: string | null;
+  };
 }) {
   const [state, setState] = useState(() => initialFurnitureGeneratorUi(initialState));
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [entitlement, setEntitlement] = useState<CustomerEntitlement | null>(fixture?.entitlement ?? null);
+  const [job, setJob] = useState<CustomerJobSnapshot | null>(fixture?.job ?? null);
+  const [notice, setNotice] = useState<string | null>(fixture?.notice ?? null);
+  const [busy, setBusy] = useState(false);
   const stateRef = useRef(state);
   const filesRef = useRef<Partial<Record<FurnitureViewSlot, File>>>({});
   const photoTokenRef = useRef<Partial<Record<FurnitureViewSlot, number>>>({});
   const mountedRef = useRef(true);
+  const submissionRef = useRef<{ busy: boolean; key: string | null }>({ busy: false, key: null });
+  const jobRef = useRef<CustomerJobSnapshot | null>(fixture?.job ?? null);
+  const pollFlightRef = useRef(false);
   stateRef.current = state;
+  jobRef.current = job;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -86,6 +120,78 @@ export function FurnitureGeneratorPanel({
       filesRef.current = {};
     };
   }, []);
+
+  const polling = Boolean(job && customerJobCopy(job).poll);
+
+  useEffect(() => {
+    if (fixture) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const token = await readGenerationAccessToken();
+        if (!token || cancelled) return;
+        const loaded = await readBetaEntitlement({ token });
+        if (cancelled || !mountedRef.current) return;
+        if (!loaded.ok) {
+          setNotice(loaded.message);
+          return;
+        }
+        setEntitlement(loaded.entitlement);
+      } catch {
+        if (!cancelled && mountedRef.current) setNotice("AI generation could not be checked.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fixture]);
+
+  useEffect(() => {
+    if (fixture || !polling) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let delay = 2_000;
+    const tick = async () => {
+      const current = jobRef.current;
+      if (cancelled || !current || !customerJobCopy(current).poll) return;
+      if (pollFlightRef.current) {
+        timer = setTimeout(() => void tick(), delay);
+        return;
+      }
+      pollFlightRef.current = true;
+      let continuePolling = false;
+      try {
+        const token = await readGenerationAccessToken();
+        if (token && !cancelled && mountedRef.current) {
+          const read = await readBetaGeneration({ token, jobId: current.jobId });
+          if (!cancelled && mountedRef.current && read.ok) {
+            setJob(read.job);
+            jobRef.current = read.job;
+            if (shouldRefreshAllowance(read.job.status)) {
+              submissionRef.current = { busy: false, key: null };
+              const refreshed = await readBetaEntitlement({ token });
+              if (!cancelled && refreshed.ok) setEntitlement(refreshed.entitlement);
+            }
+            continuePolling = customerJobCopy(read.job).poll;
+          } else if (!cancelled && mountedRef.current) {
+            continuePolling = true;
+          }
+        }
+      } catch {
+        continuePolling = !cancelled && mountedRef.current;
+      } finally {
+        pollFlightRef.current = false;
+      }
+      if (!continuePolling || cancelled) return;
+      delay = nextPollDelayMs(delay);
+      timer = setTimeout(() => void tick(), delay);
+    };
+    timer = setTimeout(() => void tick(), delay);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [fixture, polling]);
 
   function apply(action: FurnitureGeneratorAction) {
     const result = reduceFurnitureGenerator(stateRef.current, action);
@@ -104,6 +210,10 @@ export function FurnitureGeneratorPanel({
     });
     if (!fileCheck.ok) {
       apply({ type: "slot-error", slot, message: fileCheck.message });
+      return;
+    }
+    if (fileCheck.mimeType !== "image/jpeg") {
+      apply({ type: "slot-error", slot, message: "Beta generation uses a JPEG photo." });
       return;
     }
     let bitmap: ImageBitmap | null = null;
@@ -161,13 +271,97 @@ export function FurnitureGeneratorPanel({
   }
 
   function updateSettings(patch: Partial<FurnitureGeneratorSettings>) {
+    if (BETA_PRESET_LOCKED) return;
     apply({
       type: "settings",
       settings: { ...stateRef.current.settings, ...patch },
     });
   }
 
+  async function generate() {
+    const front = stateRef.current.photos.front;
+    const file = filesRef.current.front;
+    if (!entitlement?.canGenerate || !front || front.mimeType !== "image/jpeg" || !file) {
+      setNotice("Add a front JPEG before generating.");
+      return;
+    }
+    const claimed = claimBetaSubmission(submissionRef.current, betaSubmissionKey);
+    if (!claimed) return;
+    submissionRef.current = claimed;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const token = await readGenerationAccessToken();
+      if (!token) {
+        submissionRef.current = { busy: false, key: claimed.key };
+        setNotice("Sign in to generate furniture.");
+        return;
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const submitted = await submitBetaGeneration({
+        token,
+        idempotencyKey: claimed.key,
+        jpegBytes: bytes,
+      });
+      if (!mountedRef.current) return;
+      if (!submitted.ok) {
+        submissionRef.current = {
+          busy: false,
+          key: submissionKeyAfterOutcome(claimed.key, submitted.uncertain ? "uncertain" : "refused"),
+        };
+        setNotice(submitted.message);
+        if (!submitted.uncertain) {
+          const refreshed = await readBetaEntitlement({ token });
+          if (mountedRef.current && refreshed.ok) setEntitlement(refreshed.entitlement);
+        }
+        return;
+      }
+      submissionRef.current = {
+        busy: false,
+        key: shouldRefreshAllowance(submitted.job.status)
+          ? null
+          : submissionKeyAfterOutcome(claimed.key, "started"),
+      };
+      setJob(submitted.job);
+      jobRef.current = submitted.job;
+      setNotice(submitted.created
+        ? "The generation was accepted."
+        : "This is the generation already started for that request.");
+    } catch {
+      submissionRef.current = { busy: false, key: claimed.key };
+      if (mountedRef.current) {
+        setNotice("The request did not finish. Try again. It will not start a second generation.");
+      }
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  }
+
+  async function previewReadyModel() {
+    const current = jobRef.current;
+    if (!current || current.status !== "ready") return;
+    const token = await readGenerationAccessToken();
+    if (!token) {
+      setNotice("Sign in again to preview this model.");
+      return;
+    }
+    const preview = await requestCandidatePreview({ jobId: current.jobId, token });
+    if (!preview.ok) {
+      setNotice(preview.message);
+      return;
+    }
+    onOpenPreview({
+      kind: "candidate",
+      label: "Generated model",
+      url: preview.previewUrl,
+      jobId: current.jobId,
+    });
+  }
+
   const mode = furnitureInputMode(state.photos);
+  const frontIsJpeg = state.photos.front?.mimeType === "image/jpeg";
+  const jobBlocksGenerate = job != null && !["failed", "cancelled", "discarded", "expired", "saved"].includes(job.status);
+  const canGenerate = entitlement?.canGenerate === true && frontIsJpeg && !busy && !jobBlocksGenerate;
   const caps = generatorCapabilities(state.settings, capabilityMode(state.photos));
   const ultra = state.settings.geometryResolution === "standard"
     ? "Off. Standard geometry is selected above. 2K and 4K Ultra add surface detail. 4K needs one photo."
@@ -180,12 +374,18 @@ export function FurnitureGeneratorPanel({
       className="mt-3 flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-contain pr-1"
       data-furniture-generator="ready"
       data-input-mode={mode}
-      data-generation-available="false"
+      data-generation-available={entitlement?.canGenerate ? "true" : "false"}
     >
       <h2 className="text-sm font-medium text-neutral-100">3D Furniture Generator</h2>
       <p className="mt-1 text-[11px] leading-5 text-neutral-400">
-        Photos stay on this device. Generation is not connected yet, and nothing is sent to Meshy.
+        Beta preset: one front JPEG, standard geometry, and 2K textures. Other settings stay fixed.
       </p>
+      <p className="mt-1 text-[11px] leading-5 text-neutral-500" data-eligibility={entitlement?.state ?? "unknown"}>
+        {entitlement ? allowanceBalanceLine(entitlement) ?? entitlement.reason : "AI generation availability is checked when this panel opens."}
+      </p>
+      {entitlement?.reason && entitlement.state !== "unapproved" ? (
+        <p className="mt-1 text-[11px] leading-5 text-amber-200">{entitlement.reason}</p>
+      ) : null}
 
       <div className="mt-3 space-y-2">
         {FURNITURE_VIEW_SLOT_ORDER.map((slot) => (
@@ -240,7 +440,7 @@ export function FurnitureGeneratorPanel({
                     className="sr-only"
                     value={option.value}
                     checked={selected}
-                    disabled={!availability.enabled}
+                    disabled={!availability.enabled || BETA_PRESET_LOCKED}
                     onChange={() => updateSettings({ geometryResolution: option.value })}
                   />
                   {option.label}
@@ -258,6 +458,7 @@ export function FurnitureGeneratorPanel({
             type="checkbox"
             checked={state.settings.shouldTexture}
             aria-label="Generate textures"
+            disabled={BETA_PRESET_LOCKED}
             onChange={(event) => updateSettings({ shouldTexture: event.target.checked })}
           />
         </label>
@@ -267,7 +468,7 @@ export function FurnitureGeneratorPanel({
             aria-label="Texture resolution"
             className={`${FIELD} mt-1`}
             value={state.settings.textureResolution}
-            disabled={!state.settings.shouldTexture}
+            disabled={!state.settings.shouldTexture || BETA_PRESET_LOCKED}
             onChange={(event) => updateSettings({
               textureResolution: event.target.value as MeshyTextureResolution,
             })}
@@ -307,7 +508,7 @@ export function FurnitureGeneratorPanel({
               aria-label="Texture model"
               className={`${FIELD} mt-1`}
               value={state.settings.textureModel}
-              disabled={!state.settings.shouldTexture}
+              disabled={!state.settings.shouldTexture || BETA_PRESET_LOCKED}
               onChange={(event) => updateSettings({
                 textureModel: event.target.value as MeshyTextureModelChoice,
               })}
@@ -332,7 +533,7 @@ export function FurnitureGeneratorPanel({
               type="checkbox"
               aria-label="PBR maps"
               checked={state.settings.enablePbr}
-              disabled={!caps.enablePbr.enabled}
+              disabled={!caps.enablePbr.enabled || BETA_PRESET_LOCKED}
               onChange={(event) => updateSettings({ enablePbr: event.target.checked })}
             />
           </label>
@@ -344,7 +545,7 @@ export function FurnitureGeneratorPanel({
               rows={3}
               maxLength={MESHY_TEXTURE_PROMPT_MAX}
               value={state.settings.texturePrompt}
-              disabled={!caps.texturePrompt.enabled}
+              disabled={!caps.texturePrompt.enabled || BETA_PRESET_LOCKED}
               placeholder={caps.texturePrompt.reason ?? "Optional notes for color and material"}
               onChange={(event) => updateSettings({ texturePrompt: event.target.value })}
             />
@@ -355,6 +556,7 @@ export function FurnitureGeneratorPanel({
               type="checkbox"
               aria-label="Enhance reference photos"
               checked={state.settings.imageEnhancement}
+              disabled={BETA_PRESET_LOCKED}
               onChange={(event) => updateSettings({ imageEnhancement: event.target.checked })}
             />
           </label>
@@ -367,6 +569,7 @@ export function FurnitureGeneratorPanel({
               type="checkbox"
               aria-label="Remesh"
               checked={state.settings.shouldRemesh}
+              disabled={BETA_PRESET_LOCKED}
               onChange={(event) => updateSettings({ shouldRemesh: event.target.checked })}
             />
           </label>
@@ -379,7 +582,7 @@ export function FurnitureGeneratorPanel({
               aria-label="Remesh topology"
               className={`${FIELD} mt-1`}
               value={state.settings.topology}
-              disabled={!state.settings.shouldRemesh}
+              disabled={!state.settings.shouldRemesh || BETA_PRESET_LOCKED}
               onChange={(event) => updateSettings({
                 topology: event.target.value as FurnitureGeneratorSettings["topology"],
               })}
@@ -400,7 +603,7 @@ export function FurnitureGeneratorPanel({
               min={MESHY_REMESH_POLYCOUNT_MIN}
               max={MESHY_REMESH_POLYCOUNT_MAX}
               step={1}
-              disabled={!caps.targetPolycount.enabled}
+              disabled={!caps.targetPolycount.enabled || BETA_PRESET_LOCKED}
               value={Number.isFinite(state.settings.targetPolycount) ? state.settings.targetPolycount : ""}
               onChange={(event) => updateSettings({
                 targetPolycount: event.target.value === "" ? Number.NaN : Number(event.target.value),
@@ -418,17 +621,44 @@ export function FurnitureGeneratorPanel({
 
       <CandidatePreviewEntry onOpenPreview={onOpenPreview} />
 
-      <button
-        type="button"
-        disabled
-        data-generate="unavailable"
-        aria-describedby="furniture-generator-unavailable"
-        className={`mt-3 rounded-md border border-neutral-900 bg-neutral-950 px-2.5 py-1.5 text-xs text-neutral-600 ${FOCUS}`}
-      >
-        Generate
-      </button>
+      {job ? (
+        <div className="mt-3" data-generation-phase={job.status} role="status">
+          <div className="text-xs text-neutral-100">{customerJobCopy(job).title}</div>
+          <p className="mt-1 text-[11px] leading-5 text-neutral-400">{customerJobCopy(job).detail}</p>
+        </div>
+      ) : null}
+      {canGenerate ? (
+        <button
+          type="button"
+          onClick={() => void generate()}
+          data-generate="ready"
+          className={`mt-3 rounded-md border border-neutral-600 bg-neutral-800 px-2.5 py-1.5 text-xs text-neutral-100 ${FOCUS}`}
+        >
+          Generate
+        </button>
+      ) : (
+        <button
+          type="button"
+          disabled
+          data-generate="unavailable"
+          aria-describedby="furniture-generator-unavailable"
+          className={`mt-3 rounded-md border border-neutral-900 bg-neutral-950 px-2.5 py-1.5 text-xs text-neutral-600 ${FOCUS}`}
+        >
+          Generate
+        </button>
+      )}
+      {job?.status === "ready" ? (
+        <button
+          type="button"
+          onClick={() => void previewReadyModel()}
+          data-preview-ready="true"
+          className={`mt-2 rounded-md border border-neutral-700 px-2.5 py-1.5 text-[11px] text-neutral-200 ${FOCUS}`}
+        >
+          Preview model
+        </button>
+      ) : null}
       <p id="furniture-generator-unavailable" className="mt-1 text-[11px] leading-5 text-neutral-500">
-        Generation is not connected yet. Photos and settings stay in this browser.
+        {notice ?? "Generate stays off until this account is approved and a front JPEG is ready."}
       </p>
 
       {showFixturePreview ? (
@@ -495,7 +725,7 @@ function PhotoSlot({
         <div className="min-w-0 flex-1">
           <input
             type="file"
-            accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+            accept="image/jpeg,.jpg,.jpeg"
             aria-label={required ? `${label} view, required` : `${label} view, optional`}
             onChange={(event) => {
               const file = event.target.files?.[0];

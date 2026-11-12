@@ -168,11 +168,14 @@ test("disabled and unauthorized callers do not create a job", async () => {
   assert.equal(closed.db.jobs.length, 0);
 
   const live = harness();
-  const stranger = await postFurnitureGeneration(
+  const signedOut = await postFurnitureGeneration(
     request("idem-key-0001", await png()),
-    asCaller(live.deps, USER_B, "person@example.com"),
+    {
+      ...live.deps,
+      authorize: async () => ({ ok: false, response: { status: 401, body: { ok: false, error: "Unauthorized." } } }),
+    },
   );
-  assert.equal(stranger.status, 401);
+  assert.equal(signedOut.status, 401);
   assert.equal(live.db.jobs.length, 0);
 });
 

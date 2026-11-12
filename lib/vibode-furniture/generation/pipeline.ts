@@ -42,6 +42,7 @@ import {
   type GenerationDownloader,
 } from "./output";
 import { buildMeshyCreateRequest, type MeshyCreateRequest } from "./payload";
+import { isCertifiedBetaFurnitureSettings } from "@/lib/vibode-furniture/generator/beta-generation";
 import { GENERATION_INPUT_BUCKET, GENERATION_INPUT_UPLOAD_GRACE_MS, generationAccessDecision } from "./policy";
 import { betaFrontPhotoBytesAllowed } from "./transport";
 import { generationRequestSha256 } from "./workflow";
@@ -63,6 +64,7 @@ export async function createOwnedGeneration(input: {
   settings: FurnitureGeneratorSettings;
   images: readonly { slot: FurnitureViewSlot; bytes: Uint8Array }[];
   nowMs: number;
+  enforceCertifiedProfile?: boolean;
 }): Promise<{ ok: true; created: boolean; job: PublicGenerationJob } | PipelineFailure> {
   const liveEnabled = await readLive(input.commands);
   const access = generationAccessDecision({
@@ -93,6 +95,14 @@ export async function createOwnedGeneration(input: {
   if (settingsIssue) return { ok: false, errorClass: "unsupported_settings", message: settingsIssue.message };
   const draft = mapMeshyGenerationDraft({ photos: photoSet, settings: input.settings });
   if (!draft.ok) return { ok: false, errorClass: "invalid_input", message: draft.errors[0] ?? "The photos could not be used." };
+  if (input.enforceCertifiedProfile) {
+    if (!isCertifiedBetaFurnitureSettings(input.settings) || draft.draft.operation !== "image-to-3d") {
+      return { ok: false, errorClass: "unsupported_settings", message: "Those settings are not available." };
+    }
+    if (inspected.length !== 1 || inspected[0]?.slot !== "front" || inspected[0]?.mimeType !== "image/jpeg") {
+      return { ok: false, errorClass: "invalid_input", message: "The beta uses one front JPEG." };
+    }
+  }
   const credits = estimateMeshy71Credits(input.settings, draft.draft.operation);
   if (credits == null) return { ok: false, errorClass: "unsupported_settings", message: "Those settings are not available." };
   if (inspected.some((image) => !betaFrontPhotoBytesAllowed(image.byteLength))) {

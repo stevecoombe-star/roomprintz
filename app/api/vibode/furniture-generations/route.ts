@@ -6,6 +6,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+// Rejected bodies stop here. Reservation, not this route, is the spending boundary.
 export async function POST(request: Request) {
   const deps = productionFurnitureGenerationDeps();
   if (!deps) return productionAfcJson({ ok: false, error: "Server misconfigured." }, 500);

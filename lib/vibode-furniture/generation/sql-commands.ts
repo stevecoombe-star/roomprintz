@@ -24,6 +24,7 @@ import { furnitureSettingsFromJson, furnitureSlotsFromJson } from "./settings-js
 
 export const GENERATION_RPC_ARGUMENTS = {
   read_vibode_furniture_generation_controls: [],
+  read_vibode_furniture_generation_owner_allowance: ["p_user_id"],
   reserve_vibode_furniture_generation: [
     "p_user_id",
     "p_job_id",
@@ -130,6 +131,12 @@ export function createSqlGenerationCommands(rpc: PositionalGenerationRpc): Gener
       const row = await rpc("read_vibode_furniture_generation_controls", []);
       const data = asRecord(row);
       return { liveEnabled: data?.live_enabled === true };
+    },
+    async readOwnAllowance(userId) {
+      const data = asRecord(await rpc("read_vibode_furniture_generation_owner_allowance", [userId]));
+      const allowance = ownerAllowanceFrom(data);
+      if (!allowance) return { ok: false, code: "unavailable" };
+      return { ok: true, ...allowance };
     },
     async reserve(input) {
       const data = asRecord(await rpc("reserve_vibode_furniture_generation", [
@@ -592,6 +599,36 @@ function temporaryFrom(value: unknown): TemporaryGenerationObject | null {
     jobId: data.job_id,
     userId: data.user_id,
     slot: typeof data.slot === "string" ? data.slot : null,
+  };
+}
+
+function ownerAllowanceFrom(data: Record<string, unknown> | null) {
+  if (!data || data.ok !== true) return null;
+  const authorized = integerAt(data.authorized);
+  const reserved = integerAt(data.reserved);
+  const consumed = integerAt(data.consumed);
+  const remaining = integerAt(data.remaining);
+  if (
+    typeof data.approved !== "boolean"
+    || typeof data.enabled !== "boolean"
+    || authorized == null
+    || reserved == null
+    || consumed == null
+    || remaining == null
+    || authorized < 0
+    || reserved < 0
+    || consumed < 0
+    || remaining !== Math.max(0, authorized - reserved - consumed)
+  ) {
+    return null;
+  }
+  return {
+    approved: data.approved,
+    enabled: data.enabled,
+    authorized,
+    reserved,
+    consumed,
+    remaining,
   };
 }
 

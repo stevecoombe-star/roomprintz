@@ -140,7 +140,7 @@ async function createJob(input?: {
   return { db, objects, created, front };
 }
 
-test("generation stays off unless the admin and both switches agree", () => {
+test("generation stays off unless a signed-in user and both switches agree", () => {
   const previous = process.env.VIBODE_ADMIN_EMAIL;
   process.env.VIBODE_ADMIN_EMAIL = ADMIN;
   try {
@@ -158,7 +158,7 @@ test("generation stays off unless the admin and both switches agree", () => {
       email: "shopper@example.com",
       generationEnabledEnv: "true",
       liveEnabled: true,
-    }), "unauthorized");
+    }), "ok");
     assert.equal(generationAccessDecision({
       userId: USER_A,
       email: ADMIN,
@@ -192,14 +192,13 @@ test("generation stays off unless the admin and both switches agree", () => {
   assert.equal(meshyPollWaitMs(null), 5_000);
 });
 
-test("unauthorized and disabled callers do not create a job", async () => {
+test("a signed-out or switched-off caller does not create a job", async () => {
   const previous = process.env.VIBODE_ADMIN_EMAIL;
   process.env.VIBODE_ADMIN_EMAIL = ADMIN;
   try {
     const stranger = await createJob({ email: "shopper@example.com" });
-    assert.equal(stranger.created.ok, false);
-    if (!stranger.created.ok) assert.equal(stranger.created.errorClass, "unauthorized");
-    assert.equal(stranger.db.jobs.length, 0);
+    assert.equal(stranger.created.ok, true);
+    assert.equal(stranger.db.jobs.length, 1);
     const signedOut = await createJob({ userId: null });
     assert.equal(signedOut.created.ok, false);
     if (!signedOut.created.ok) assert.equal(signedOut.created.errorClass, "unauthorized");

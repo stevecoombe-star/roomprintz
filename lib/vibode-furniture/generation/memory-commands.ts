@@ -34,6 +34,7 @@ import {
   settleGenerationRateLimit,
   type GenerationDatabase,
   type GenerationJob,
+  type TesterAllowanceLedger,
 } from "./engine";
 import { generationObjectAllowed } from "./objects";
 import { generationCandidateStillPreviewable } from "./preview-access";
@@ -48,9 +49,18 @@ export function createMemoryGenerationCommands(
     async controls() {
       return { liveEnabled: db.controls.liveEnabled === true };
     },
+    async readOwnAllowance(userId) {
+      return readOwnAllowance(db, userId);
+    },
     async reserve(input) {
+      const existing = db.jobs.find((job) => job.userId === input.userId && job.idempotencyKey === input.idempotencyKey);
+      if (!existing) {
+        const blocked = allowanceReserveCode(db, input.userId);
+        if (blocked) return { ok: false, code: blocked };
+      }
       const reserved = reserveGeneration(db, input);
       if (!reserved.ok) return { ok: false, code: reserved.code };
+      if (reserved.created) holdTesterAllowance(db, input.userId);
       return { ok: true, created: reserved.created, job: publicJob(reserved.job) };
     },
     async attachInput(input) {
@@ -287,6 +297,45 @@ export function createMemoryGenerationCommands(
       return true;
     },
   };
+}
+
+function readOwnAllowance(db: GenerationDatabase, userId: string) {
+  const row = db.allowances?.find((item) => item.userId === userId) ?? null;
+  if (!row) {
+    return {
+      ok: true as const,
+      approved: false,
+      enabled: false,
+      authorized: 0,
+      reserved: 0,
+      consumed: 0,
+      remaining: 0,
+    };
+  }
+  return {
+    ok: true as const,
+    approved: true,
+    enabled: row.enabled,
+    authorized: row.authorized,
+    reserved: row.reserved,
+    consumed: row.consumed,
+    remaining: Math.max(0, row.authorized - row.reserved - row.consumed),
+  };
+}
+
+function allowanceReserveCode(db: GenerationDatabase, userId: string): string | null {
+  if (!db.allowances) return null;
+  const row = db.allowances.find((item) => item.userId === userId) ?? null;
+  if (!row) return "allowance_required";
+  if (!row.enabled) return "allowance_disabled";
+  if (row.authorized - row.reserved - row.consumed < 1) return "allowance_exhausted";
+  return null;
+}
+
+function holdTesterAllowance(db: GenerationDatabase, userId: string): void {
+  const row: TesterAllowanceLedger | undefined = db.allowances?.find((item) => item.userId === userId);
+  if (!row) return;
+  row.reserved += 1;
 }
 
 const INPUT_PURGE_STATUSES = new Set(["ready", "saved", "failed", "discarded", "expired", "cancelled"]);

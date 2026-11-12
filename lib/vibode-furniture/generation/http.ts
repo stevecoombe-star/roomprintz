@@ -17,6 +17,8 @@ import {
   readOwnedGeneration,
 } from "./pipeline";
 import { MESHY_TEST_CREDIT_CEILING } from "./policy";
+import { customerEntitlement } from "@/lib/vibode-furniture/generator/beta-generation";
+
 import { furnitureSettingsFromJson } from "./settings-json";
 import {
   GENERATION_REQUEST_BODY_MAX_BYTES,
@@ -59,6 +61,7 @@ export type GenerationHttpDeps = Readonly<{
   isAdmin: (email: string | null | undefined) => boolean;
   nowMs: () => number;
   newJobId?: () => string;
+  enforceCertifiedProfile?: boolean;
 }>;
 
 export async function postFurnitureGeneration(
@@ -96,11 +99,44 @@ export async function postFurnitureGeneration(
       settings,
       images: images.images,
       nowMs: deps.nowMs(),
+      enforceCertifiedProfile: deps.enforceCertifiedProfile === true,
     });
     if (!created.ok) return json(failureStatus(created.errorClass), { ok: false, error: created.message });
     return json(200, { ok: true, created: created.created, job: created.job });
   } catch {
     return json(500, { ok: false, error: "The generation request could not be stored." });
+  }
+}
+
+export async function getFurnitureGenerationAllowance(
+  request: Request,
+  deps: GenerationHttpDeps,
+): Promise<GenerationHttpResult> {
+  const caller = await deps.authorize(request);
+  if (!caller.ok) return caller.response;
+  const url = new URL(request.url);
+  if (url.searchParams.has("userId") || url.searchParams.has("user_id")) {
+    return json(400, { ok: false, error: "That allowance could not be read." });
+  }
+  try {
+    const [controls, allowance] = await Promise.all([
+      deps.commands.controls(),
+      deps.commands.readOwnAllowance(caller.userId),
+    ]);
+    if (!allowance.ok) return json(500, { ok: false, error: "That allowance could not be read." });
+    const entitlement = customerEntitlement({
+      approved: allowance.approved,
+      enabled: allowance.enabled,
+      authorized: allowance.authorized,
+      reserved: allowance.reserved,
+      consumed: allowance.consumed,
+      remaining: allowance.remaining,
+      generationEnabled: deps.env.VIBODE_MESHY_GENERATION_ENABLED === "true",
+      liveEnabled: controls.liveEnabled === true,
+    });
+    return json(200, { ok: true, entitlement });
+  } catch {
+    return json(500, { ok: false, error: "That allowance could not be read." });
   }
 }
 

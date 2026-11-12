@@ -97,8 +97,18 @@ export type GenerationCommandResult<T> =
   | ({ ok: true } & T)
   | { ok: false; code: string };
 
+export type OwnerAllowanceRecord = Readonly<{
+  approved: boolean;
+  enabled: boolean;
+  authorized: number;
+  reserved: number;
+  consumed: number;
+  remaining: number;
+}>;
+
 export type GenerationCommands = {
   controls(): Promise<{ liveEnabled: boolean }>;
+  readOwnAllowance(userId: string): Promise<GenerationCommandResult<OwnerAllowanceRecord>>;
   reserve(input: Readonly<{
     userId: string;
     jobId: string;

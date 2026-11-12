@@ -114,7 +114,11 @@ test("the generation pipeline reserves, previews, and recovers on disposable pos
       nowMs: () => Date.now(),
       newJobId: () => `aaaaaaaa-aaaa-4aaa-8aaa-${(nextId++).toString(16).padStart(12, "0")}`,
     };
-    const stranger: GenerationHttpDeps = {
+    const signedOut: GenerationHttpDeps = {
+      ...deps,
+      authorize: async () => ({ ok: false, response: { status: 401, body: { ok: false, error: "Unauthorized." } } }),
+    };
+    const otherUser: GenerationHttpDeps = {
       ...deps,
       authorize: async () => ({ ok: true, userId: USER_B, email: "person@example.com" }),
     };
@@ -142,8 +146,9 @@ test("the generation pipeline reserves, previews, and recovers on disposable pos
         settings,
         images: [{ slot: "front", base64: Buffer.from(bytes).toString("base64") }],
       }),
-    }), stranger);
+    }), signedOut);
     assert.equal(unauthorized.status, 401);
+    assert.equal(await psql(`select count(*) from public.vibode_furniture_generation_jobs`), "0");
     const tiny = new Uint8Array(await sharp({
       create: { width: 8, height: 48, channels: 3, background: { r: 1, g: 1, b: 1 } },
     }).png().toBuffer());
@@ -193,11 +198,11 @@ test("the generation pipeline reserves, previews, and recovers on disposable pos
     assert.equal(success.posts(), 1);
     const preview = await postFurnitureGenerationPreview(new Request("https://vibode.local/preview", { method: "POST" }), deps, jobId);
     assert.equal(preview.status, 200);
-    const hidden = await getFurnitureGeneration(new Request("https://vibode.local/status"), stranger, jobId);
+    const hidden = await getFurnitureGeneration(new Request("https://vibode.local/status"), otherUser, jobId);
     assert.equal(hidden.status, 404);
     const hiddenPreview = await postFurnitureGenerationPreview(
       new Request("https://vibode.local/preview", { method: "POST" }),
-      stranger,
+      otherUser,
       jobId,
     );
     assert.equal(hiddenPreview.status, 404);

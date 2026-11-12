@@ -167,12 +167,25 @@ export type ResubmitEvent = {
   reason: "operator_recovery" | "submission_budget_exhausted" | "submission_committed";
 };
 
+export type TesterAllowanceLedger = {
+  userId: string;
+  enabled: boolean;
+  authorized: number;
+  reserved: number;
+  consumed: number;
+};
+
 export type GenerationDatabase = {
   controls: GenerationControls;
   jobs: GenerationJob[];
   inputs: GenerationInputRecord[];
   creditResolutions?: CreditResolution[];
   resubmitEvents?: ResubmitEvent[];
+  /**
+   * Present only when a test wants the SQL allowance rules.
+   * An absent ledger keeps the older dry-run reserve path unchanged.
+   */
+  allowances?: TesterAllowanceLedger[];
 };
 
 export type ReserveInput = {
