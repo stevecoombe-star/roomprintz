@@ -15,18 +15,31 @@ import { CandidatePreviewEntry } from "@/components/stage/CandidatePreviewEntry"
 import {
   allowanceBalanceLine,
   betaSubmissionKey,
+  canOfferBetaGeneration,
   claimBetaSubmission,
   customerJobCopy,
+  initialRecoveredSelection,
+  mergeRecentGenerationResponse,
   nextPollDelayMs,
+  readyCandidateExpired,
+  recentGenerationBlocksNew,
+  recentGenerationLabel,
+  RECENT_GENERATION_CHECK_FAILED,
+  rememberRecoverableJob,
+  shouldApplyGenerationRead,
   shouldRefreshAllowance,
+  snapshotFromRecent,
   submissionKeyAfterOutcome,
+  submissionKeyAfterRestore,
   type CustomerEntitlement,
   type CustomerJobSnapshot,
+  type RecoverableGeneration,
 } from "@/lib/vibode-furniture/generator/beta-generation";
 import {
   readBetaEntitlement,
   readBetaGeneration,
   readGenerationAccessToken,
+  readRecentBetaGenerations,
   submitBetaGeneration,
 } from "@/lib/vibode-furniture/generator/beta-generation-client";
 import { requestCandidatePreview } from "@/lib/vibode-furniture/generator/candidate-preview";
@@ -84,20 +97,27 @@ export function FurnitureGeneratorPanel({
   showFixturePreview = process.env.NODE_ENV !== "production",
   initialState,
   fixture,
+  retiredJobId = null,
 }: {
   onOpenPreview: (request: GlbPreviewRequest) => void;
   showFixturePreview?: boolean;
   initialState?: FurnitureGeneratorUiState;
+  retiredJobId?: string | null;
   fixture?: {
     entitlement: CustomerEntitlement;
     job?: CustomerJobSnapshot | null;
+    recent?: readonly RecoverableGeneration[];
     notice?: string | null;
   };
 }) {
+  const recovered = initialRecoveredSelection(fixture);
   const [state, setState] = useState(() => initialFurnitureGeneratorUi(initialState));
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [entitlement, setEntitlement] = useState<CustomerEntitlement | null>(fixture?.entitlement ?? null);
-  const [job, setJob] = useState<CustomerJobSnapshot | null>(fixture?.job ?? null);
+  const [job, setJob] = useState<CustomerJobSnapshot | null>(recovered.job);
+  const [recent, setRecent] = useState<readonly RecoverableGeneration[]>(recovered.recent);
+  const [recentPhase, setRecentPhase] = useState<"loading" | "ready" | "failed">(fixture ? "ready" : "loading");
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [notice, setNotice] = useState<string | null>(fixture?.notice ?? null);
   const [busy, setBusy] = useState(false);
   const stateRef = useRef(state);
@@ -105,10 +125,14 @@ export function FurnitureGeneratorPanel({
   const photoTokenRef = useRef<Partial<Record<FurnitureViewSlot, number>>>({});
   const mountedRef = useRef(true);
   const submissionRef = useRef<{ busy: boolean; key: string | null }>({ busy: false, key: null });
-  const jobRef = useRef<CustomerJobSnapshot | null>(fixture?.job ?? null);
+  const jobRef = useRef<CustomerJobSnapshot | null>(recovered.job);
+  const recentRef = useRef<readonly RecoverableGeneration[]>(recovered.recent);
+  const requestRef = useRef(0);
+  const userSelectedRef = useRef(false);
   const pollFlightRef = useRef(false);
   stateRef.current = state;
   jobRef.current = job;
+  recentRef.current = recent;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -121,39 +145,121 @@ export function FurnitureGeneratorPanel({
     };
   }, []);
 
-  const polling = Boolean(job && customerJobCopy(job).poll);
+  const pollingJobId = job && customerJobCopy(job).poll ? job.jobId : null;
 
   useEffect(() => {
     if (fixture) return;
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
     let cancelled = false;
     void (async () => {
       try {
         const token = await readGenerationAccessToken();
-        if (!token || cancelled) return;
-        const loaded = await readBetaEntitlement({ token });
-        if (cancelled || !mountedRef.current) return;
-        if (!loaded.ok) {
-          setNotice(loaded.message);
+        if (!shouldApplyGenerationRead(requestId, requestRef.current) || cancelled || !mountedRef.current) return;
+        if (!token) {
+          setRecentPhase("failed");
+          setNotice("Sign in to see AI generations.");
           return;
         }
-        setEntitlement(loaded.entitlement);
+        const [loaded, recentRead] = await Promise.all([
+          readBetaEntitlement({ token }),
+          readRecentBetaGenerations({ token }),
+        ]);
+        if (!shouldApplyGenerationRead(requestId, requestRef.current) || cancelled || !mountedRef.current) return;
+        if (loaded.ok) setEntitlement(loaded.entitlement);
+        if (!recentRead.ok) {
+          setRecentPhase("failed");
+          setNotice(RECENT_GENERATION_CHECK_FAILED);
+          submissionRef.current = {
+            busy: submissionRef.current.busy,
+            key: submissionKeyAfterRestore(submissionRef.current.key),
+          };
+          return;
+        }
+        const merged = mergeRecentGenerationResponse({
+          jobs: recentRead.jobs,
+          selectedJobId: jobRef.current?.jobId ?? null,
+          userSelected: userSelectedRef.current,
+        });
+        if (!shouldApplyGenerationRead(requestId, requestRef.current) || cancelled || !mountedRef.current) return;
+        recentRef.current = merged.jobs;
+        setRecent(merged.jobs);
+        setRecentPhase("ready");
+        const selected = merged.jobs.find((item) => item.jobId === merged.selectedJobId) ?? null;
+        const snapshot = selected ? snapshotFromRecent(selected) : null;
+        jobRef.current = snapshot;
+        setJob(snapshot);
+        submissionRef.current = {
+          busy: submissionRef.current.busy,
+          key: submissionKeyAfterRestore(submissionRef.current.key),
+        };
+        const entitlementNotice = loaded.ok ? null : loaded.message;
+        setNotice((current) => {
+          if (entitlementNotice) return entitlementNotice;
+          if (current === RECENT_GENERATION_CHECK_FAILED) return null;
+          return current;
+        });
       } catch {
-        if (!cancelled && mountedRef.current) setNotice("AI generation could not be checked.");
+        if (shouldApplyGenerationRead(requestId, requestRef.current) && !cancelled && mountedRef.current) {
+          setRecentPhase("failed");
+          setNotice(RECENT_GENERATION_CHECK_FAILED);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [fixture]);
+  }, [fixture, reloadNonce]);
 
   useEffect(() => {
-    if (fixture || !polling) return;
+    if (!retiredJobId) return;
+    const next = recentRef.current.filter((item) => item.jobId !== retiredJobId);
+    recentRef.current = next;
+    setRecent(next);
+    if (jobRef.current?.jobId !== retiredJobId) return;
+    userSelectedRef.current = false;
+    const selected = mergeRecentGenerationResponse({
+      jobs: next,
+      selectedJobId: null,
+      userSelected: false,
+    });
+    const snapshot = next.find((item) => item.jobId === selected.selectedJobId) ?? null;
+    const nextJob = snapshot ? snapshotFromRecent(snapshot) : null;
+    jobRef.current = nextJob;
+    setJob(nextJob);
+  }, [retiredJobId]);
+
+  useEffect(() => {
+    if (!job || job.status !== "ready" || !job.outputExpiresAt) return;
+    const expiresAt = Date.parse(job.outputExpiresAt);
+    if (!Number.isFinite(expiresAt)) return;
+    const expire = () => {
+      if (jobRef.current?.jobId !== job.jobId) return;
+      const expired = { ...job, status: "expired", previewAvailable: false };
+      jobRef.current = expired;
+      setJob(expired);
+      const next = recentRef.current.filter((item) => item.jobId !== job.jobId);
+      recentRef.current = next;
+      setRecent(next);
+      setNotice("This preview expired.");
+    };
+    const delay = expiresAt - Date.now();
+    if (delay <= 0) {
+      expire();
+      return;
+    }
+    const timer = setTimeout(expire, delay);
+    return () => clearTimeout(timer);
+  }, [job]);
+
+  useEffect(() => {
+    if (fixture || !pollingJobId) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let delay = 2_000;
     const tick = async () => {
       const current = jobRef.current;
-      if (cancelled || !current || !customerJobCopy(current).poll) return;
+      if (cancelled || !current || current.jobId !== pollingJobId || !customerJobCopy(current).poll) return;
       if (pollFlightRef.current) {
         timer = setTimeout(() => void tick(), delay);
         return;
@@ -162,23 +268,39 @@ export function FurnitureGeneratorPanel({
       let continuePolling = false;
       try {
         const token = await readGenerationAccessToken();
-        if (token && !cancelled && mountedRef.current) {
-          const read = await readBetaGeneration({ token, jobId: current.jobId });
-          if (!cancelled && mountedRef.current && read.ok) {
-            setJob(read.job);
-            jobRef.current = read.job;
-            if (shouldRefreshAllowance(read.job.status)) {
-              submissionRef.current = { busy: false, key: null };
+        if (token && !cancelled && mountedRef.current && jobRef.current?.jobId === pollingJobId) {
+          const read = await readBetaGeneration({ token, jobId: pollingJobId });
+          if (cancelled || !mountedRef.current || jobRef.current?.jobId !== pollingJobId) {
+            continuePolling = false;
+          } else if (read.ok) {
+            const polled = readyCandidateExpired(read.job, Date.now())
+              ? { ...read.job, status: "expired", previewAvailable: false }
+              : read.job;
+            setJob(polled);
+            jobRef.current = polled;
+            const nextRecent = rememberRecoverableJob(recentRef.current, polled, Date.now());
+            recentRef.current = nextRecent;
+            setRecent(nextRecent);
+            if (
+              shouldRefreshAllowance(polled.status)
+              || polled.status === "ready"
+              || polled.status === "needs_review"
+            ) {
               const refreshed = await readBetaEntitlement({ token });
-              if (!cancelled && refreshed.ok) setEntitlement(refreshed.entitlement);
+              if (!cancelled && jobRef.current?.jobId === pollingJobId && refreshed.ok) {
+                setEntitlement(refreshed.entitlement);
+              }
             }
-            continuePolling = customerJobCopy(read.job).poll;
-          } else if (!cancelled && mountedRef.current) {
+            if (shouldRefreshAllowance(polled.status)) {
+              submissionRef.current = { busy: false, key: null };
+            }
+            continuePolling = customerJobCopy(polled).poll && jobRef.current?.jobId === pollingJobId;
+          } else {
             continuePolling = true;
           }
         }
       } catch {
-        continuePolling = !cancelled && mountedRef.current;
+        continuePolling = !cancelled && mountedRef.current && jobRef.current?.jobId === pollingJobId;
       } finally {
         pollFlightRef.current = false;
       }
@@ -191,7 +313,7 @@ export function FurnitureGeneratorPanel({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [fixture, polling]);
+  }, [fixture, pollingJobId]);
 
   function apply(action: FurnitureGeneratorAction) {
     const result = reduceFurnitureGenerator(stateRef.current, action);
@@ -310,7 +432,10 @@ export function FurnitureGeneratorPanel({
           key: submissionKeyAfterOutcome(claimed.key, submitted.uncertain ? "uncertain" : "refused"),
         };
         setNotice(submitted.message);
-        if (!submitted.uncertain) {
+        if (submitted.uncertain) {
+          setRecentPhase("loading");
+          setReloadNonce((value) => value + 1);
+        } else {
           const refreshed = await readBetaEntitlement({ token });
           if (mountedRef.current && refreshed.ok) setEntitlement(refreshed.entitlement);
         }
@@ -322,6 +447,11 @@ export function FurnitureGeneratorPanel({
           ? null
           : submissionKeyAfterOutcome(claimed.key, "started"),
       };
+      requestRef.current += 1;
+      userSelectedRef.current = true;
+      const nextRecent = rememberRecoverableJob(recentRef.current, submitted.job, Date.now());
+      recentRef.current = nextRecent;
+      setRecent(nextRecent);
       setJob(submitted.job);
       jobRef.current = submitted.job;
       setNotice(submitted.created
@@ -339,7 +469,8 @@ export function FurnitureGeneratorPanel({
 
   async function previewReadyModel() {
     const current = jobRef.current;
-    if (!current || current.status !== "ready") return;
+    if (!current || current.status !== "ready" || current.previewAvailable === false) return;
+    if (readyCandidateExpired(current, Date.now())) return;
     const token = await readGenerationAccessToken();
     if (!token) {
       setNotice("Sign in again to preview this model.");
@@ -360,8 +491,27 @@ export function FurnitureGeneratorPanel({
 
   const mode = furnitureInputMode(state.photos);
   const frontIsJpeg = state.photos.front?.mimeType === "image/jpeg";
-  const jobBlocksGenerate = job != null && !["failed", "cancelled", "discarded", "expired", "saved"].includes(job.status);
-  const canGenerate = entitlement?.canGenerate === true && frontIsJpeg && !busy && !jobBlocksGenerate;
+  const visibleRecent = recent.filter((item) => !readyCandidateExpired(item, Date.now()));
+  const displayedJob = job && readyCandidateExpired(job, Date.now())
+    ? { ...job, status: "expired", previewAvailable: false }
+    : job;
+  const canGenerate = canOfferBetaGeneration({
+    entitlement,
+    recentReady: recentPhase === "ready",
+    blocking: recentGenerationBlocksNew(visibleRecent),
+    busy,
+    frontReady: frontIsJpeg,
+  });
+  const previewReady = displayedJob?.status === "ready" && displayedJob.previewAvailable !== false;
+
+  function chooseRecent(jobId: string) {
+    const selected = recentRef.current.find((item) => item.jobId === jobId);
+    if (!selected || readyCandidateExpired(selected, Date.now())) return;
+    userSelectedRef.current = true;
+    const snapshot = snapshotFromRecent(selected);
+    jobRef.current = snapshot;
+    setJob(snapshot);
+  }
   const caps = generatorCapabilities(state.settings, capabilityMode(state.photos));
   const ultra = state.settings.geometryResolution === "standard"
     ? "Off. Standard geometry is selected above. 2K and 4K Ultra add surface detail. 4K needs one photo."
@@ -621,10 +771,35 @@ export function FurnitureGeneratorPanel({
 
       <CandidatePreviewEntry onOpenPreview={onOpenPreview} />
 
-      {job ? (
-        <div className="mt-3" data-generation-phase={job.status} role="status">
-          <div className="text-xs text-neutral-100">{customerJobCopy(job).title}</div>
-          <p className="mt-1 text-[11px] leading-5 text-neutral-400">{customerJobCopy(job).detail}</p>
+      {visibleRecent.length > 1 ? (
+        <section className="mt-3" aria-label="Recent generations" data-recent-count={visibleRecent.length}>
+          <h3 className="text-[11px] text-neutral-400">Recent generations</h3>
+          <ul className="mt-1 space-y-1">
+            {visibleRecent.map((item) => (
+              <li key={item.jobId}>
+                <button
+                  type="button"
+                  aria-pressed={displayedJob?.jobId === item.jobId}
+                  data-recent-job={item.jobId}
+                  onClick={() => chooseRecent(item.jobId)}
+                  className={`w-full rounded-md border px-2 py-1 text-left text-[11px] ${
+                    displayedJob?.jobId === item.jobId
+                      ? "border-neutral-500 text-neutral-100"
+                      : "border-neutral-800 text-neutral-400"
+                  } ${FOCUS}`}
+                >
+                  {recentGenerationLabel(item)}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {displayedJob ? (
+        <div className="mt-3" data-generation-phase={displayedJob.status} role="status">
+          <div className="text-xs text-neutral-100">{customerJobCopy(displayedJob).title}</div>
+          <p className="mt-1 text-[11px] leading-5 text-neutral-400">{customerJobCopy(displayedJob).detail}</p>
         </div>
       ) : null}
       {canGenerate ? (
@@ -647,7 +822,7 @@ export function FurnitureGeneratorPanel({
           Generate
         </button>
       )}
-      {job?.status === "ready" ? (
+      {previewReady ? (
         <button
           type="button"
           onClick={() => void previewReadyModel()}
@@ -660,6 +835,16 @@ export function FurnitureGeneratorPanel({
       <p id="furniture-generator-unavailable" className="mt-1 text-[11px] leading-5 text-neutral-500">
         {notice ?? "Generate stays off until this account is approved and a front JPEG is ready."}
       </p>
+      {recentPhase === "failed" && !fixture ? (
+        <button
+          type="button"
+          onClick={() => setReloadNonce((value) => value + 1)}
+          data-recent-retry="true"
+          className={`mt-2 rounded-md border border-neutral-700 px-2.5 py-1.5 text-[11px] text-neutral-200 ${FOCUS}`}
+        >
+          Check again
+        </button>
+      ) : null}
 
       {showFixturePreview ? (
         <div className="mt-3 border-t border-neutral-900 pt-3">

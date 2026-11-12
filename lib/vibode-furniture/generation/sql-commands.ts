@@ -13,18 +13,21 @@ import type {
   GenerationCommandResult,
   GenerationSaveSource,
   OperatorGenerationJob,
+  OwnerRecentGeneration,
   PublicGenerationJob,
   StoredGenerationInput,
   TemporaryGenerationObject,
 } from "./contracts";
 import type { GenerationStatus } from "./engine";
 import { generationObjectAllowed } from "./objects";
+import { customerGenerationErrorClass, OWNER_RECENT_GENERATION_LIMIT } from "./owner-recent";
 import { generationCandidateStillPreviewable } from "./preview-access";
 import { furnitureSettingsFromJson, furnitureSlotsFromJson } from "./settings-json";
 
 export const GENERATION_RPC_ARGUMENTS = {
   read_vibode_furniture_generation_controls: [],
   read_vibode_furniture_generation_owner_allowance: ["p_user_id"],
+  read_vibode_furniture_generation_owner_recent: ["p_user_id"],
   reserve_vibode_furniture_generation: [
     "p_user_id",
     "p_job_id",
@@ -222,6 +225,15 @@ export function createSqlGenerationCommands(rpc: PositionalGenerationRpc): Gener
       const job = publicFromRead(data);
       if (!job) return { ok: false, code: "not_found" };
       return { ok: true, job };
+    },
+    async listOwnerRecent(userId) {
+      const data = asRecord(await rpc("read_vibode_furniture_generation_owner_recent", [userId]));
+      if (!data || data.ok !== true || !Array.isArray(data.jobs)) return fail(data);
+      const jobs = data.jobs.flatMap((row) => {
+        const job = recentFromRead(asRecord(row));
+        return job ? [job] : [];
+      }).slice(0, OWNER_RECENT_GENERATION_LIMIT);
+      return { ok: true, limit: OWNER_RECENT_GENERATION_LIMIT, jobs };
     },
     async previewSource(userId, jobId) {
       const data = asRecord(await rpc("read_vibode_furniture_generation", [userId, jobId]));
@@ -492,6 +504,24 @@ function saveSourceFrom(
     sha256: typeof sha256 === "string" ? sha256 : null,
     byteSize,
     expiresAtMs,
+  };
+}
+
+function recentFromRead(data: Record<string, unknown> | null): OwnerRecentGeneration | null {
+  if (!data || typeof data.job_id !== "string" || typeof data.status !== "string") return null;
+  if (!STATUSES.has(data.status as GenerationStatus)) return null;
+  if (typeof data.created_at !== "string" || typeof data.updated_at !== "string") return null;
+  if (!Number.isFinite(Date.parse(data.created_at)) || !Number.isFinite(Date.parse(data.updated_at))) return null;
+  const progress = typeof data.progress === "number" && Number.isFinite(data.progress) ? data.progress : 0;
+  return {
+    jobId: data.job_id,
+    status: data.status as GenerationStatus,
+    errorClass: customerGenerationErrorClass(data.error_class),
+    progress,
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
+    outputExpiresAt: typeof data.output_expires_at === "string" ? data.output_expires_at : null,
+    previewAvailable: data.preview_available === true,
   };
 }
 

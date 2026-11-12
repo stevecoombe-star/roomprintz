@@ -5,7 +5,12 @@
 
 import { defaultFurnitureGeneratorSettings } from "@/lib/vibode-furniture/generator/settings";
 
-import type { CustomerEntitlement, CustomerJobSnapshot } from "./beta-generation";
+import {
+  recoverableGenerationsFromPayload,
+  type CustomerEntitlement,
+  type CustomerJobSnapshot,
+  type RecoverableGeneration,
+} from "./beta-generation";
 
 export type BetaSubmitResult =
   | Readonly<{ ok: true; created: boolean; job: CustomerJobSnapshot }>
@@ -63,6 +68,28 @@ export async function submitBetaGeneration(input: Readonly<{
     return { ok: true, created, job };
   }
   return { ok: false, uncertain: false, message: safeCustomerMessage(response.payload) };
+}
+
+export async function readRecentBetaGenerations(input: Readonly<{
+  token: string;
+  fetchImpl?: typeof fetch;
+  nowMs?: number;
+}>): Promise<{ ok: true; jobs: readonly RecoverableGeneration[] } | { ok: false; uncertain: boolean; message: string }> {
+  if (!input.token) {
+    return { ok: false, uncertain: false, message: "Sign in to see AI generations." };
+  }
+  const response = await requestJson(input.fetchImpl, "/api/vibode/furniture-generations/recent", {
+    method: "GET",
+    headers: { authorization: `Bearer ${input.token}` },
+  });
+  if (response.uncertain) {
+    return { ok: false, uncertain: true, message: "Your generations could not be checked. Nothing new was started." };
+  }
+  const jobs = recoverableGenerationsFromPayload(response.payload, input.nowMs ?? Date.now());
+  if (!response.ok || !jobs) {
+    return { ok: false, uncertain: false, message: "Your generations could not be checked. Nothing new was started." };
+  }
+  return { ok: true, jobs };
 }
 
 export async function readBetaGeneration(input: Readonly<{
@@ -148,6 +175,8 @@ function jobFromPayload(payload: Record<string, unknown> | null): CustomerJobSna
     status: record.status,
     errorClass: typeof record.errorClass === "string" ? record.errorClass : null,
     progress: record.progress,
+    outputExpiresAt: typeof record.outputExpiresAt === "string" ? record.outputExpiresAt : null,
+    previewAvailable: typeof record.previewAvailable === "boolean" ? record.previewAvailable : undefined,
   };
 }
 

@@ -140,6 +140,29 @@ export async function getFurnitureGenerationAllowance(
   }
 }
 
+export async function getFurnitureGenerationRecent(
+  request: Request,
+  deps: GenerationHttpDeps,
+): Promise<GenerationHttpResult> {
+  const caller = await deps.authorize(request);
+  if (!caller.ok) return caller.response;
+  const url = new URL(request.url);
+  if (url.searchParams.has("userId") || url.searchParams.has("user_id")) {
+    return json(400, { ok: false, error: "Those generations could not be read." });
+  }
+  try {
+    const listed = await deps.commands.listOwnerRecent(caller.userId);
+    if (!listed.ok) return json(500, { ok: false, error: "Those generations could not be read." });
+    return json(200, {
+      ok: true,
+      limit: listed.limit,
+      jobs: listed.jobs,
+    });
+  } catch {
+    return json(500, { ok: false, error: "Those generations could not be read." });
+  }
+}
+
 export async function getFurnitureGeneration(
   request: Request,
   deps: GenerationHttpDeps,

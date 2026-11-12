@@ -37,6 +37,7 @@ export function StageMyFurniturePanel({
   const [progress, setProgress] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState(closedPreviewModal);
+  const [savedCandidateJobId, setSavedCandidateJobId] = useState<string | null>(null);
   const openPreview = useCallback((request: GlbPreviewRequest) => {
     setPreview((current) => openGlbPreview(current, request));
   }, []);
@@ -317,7 +318,7 @@ export function StageMyFurniturePanel({
           </div>
       </div>
       <div className={stage.furnitureSubmode === "generator" ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
-        <FurnitureGeneratorPanel onOpenPreview={openPreview} />
+        <FurnitureGeneratorPanel onOpenPreview={openPreview} retiredJobId={savedCandidateJobId} />
       </div>
       <FurnitureGlbPreviewModal
         state={preview}
@@ -326,6 +327,9 @@ export function StageMyFurniturePanel({
           void load();
         }}
         onCandidateSaved={(saved) => {
+          if (preview.open && preview.request.kind === "candidate") {
+            setSavedCandidateJobId(preview.request.jobId);
+          }
           setError(null);
           setMessage(saved.idempotent
             ? `${saved.displayName} is already in My Furniture.`

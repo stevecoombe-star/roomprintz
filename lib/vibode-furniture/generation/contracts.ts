@@ -17,6 +17,17 @@ export type PublicGenerationJob = Readonly<{
   outputExpiresAt: string | null;
 }>;
 
+export type OwnerRecentGeneration = Readonly<{
+  jobId: string;
+  status: GenerationStatus;
+  errorClass: string | null;
+  progress: number;
+  createdAt: string;
+  updatedAt: string;
+  outputExpiresAt: string | null;
+  previewAvailable: boolean;
+}>;
+
 export type GenerationSaveSource = Readonly<{
   status: GenerationStatus;
   savedAssetId: string | null;
@@ -160,6 +171,10 @@ export type GenerationCommands = {
     nowMs: number;
   }>): Promise<GenerationCommandResult<{ status: string; consumedCredits: number; idempotent: boolean }>>;
   readOwner(userId: string, jobId: string): Promise<GenerationCommandResult<{ job: PublicGenerationJob }>>;
+  listOwnerRecent(userId: string): Promise<GenerationCommandResult<{
+    limit: number;
+    jobs: readonly OwnerRecentGeneration[];
+  }>>;
   previewSource(userId: string, jobId: string): Promise<GenerationCommandResult<{ bucket: string; path: string }>>;
   readSaveSource(userId: string, jobId: string): Promise<GenerationCommandResult<GenerationSaveSource>>;
   linkSavedAsset(input: Readonly<{

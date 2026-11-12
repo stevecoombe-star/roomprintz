@@ -6,6 +6,7 @@
 import type {
   ClaimedGeneration,
   GenerationCommands,
+  OwnerRecentGeneration,
   PublicGenerationJob,
   TemporaryGenerationObject,
 } from "./contracts";
@@ -37,6 +38,12 @@ import {
   type TesterAllowanceLedger,
 } from "./engine";
 import { generationObjectAllowed } from "./objects";
+import {
+  customerGenerationErrorClass,
+  OWNER_RECENT_GENERATION_LIMIT,
+  ownerRecentPreviewAvailable,
+  ownerRecentRecoverable,
+} from "./owner-recent";
 import { generationCandidateStillPreviewable } from "./preview-access";
 
 const CLAIMABLE = new Set(["reserved", "submitting", "ambiguous", "running", "ingesting", "needs_review"]);
@@ -100,6 +107,26 @@ export function createMemoryGenerationCommands(
       const job = readGeneration(db, userId, jobId);
       if (!job) return { ok: false, code: "not_found" };
       return { ok: true, job: publicJob(job) };
+    },
+    async listOwnerRecent(userId) {
+      const jobs = db.jobs
+        .filter((job) => job.userId === userId && ownerRecentRecoverable({
+          status: job.status,
+          saved: job.savedAssetId != null,
+          expiresAtMs: job.outputExpiresAtMs,
+          nowMs: clock.nowMs,
+        }))
+        .sort((left, right) => {
+          if (left.createdAtMs !== right.createdAtMs) return right.createdAtMs - left.createdAtMs;
+          if (left.jobId === right.jobId) return 0;
+          return left.jobId < right.jobId ? 1 : -1;
+        })
+        .slice(0, OWNER_RECENT_GENERATION_LIMIT)
+        .flatMap((job) => {
+          const recent = recentJob(job, clock.nowMs);
+          return recent ? [recent] : [];
+        });
+      return { ok: true, limit: OWNER_RECENT_GENERATION_LIMIT, jobs };
     },
     async previewSource(userId, jobId) {
       const job = readGeneration(db, userId, jobId);
@@ -387,6 +414,33 @@ function candidatePurgeable(job: GenerationJob): boolean {
   if (job.outputObjectPath.includes("/assets/")) return false;
   if (job.status === "saved" && job.savedAssetId) return true;
   return job.savedAssetId == null && CANDIDATE_TERMINAL_STATUSES.has(job.status);
+}
+
+function recentJob(job: GenerationJob, nowMs: number): OwnerRecentGeneration | null {
+  if (!ownerRecentRecoverable({
+    status: job.status,
+    saved: job.savedAssetId != null,
+    expiresAtMs: job.outputExpiresAtMs,
+    nowMs,
+  })) return null;
+  return {
+    jobId: job.jobId,
+    status: job.status,
+    errorClass: customerGenerationErrorClass(job.errorClass),
+    progress: job.progress,
+    createdAt: new Date(job.createdAtMs).toISOString(),
+    updatedAt: new Date(job.updatedAtMs).toISOString(),
+    outputExpiresAt: job.status === "ready" && job.outputExpiresAtMs != null
+      ? new Date(job.outputExpiresAtMs).toISOString()
+      : null,
+    previewAvailable: ownerRecentPreviewAvailable({
+      status: job.status,
+      saved: job.savedAssetId != null,
+      expiresAtMs: job.outputExpiresAtMs,
+      hasOutput: job.outputObjectPath != null,
+      nowMs,
+    }),
+  };
 }
 
 function publicJob(job: GenerationJob): PublicGenerationJob {

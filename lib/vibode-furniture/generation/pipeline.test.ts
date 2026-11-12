@@ -282,7 +282,7 @@ test("a single image reaches a private preview without a second post", async () 
 
   const next = await postFurnitureGeneration(request("idem-key-0002", bytes), ctx.deps);
   assert.equal(next.status, 409);
-  assert.equal((next.body as { error: string }).error, "A paid generation is not authorized.");
+  assert.equal((next.body as { error: string }).error, "AI generation is temporarily unavailable.");
   assert.equal(ctx.db.jobs.length, 1);
   assert.equal(ctx.db.jobs[0]?.status, "ready");
   assert.equal(ctx.db.controls.creditsConsumed, 20);
@@ -586,7 +586,7 @@ test("expiry removes the candidate and keeps the consumed credits", async () => 
   assert.equal(ctx.db.controls.creditsReserved, 0);
   const next = await postFurnitureGeneration(request("idem-key-0002", await png()), ctx.deps);
   assert.equal(next.status, 409);
-  assert.equal((next.body as { error: string }).error, "A paid generation is not authorized.");
+  assert.equal((next.body as { error: string }).error, "AI generation is temporarily unavailable.");
   assert.equal(ctx.db.jobs.length, 1);
   assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
 });
@@ -595,7 +595,7 @@ test("the paid allowance starts at zero and is not replenished", async () => {
   const blocked = harness();
   const denied = await postFurnitureGeneration(request("idem-key-0001", await png()), blocked.deps);
   assert.equal(denied.status, 409);
-  assert.equal((denied.body as { error: string }).error, "A paid generation is not authorized.");
+  assert.equal((denied.body as { error: string }).error, "AI generation is temporarily unavailable.");
   const none = scripted([response(202, { result: TASK_ID })]);
   assert.equal((await runPass(blocked, none, okGlb)).action, "idle");
   assert.equal(none.posts(), 0);
@@ -614,7 +614,7 @@ test("the paid allowance starts at zero and is not replenished", async () => {
   assert.equal(refused.db.controls.creditsConsumed, 0);
   const next = await postFurnitureGeneration(request("idem-key-0002", await png()), refused.deps);
   assert.equal(next.status, 409);
-  assert.equal((next.body as { error: string }).error, "A paid generation is not authorized.");
+  assert.equal((next.body as { error: string }).error, "AI generation is temporarily unavailable.");
   const second = scripted([response(202, { result: "018a210d-8ba4-705c-b111-1f1776f7f580" })]);
   assert.equal((await runPass(refused, second, okGlb)).action, "idle");
   assert.equal(second.posts(), 0);
@@ -652,7 +652,7 @@ test("the paid allowance starts at zero and is not replenished", async () => {
   assert.equal(limited.db.controls.paidSubmissionsUsed, 1);
   const another = await postFurnitureGeneration(request("idem-key-0002", await png()), limited.deps);
   assert.equal(another.status, 409);
-  assert.equal((another.body as { error: string }).error, "A paid generation is not authorized.");
+  assert.equal((another.body as { error: string }).error, "AI generation is temporarily unavailable.");
   const blockedRetry = scripted([response(202, { result: "018a210d-8ba4-705c-b111-1f1776f7f580" })]);
   assert.equal((await runPass(limited, blockedRetry, okGlb)).action, "idle");
   assert.equal(blockedRetry.posts(), 0);
@@ -767,7 +767,7 @@ test("an owner cannot grant a paid submission and a restart does not replenish i
   const restarted = scripted([response(202, { result: "018a210d-8ba4-705c-b111-1f1776f7f580" })]);
   const created = await postFurnitureGeneration(request("idem-key-0002", await png()), ctx.deps);
   assert.equal(created.status, 409);
-  assert.equal((created.body as { error: string }).error, "A paid generation is not authorized.");
+  assert.equal((created.body as { error: string }).error, "AI generation is temporarily unavailable.");
   assert.equal((await runPass(ctx, restarted, okGlb)).action, "idle");
   assert.equal(restarted.posts(), 0);
   assert.equal(ctx.db.jobs.length, 1);
