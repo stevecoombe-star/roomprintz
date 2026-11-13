@@ -611,7 +611,18 @@ begin
     );
   end loop;
 
-  if to_regclass('public.profiles') is not null then
+  -- The generic loop already attaches this trigger when profiles has a uuid
+  -- user_id. Creating it again aborts the migration, and a later file cannot
+  -- repair an aborted transaction. Repository profiles are keyed by id.
+  if to_regclass('public.profiles') is not null
+     and not exists (
+       select 1
+       from pg_trigger
+       where tgrelid = to_regclass('public.profiles')
+         and tgname = 'vibode_account_deletion_block_write'
+         and not tgisinternal
+     )
+  then
     execute $sql$
       create trigger vibode_account_deletion_block_write
       before insert or update on public.profiles
