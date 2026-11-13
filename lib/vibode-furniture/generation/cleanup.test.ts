@@ -399,6 +399,9 @@ function storageClient(input: {
       };
       return builder;
     },
+    async rpc() {
+      return { data: { ok: true, blocked: false }, error: null };
+    },
     storage: {
       from(bucket: string) {
         return {

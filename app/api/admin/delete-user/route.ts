@@ -260,6 +260,40 @@ async function deleteRowsByUserId(args: {
   return { deleted: count ?? 0, skipped: false };
 }
 
+const UNSETTLED_GENERATION_HOLD_MESSAGE =
+  "This account has an unresolved AI furniture generation. Resolve the generation before deleting the account.";
+
+type UnsettledHoldDecision = "clear" | "blocked" | "unknown";
+
+function unsettledHoldDecision(data: unknown): UnsettledHoldDecision {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return "unknown";
+  const record = data as { ok?: unknown; blocked?: unknown };
+  if (record.ok !== true || typeof record.blocked !== "boolean") return "unknown";
+  return record.blocked ? "blocked" : "clear";
+}
+
+async function readUnsettledGenerationHold(
+  supabaseAdmin: AnySupabaseClient,
+  userId: string,
+): Promise<UnsettledHoldDecision> {
+  try {
+    const { data, error } = await supabaseAdmin.rpc(
+      "vibode_furniture_generation_account_has_unsettled_hold",
+      { p_user_id: userId },
+    );
+    if (error) {
+      console.error("[admin/delete-user] unsettled generation check failed", {
+        code: typeof error.code === "string" ? error.code : null,
+      });
+      return "unknown";
+    }
+    return unsettledHoldDecision(data);
+  } catch {
+    console.error("[admin/delete-user] unsettled generation check failed", { code: null });
+    return "unknown";
+  }
+}
+
 export type AdminDeleteUserHandlerDeps = {
   getAuthenticatedAdminUser?: typeof getAuthenticatedAdminUser;
   getServiceRoleSupabaseClient?: typeof getServiceRoleSupabaseClient;
@@ -305,6 +339,14 @@ export function createAdminDeleteUserPostHandler(
   const targetEmail = authUserData.user.email ?? "";
   if (!targetEmail || confirmEmail !== targetEmail) {
     return json(400, { error: "Confirmation email does not match target user email." });
+  }
+
+  const unsettledHold = await readUnsettledGenerationHold(supabaseAdmin, userId);
+  if (unsettledHold === "blocked") {
+    return json(409, { error: UNSETTLED_GENERATION_HOLD_MESSAGE });
+  }
+  if (unsettledHold !== "clear") {
+    return json(500, { error: "Account deletion could not be checked." });
   }
 
   const afcCleanup = await cleanupAfcV2Storage({

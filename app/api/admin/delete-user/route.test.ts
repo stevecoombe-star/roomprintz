@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -49,6 +50,7 @@ function createRouteSupabase(
       string,
       unknown
     >;
+    unsettledHold?: "clear" | "blocked" | "error" | "malformed";
   } = {},
 ) {
   return {
@@ -73,6 +75,19 @@ function createRouteSupabase(
     from(table: string) {
       sink.ops.push(`from:${table}`);
       return createThenBuilder(sink, table, { data: [], error: null, count: 1 });
+    },
+    async rpc(name: string) {
+      sink.ops.push(`rpc:${name}`);
+      if (options.unsettledHold === "error") {
+        return { data: null, error: { message: "users/secret/task-secret", code: "XX000" } };
+      }
+      if (options.unsettledHold === "malformed") {
+        return { data: { ok: true }, error: null };
+      }
+      if (options.unsettledHold === "blocked") {
+        return { data: { ok: true, blocked: true }, error: null };
+      }
+      return { data: { ok: true, blocked: false }, error: null };
     },
     storage: {
       from(bucket: string) {
@@ -421,4 +436,102 @@ test("FIX1 8/12 prefix listing failure blocks success and hides storage paths", 
   assert.equal(serialized.includes("users/"), false);
   assert.equal(serialized.includes("storage listing timeout"), false);
   assert.equal(serialized.includes(AFC_V2_PRODUCTION_STORAGE_BUCKET), false);
+});
+
+const UNSETTLED_MESSAGE =
+  "This account has an unresolved AI furniture generation. Resolve the generation before deleting the account.";
+
+test("unsettled generation hold is rejected before storage and auth deletion", async () => {
+  const sink: OpSink = { ops: [], removed: [] };
+  let afcCalls = 0;
+  const route = createAdminDeleteUserPostHandler({
+    getAuthenticatedAdminUser: async () =>
+      ({ id: ADMIN_ID, email: "admin@example.test" }) as never,
+    getServiceRoleSupabaseClient: () =>
+      createRouteSupabase(sink, { unsettledHold: "blocked" }) as never,
+    deleteAfcV2UserStorage: async () => {
+      afcCalls += 1;
+      sink.ops.push("afc-cleanup");
+      return { ok: true, deleted: 4, skipped: 0 };
+    },
+  });
+  const first = await post(route, { userId: USER_A, confirmEmail: EMAIL_A });
+  const firstBody = await jsonBody(first);
+  assert.equal(first.status, 409);
+  assert.equal(firstBody.error, UNSETTLED_MESSAGE);
+  assert.equal(firstBody.success, undefined);
+  assert.equal(JSON.stringify(firstBody).includes("task"), false);
+  assert.equal(JSON.stringify(firstBody).includes("users/"), false);
+  assert.equal(afcCalls, 0);
+  assert.equal(sink.removed.length, 0);
+  assert.equal(sink.ops.includes(`auth-delete:${USER_A}`), false);
+  assert.equal(sink.ops.includes("delete:vibode_rooms"), false);
+  assert.equal(sink.ops.some((op) => op.startsWith("storage:")), false);
+  assert.equal(sink.ops.some((op) => op.startsWith("remove:")), false);
+  const rpcAt = sink.ops.indexOf("rpc:vibode_furniture_generation_account_has_unsettled_hold");
+  const authGetAt = sink.ops.indexOf("auth-get");
+  assert.ok(authGetAt >= 0);
+  assert.ok(rpcAt > authGetAt);
+
+  const second = await post(route, { userId: USER_A, confirmEmail: EMAIL_A });
+  const secondBody = await jsonBody(second);
+  assert.equal(second.status, 409);
+  assert.equal(secondBody.error, UNSETTLED_MESSAGE);
+  assert.equal(afcCalls, 0);
+  assert.equal(sink.removed.length, 0);
+  assert.equal(sink.ops.includes(`auth-delete:${USER_A}`), false);
+});
+
+test("an unreadable generation hold check blocks deletion before storage", async () => {
+  const sink: OpSink = { ops: [], removed: [] };
+  const logs: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    logs.push(args);
+  };
+  try {
+    const route = createAdminDeleteUserPostHandler({
+      getAuthenticatedAdminUser: async () =>
+        ({ id: ADMIN_ID, email: "admin@example.test" }) as never,
+      getServiceRoleSupabaseClient: () =>
+        createRouteSupabase(sink, { unsettledHold: "error" }) as never,
+      deleteAfcV2UserStorage: async () => {
+        sink.ops.push("afc-cleanup");
+        return { ok: true, deleted: 1, skipped: 0 };
+      },
+    });
+    const response = await post(route, { userId: USER_A, confirmEmail: EMAIL_A });
+    const body = await jsonBody(response);
+    assert.equal(response.status, 500);
+    assert.equal(body.error, "Account deletion could not be checked.");
+    assert.equal(JSON.stringify(body).includes("users/"), false);
+    assert.equal(JSON.stringify(body).includes("task-secret"), false);
+    assert.equal(sink.ops.includes("afc-cleanup"), false);
+    assert.equal(sink.ops.includes(`auth-delete:${USER_A}`), false);
+    assert.equal(sink.removed.length, 0);
+    const logged = JSON.stringify(logs);
+    assert.equal(logged.includes("users/"), false);
+    assert.equal(logged.includes("task-secret"), false);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("account deletion storage limits stay fail-closed and follow the hold check", () => {
+  const source = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
+  const holdAt = source.indexOf("readUnsettledGenerationHold");
+  const cleanupAt = source.indexOf("cleanupAfcV2Storage({");
+  const removeAt = source.indexOf("supabaseAdmin.storage.from(candidate.bucket).remove");
+  const authDeleteAt = source.indexOf("auth.admin.deleteUser");
+  assert.ok(holdAt > 0);
+  assert.ok(cleanupAt > holdAt);
+  assert.ok(removeAt > cleanupAt);
+  assert.ok(authDeleteAt > removeAt);
+  assert.equal(source.match(/maxFiles: 10000/g)?.length, 2);
+  assert.equal(source.match(/maxDirectories: 10000/g)?.length, 2);
+  assert.match(source, /vibode-furniture-assets/);
+  assert.match(source, /GENERATION_INPUT_BUCKET/);
+  assert.match(source, /Generation input cleanup is incomplete/);
+  assert.match(source, /Furniture storage cleanup is incomplete/);
+  assert.doesNotMatch(source, /api\.meshy\.ai|MESHY_API_KEY/);
 });
