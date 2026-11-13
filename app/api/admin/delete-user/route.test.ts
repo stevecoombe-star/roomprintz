@@ -51,8 +51,13 @@ function createRouteSupabase(
       unknown
     >;
     unsettledHold?: "clear" | "blocked" | "error" | "malformed";
+    admission?: "ok" | "unsettled" | "busy" | "unavailable";
+    removeError?: boolean;
+    listError?: boolean;
+    listedFile?: boolean;
   } = {},
 ) {
+  const attemptId = "99999999-9999-4999-8999-999999999999";
   return {
     auth: {
       admin: {
@@ -78,16 +83,43 @@ function createRouteSupabase(
     },
     async rpc(name: string) {
       sink.ops.push(`rpc:${name}`);
-      if (options.unsettledHold === "error") {
-        return { data: null, error: { message: "users/secret/task-secret", code: "XX000" } };
+      if (name === "vibode_furniture_generation_account_has_unsettled_hold") {
+        if (options.unsettledHold === "error") {
+          return { data: null, error: { message: "users/secret/task-secret", code: "XX000" } };
+        }
+        if (options.unsettledHold === "malformed") {
+          return { data: { ok: true }, error: null };
+        }
+        if (options.unsettledHold === "blocked") {
+          return { data: { ok: true, blocked: true }, error: null };
+        }
+        return { data: { ok: true, blocked: false }, error: null };
       }
-      if (options.unsettledHold === "malformed") {
+      if (name === "begin_vibode_account_deletion") {
+        if (options.admission === "unsettled") {
+          return { data: { ok: false, code: "unsettled_hold" }, error: null };
+        }
+        if (options.admission === "unavailable") {
+          return { data: null, error: { message: "users/secret/model.glb", code: "XX000" } };
+        }
+        return {
+          data: { ok: true, code: "begun", attempt_id: attemptId, phase: "admitted", claimed: false },
+          error: null,
+        };
+      }
+      if (name === "claim_vibode_account_deletion") {
+        if (options.admission === "busy") {
+          return { data: { ok: false, code: "deletion_in_progress" }, error: null };
+        }
+        return { data: { ok: true, phase: "admitted" }, error: null };
+      }
+      if (name === "mark_vibode_account_deletion_destructive") {
+        return { data: { ok: true, phase: "destructive" }, error: null };
+      }
+      if (name === "release_vibode_account_deletion_claim" || name === "note_vibode_account_deletion_succeeded") {
         return { data: { ok: true }, error: null };
       }
-      if (options.unsettledHold === "blocked") {
-        return { data: { ok: true, blocked: true }, error: null };
-      }
-      return { data: { ok: true, blocked: false }, error: null };
+      return { data: null, error: { message: "unexpected rpc", code: "XX000" } };
     },
     storage: {
       from(bucket: string) {
@@ -98,11 +130,20 @@ function createRouteSupabase(
             if (bucket === AFC_V2_PRODUCTION_STORAGE_BUCKET && options.afcListError) {
               return { data: null, error: options.afcListError };
             }
+            if (bucket === "vibode-furniture-assets" && options.listError) {
+              return { data: null, error: { message: "users/secret/model.glb" } };
+            }
+            if (bucket === "vibode-furniture-assets" && options.listedFile && path === `users/${USER_A}`) {
+              return { data: [{ name: "model.glb", metadata: { size: 4 } }], error: null };
+            }
             return { data: [], error: null };
           },
           async remove(paths: string[]) {
             sink.ops.push(`remove:${bucket}`);
             sink.removed.push({ bucket, paths });
+            if (options.removeError) {
+              return { error: { message: "users/secret/model.glb" } };
+            }
             return { error: null };
           },
         };
@@ -517,16 +558,126 @@ test("an unreadable generation hold check blocks deletion before storage", async
   }
 });
 
+test("a deletion barrier is committed before storage cleanup and released after failure", async () => {
+  const attemptId = "99999999-9999-4999-8999-999999999999";
+  const blocked: OpSink = { ops: [], removed: [] };
+  const lateHold = createAdminDeleteUserPostHandler({
+    getAuthenticatedAdminUser: async () => ({ id: ADMIN_ID, email: "admin@example.test" }) as never,
+    getServiceRoleSupabaseClient: () => createRouteSupabase(blocked, { admission: "unsettled" }) as never,
+    deleteAfcV2UserStorage: async () => {
+      blocked.ops.push("afc-cleanup");
+      return { ok: true, deleted: 1, skipped: 0 };
+    },
+  });
+  const late = await post(lateHold, { userId: USER_A, confirmEmail: EMAIL_A });
+  const lateBody = await jsonBody(late);
+  assert.equal(late.status, 409);
+  assert.equal(lateBody.error, "This account has an unresolved AI furniture generation. Resolve the generation before deleting the account.");
+  assert.equal(blocked.ops.includes("afc-cleanup"), false);
+  assert.equal(blocked.removed.length, 0);
+  assert.equal(blocked.ops.includes("rpc:begin_vibode_account_deletion"), true);
+  assert.equal(blocked.ops.includes("rpc:claim_vibode_account_deletion"), false);
+
+  const busySink: OpSink = { ops: [], removed: [] };
+  const busyRoute = createAdminDeleteUserPostHandler({
+    getAuthenticatedAdminUser: async () => ({ id: ADMIN_ID, email: "admin@example.test" }) as never,
+    getServiceRoleSupabaseClient: () => createRouteSupabase(busySink, { admission: "busy" }) as never,
+    deleteAfcV2UserStorage: async () => {
+      busySink.ops.push("afc-cleanup");
+      return { ok: true, deleted: 1, skipped: 0 };
+    },
+  });
+  const busy = await post(busyRoute, { userId: USER_A, confirmEmail: EMAIL_A });
+  const busyBody = await jsonBody(busy);
+  assert.equal(busy.status, 409);
+  assert.equal(busyBody.attemptId, attemptId);
+  assert.equal(String(busyBody.error).includes(attemptId), true);
+  assert.equal(JSON.stringify(busyBody).includes("users/"), false);
+  assert.equal(busySink.ops.includes("afc-cleanup"), false);
+  assert.equal(busySink.ops.includes("rpc:release_vibode_account_deletion_claim"), false);
+
+  const failedSink: OpSink = { ops: [], removed: [] };
+  const failedRoute = createAdminDeleteUserPostHandler({
+    getAuthenticatedAdminUser: async () => ({ id: ADMIN_ID, email: "admin@example.test" }) as never,
+    getServiceRoleSupabaseClient: () =>
+      createRouteSupabase(failedSink, { listedFile: true, removeError: true }) as never,
+    deleteAfcV2UserStorage: async () => ({ ok: true, deleted: 0, skipped: 0 }),
+  });
+  const failed = await post(failedRoute, { userId: USER_A, confirmEmail: EMAIL_A });
+  const failedBody = await jsonBody(failed);
+  assert.equal(failed.status, 500);
+  assert.equal(String(failedBody.error).includes("users/"), false);
+  assert.equal(String(failedBody.error).includes("model.glb"), false);
+  assert.equal(failedBody.authUserDeleted, false);
+  assert.equal(failedSink.ops.includes(`auth-delete:${USER_A}`), false);
+  assert.equal(failedSink.ops.includes("rpc:release_vibode_account_deletion_claim"), true);
+  assert.equal(failedSink.ops.includes("rpc:note_vibode_account_deletion_succeeded"), false);
+  assert.equal(failedSink.removed.length, 1);
+
+  const listedSink: OpSink = { ops: [], removed: [] };
+  const listedRoute = createAdminDeleteUserPostHandler({
+    getAuthenticatedAdminUser: async () => ({ id: ADMIN_ID, email: "admin@example.test" }) as never,
+    getServiceRoleSupabaseClient: () => createRouteSupabase(listedSink, { listError: true }) as never,
+    deleteAfcV2UserStorage: async () => ({ ok: true, deleted: 0, skipped: 0 }),
+  });
+  const listed = await post(listedRoute, { userId: USER_A, confirmEmail: EMAIL_A });
+  const listedBody = await jsonBody(listed);
+  assert.equal(listed.status, 500);
+  assert.equal(listedBody.error, "Furniture storage cleanup failed. Account deletion was not finished.");
+  assert.equal(JSON.stringify(listedBody).includes("secret"), false);
+  assert.equal(listedSink.ops.includes("rpc:release_vibode_account_deletion_claim"), true);
+  assert.equal(listedSink.ops.includes(`auth-delete:${USER_A}`), false);
+
+  const authSink: OpSink = { ops: [], removed: [] };
+  const authRoute = createAdminDeleteUserPostHandler({
+    getAuthenticatedAdminUser: async () => ({ id: ADMIN_ID, email: "admin@example.test" }) as never,
+    getServiceRoleSupabaseClient: () =>
+      createRouteSupabase(authSink, { deleteAuthError: { message: "users/secret", code: "XX000" } }) as never,
+    deleteAfcV2UserStorage: async () => ({ ok: true, deleted: 0, skipped: 0 }),
+  });
+  const authFailed = await post(authRoute, { userId: USER_A, confirmEmail: EMAIL_A });
+  const authBody = await jsonBody(authFailed);
+  assert.equal(authFailed.status, 500);
+  assert.equal(authBody.error, "Failed deleting auth user.");
+  assert.equal(JSON.stringify(authBody).includes("users/"), false);
+  assert.equal(authSink.ops.includes("rpc:release_vibode_account_deletion_claim"), true);
+  assert.equal(authSink.ops.includes("rpc:note_vibode_account_deletion_succeeded"), false);
+
+  const okSink: OpSink = { ops: [], removed: [] };
+  const okRoute = createAdminDeleteUserPostHandler({
+    getAuthenticatedAdminUser: async () => ({ id: ADMIN_ID, email: "admin@example.test" }) as never,
+    getServiceRoleSupabaseClient: () => createRouteSupabase(okSink) as never,
+    deleteAfcV2UserStorage: async () => {
+      okSink.ops.push("afc-cleanup");
+      return { ok: true, deleted: 0, skipped: 0 };
+    },
+  });
+  const ok = await post(okRoute, { userId: USER_A, confirmEmail: EMAIL_A });
+  assert.equal(ok.status, 200);
+  assert.equal(okSink.ops.includes("rpc:note_vibode_account_deletion_succeeded"), true);
+  assert.equal(okSink.ops.includes("rpc:release_vibode_account_deletion_claim"), false);
+  const beginAt = okSink.ops.indexOf("rpc:begin_vibode_account_deletion");
+  const markAt = okSink.ops.indexOf("rpc:mark_vibode_account_deletion_destructive");
+  const cleanupAt = okSink.ops.indexOf("afc-cleanup");
+  assert.ok(beginAt >= 0 && beginAt < markAt && markAt < cleanupAt);
+});
+
 test("account deletion storage limits stay fail-closed and follow the hold check", () => {
   const source = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
   const holdAt = source.indexOf("readUnsettledGenerationHold");
+  const beginAt = source.indexOf("await beginAccountDeletion");
+  const markAt = source.indexOf("await markAccountDeletionDestructive");
   const cleanupAt = source.indexOf("cleanupAfcV2Storage({");
   const removeAt = source.indexOf("supabaseAdmin.storage.from(candidate.bucket).remove");
   const authDeleteAt = source.indexOf("auth.admin.deleteUser");
+  const releaseAt = source.indexOf("await releaseAccountDeletionClaim");
   assert.ok(holdAt > 0);
-  assert.ok(cleanupAt > holdAt);
+  assert.ok(beginAt > holdAt);
+  assert.ok(markAt > beginAt);
+  assert.ok(cleanupAt > markAt);
   assert.ok(removeAt > cleanupAt);
   assert.ok(authDeleteAt > removeAt);
+  assert.ok(releaseAt > authDeleteAt);
   assert.equal(source.match(/maxFiles: 10000/g)?.length, 2);
   assert.equal(source.match(/maxDirectories: 10000/g)?.length, 2);
   assert.match(source, /vibode-furniture-assets/);

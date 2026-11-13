@@ -718,6 +718,7 @@ function reserveMessage(code: string): string {
   if (code === "allowance_disabled") return "Generation access is turned off for this account.";
   if (code === "allowance_exhausted") return "No generations remain on this account.";
   if (code === "submission_not_authorized") return "AI generation is temporarily unavailable.";
+  if (code === "account_deletion_in_progress") return "Generation is not available.";
   return "The generation request could not be stored.";
 }
 

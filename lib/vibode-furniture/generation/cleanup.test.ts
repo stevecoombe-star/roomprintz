@@ -399,8 +399,31 @@ function storageClient(input: {
       };
       return builder;
     },
-    async rpc() {
-      return { data: { ok: true, blocked: false }, error: null };
+    async rpc(name: string) {
+      if (name === "vibode_furniture_generation_account_has_unsettled_hold") {
+        return { data: { ok: true, blocked: false }, error: null };
+      }
+      if (name === "begin_vibode_account_deletion") {
+        return {
+          data: {
+            ok: true,
+            code: "begun",
+            attempt_id: "99999999-9999-4999-8999-999999999999",
+            phase: "admitted",
+            claimed: false,
+          },
+          error: null,
+        };
+      }
+      if (
+        name === "claim_vibode_account_deletion"
+        || name === "mark_vibode_account_deletion_destructive"
+        || name === "release_vibode_account_deletion_claim"
+        || name === "note_vibode_account_deletion_succeeded"
+      ) {
+        return { data: { ok: true, phase: "destructive" }, error: null };
+      }
+      return { data: null, error: { message: "unexpected rpc", code: "XX000" } };
     },
     storage: {
       from(bucket: string) {

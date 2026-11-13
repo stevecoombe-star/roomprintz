@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
+import { beginDecision, claimDecision, markedDecision } from "@/lib/account-deletion/admission";
 import { getAuthenticatedAdminUser, getServiceRoleSupabaseClient } from "@/lib/adminServer";
 import { deleteAfcV2UserStorage } from "@/lib/afc-v2-production/delete-user-afc-storage.server";
 import { GENERATION_INPUT_BUCKET } from "@/lib/vibode-furniture/generation/policy";
@@ -294,6 +296,115 @@ async function readUnsettledGenerationHold(
   }
 }
 
+function logAdmission(label: string, error: { code?: string } | null): void {
+  console.error(`[admin/delete-user] ${label}`, {
+    code: typeof error?.code === "string" ? error.code : null,
+  });
+}
+
+async function beginAccountDeletion(
+  supabaseAdmin: AnySupabaseClient,
+  userId: string,
+  adminId: string,
+) {
+  try {
+    const { data, error } = await supabaseAdmin.rpc("begin_vibode_account_deletion", {
+      p_user_id: userId,
+      p_admin_id: adminId,
+    });
+    if (error) {
+      logAdmission("deletion barrier failed", error);
+      return { status: "unavailable" as const };
+    }
+    return beginDecision(data);
+  } catch {
+    logAdmission("deletion barrier failed", null);
+    return { status: "unavailable" as const };
+  }
+}
+
+async function claimAccountDeletion(
+  supabaseAdmin: AnySupabaseClient,
+  userId: string,
+  attemptId: string,
+  requestId: string,
+) {
+  try {
+    const { data, error } = await supabaseAdmin.rpc("claim_vibode_account_deletion", {
+      p_user_id: userId,
+      p_attempt_id: attemptId,
+      p_request_id: requestId,
+    });
+    if (error) {
+      logAdmission("deletion claim failed", error);
+      return "unavailable" as const;
+    }
+    return claimDecision(data);
+  } catch {
+    logAdmission("deletion claim failed", null);
+    return "unavailable" as const;
+  }
+}
+
+async function markAccountDeletionDestructive(
+  supabaseAdmin: AnySupabaseClient,
+  userId: string,
+  attemptId: string,
+  requestId: string,
+) {
+  try {
+    const { data, error } = await supabaseAdmin.rpc("mark_vibode_account_deletion_destructive", {
+      p_user_id: userId,
+      p_attempt_id: attemptId,
+      p_request_id: requestId,
+    });
+    if (error) {
+      logAdmission("deletion phase failed", error);
+      return "unavailable" as const;
+    }
+    return markedDecision(data);
+  } catch {
+    logAdmission("deletion phase failed", null);
+    return "unavailable" as const;
+  }
+}
+
+async function releaseAccountDeletionClaim(
+  supabaseAdmin: AnySupabaseClient,
+  userId: string,
+  attemptId: string,
+  requestId: string,
+): Promise<void> {
+  try {
+    const { error } = await supabaseAdmin.rpc("release_vibode_account_deletion_claim", {
+      p_user_id: userId,
+      p_attempt_id: attemptId,
+      p_request_id: requestId,
+    });
+    if (error) logAdmission("deletion claim release failed", error);
+  } catch {
+    logAdmission("deletion claim release failed", null);
+  }
+}
+
+async function noteAccountDeletionSucceeded(
+  supabaseAdmin: AnySupabaseClient,
+  userId: string,
+  attemptId: string,
+  adminId: string,
+): Promise<void> {
+  try {
+    const { error } = await supabaseAdmin.rpc("note_vibode_account_deletion_succeeded", {
+      p_user_id: userId,
+      p_attempt_id: attemptId,
+      p_admin_id: adminId,
+    });
+    if (error) logAdmission("deletion audit note failed", error);
+  } catch {
+    logAdmission("deletion audit note failed", null);
+  }
+}
+
 export type AdminDeleteUserHandlerDeps = {
   getAuthenticatedAdminUser?: typeof getAuthenticatedAdminUser;
   getServiceRoleSupabaseClient?: typeof getServiceRoleSupabaseClient;
@@ -346,6 +457,46 @@ export function createAdminDeleteUserPostHandler(
     return json(409, { error: UNSETTLED_GENERATION_HOLD_MESSAGE });
   }
   if (unsettledHold !== "clear") {
+    return json(500, { error: "Account deletion could not be checked." });
+  }
+
+  const admission = await beginAccountDeletion(supabaseAdmin, userId, adminUser.id);
+  if (admission.status === "blocked") {
+    return json(409, { error: UNSETTLED_GENERATION_HOLD_MESSAGE });
+  }
+  if (admission.status === "missing") {
+    return json(404, { error: "User not found." });
+  }
+  if (admission.status !== "ready") {
+    return json(500, { error: "Account deletion could not be checked." });
+  }
+
+  const admissionRequestId = randomUUID();
+  const admissionClaim = await claimAccountDeletion(
+    supabaseAdmin,
+    userId,
+    admission.attemptId,
+    admissionRequestId,
+  );
+  if (admissionClaim === "busy") {
+    return json(409, {
+      error: `Account deletion is already in progress (${admission.attemptId}).`,
+      attemptId: admission.attemptId,
+    });
+  }
+  if (admissionClaim !== "claimed") {
+    return json(500, { error: "Account deletion could not be checked." });
+  }
+
+  let releaseAdmission = true;
+  try {
+  const marked = await markAccountDeletionDestructive(
+    supabaseAdmin,
+    userId,
+    admission.attemptId,
+    admissionRequestId,
+  );
+  if (marked !== "marked") {
     return json(500, { error: "Account deletion could not be checked." });
   }
 
@@ -573,10 +724,13 @@ export function createAdminDeleteUserPostHandler(
         skippedStorageFiles += 1;
         continue;
       }
+      console.error("[admin/delete-user] storage delete failed", { bucket: candidate.bucket });
       return json(500, {
-        error: `Storage deletion failed for ${candidate.bucket}/${candidate.path}.`,
+        error: "Storage deletion failed. Account deletion was not finished.",
         deletedStorageFiles,
         skippedStorageFiles,
+        deletedRowsByTable,
+        authUserDeleted: false,
       });
     }
     deletedStorageFiles += 1;
@@ -636,6 +790,8 @@ export function createAdminDeleteUserPostHandler(
     });
   }
 
+  releaseAdmission = false;
+  await noteAccountDeletionSucceeded(supabaseAdmin, userId, admission.attemptId, adminUser.id);
   return json(200, {
     success: true,
     deletedStorageFiles,
@@ -643,6 +799,16 @@ export function createAdminDeleteUserPostHandler(
     deletedRowsByTable,
     authUserDeleted: true,
   });
+  } finally {
+    if (releaseAdmission) {
+      await releaseAccountDeletionClaim(
+        supabaseAdmin,
+        userId,
+        admission.attemptId,
+        admissionRequestId,
+      );
+    }
+  }
   };
 }
 

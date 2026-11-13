@@ -186,6 +186,11 @@ export type GenerationDatabase = {
    * An absent ledger keeps the older dry-run reserve path unchanged.
    */
   allowances?: TesterAllowanceLedger[];
+  /**
+   * Accounts whose deletion barrier is committed. Reservation and photo
+   * attachment refuse these users and do not create a provider-credit hold.
+   */
+  accountDeletionUserIds?: readonly string[];
 };
 
 export type ReserveInput = {
@@ -202,7 +207,7 @@ export type ReserveInput = {
 
 export type ReserveResult =
   | { ok: true; created: boolean; job: GenerationJob }
-  | { ok: false; code: "disabled" | "unsupported_settings" | "quota_exhausted" | "concurrency_limited" | "idempotency_conflict" | "invalid_input" | "submission_not_authorized" };
+  | { ok: false; code: "disabled" | "unsupported_settings" | "quota_exhausted" | "concurrency_limited" | "idempotency_conflict" | "invalid_input" | "submission_not_authorized" | "account_deletion_in_progress" };
 
 export type ClaimResult =
   | { ok: true; purpose: "prepare" | "submit" | "poll" | "reconcile"; job: GenerationJob }
@@ -210,7 +215,7 @@ export type ClaimResult =
 
 export type MutationResult =
   | { ok: true; job: GenerationJob }
-  | { ok: false; code: "not_found" | "lease_held" | "not_claimable" | "task_immutable" | "needs_reconciliation" | "concurrency_limited" | "submission_not_authorized" | "unsupported_settings" | "disabled" | "credit_unreported" | "conflict" };
+  | { ok: false; code: "not_found" | "lease_held" | "not_claimable" | "task_immutable" | "needs_reconciliation" | "concurrency_limited" | "submission_not_authorized" | "unsupported_settings" | "disabled" | "credit_unreported" | "conflict" | "account_deletion_in_progress" };
 
 const KEY = /^[a-z0-9-]{8,80}$/;
 const SHA = /^[a-f0-9]{64}$/;
@@ -232,6 +237,10 @@ export function createGenerationDatabase(): GenerationDatabase {
   };
 }
 
+function accountDeletionBlocks(db: GenerationDatabase, userId: string): boolean {
+  return db.accountDeletionUserIds?.some((id) => id.toLowerCase() === userId.toLowerCase()) === true;
+}
+
 export function reserveGeneration(db: GenerationDatabase, input: ReserveInput): ReserveResult {
   if (!isUuidLike(input.userId) || !isUuidLike(input.jobId) || !KEY.test(input.idempotencyKey) || !SHA.test(input.requestSha256)) {
     return { ok: false, code: "invalid_input" };
@@ -240,6 +249,9 @@ export function reserveGeneration(db: GenerationDatabase, input: ReserveInput): 
   if (existing) {
     if (existing.requestSha256 !== input.requestSha256) return { ok: false, code: "idempotency_conflict" };
     return { ok: true, created: false, job: existing };
+  }
+  if (accountDeletionBlocks(db, input.userId)) {
+    return { ok: false, code: "account_deletion_in_progress" };
   }
   const mode = input.operation === "multi-image-to-3d" ? "multi" : "single";
   if (input.operation !== "image-to-3d" && input.operation !== "multi-image-to-3d") {
@@ -776,6 +788,9 @@ export function attachGenerationInput(
     nowMs: number;
   },
 ): MutationResult {
+  if (accountDeletionBlocks(db, input.userId)) {
+    return { ok: false, code: "account_deletion_in_progress" };
+  }
   const job = readGeneration(db, input.userId, input.jobId);
   if (!job || job.status !== "reserved") return { ok: false, code: "not_found" };
   if (!SHA.test(input.sha256)) return { ok: false, code: "not_claimable" };

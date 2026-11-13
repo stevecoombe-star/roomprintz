@@ -472,6 +472,7 @@ function failureStatus(code: string): number {
     || code === "allowance_disabled"
     || code === "allowance_exhausted"
     || code === "submission_not_authorized"
+    || code === "account_deletion_in_progress"
     || code === "conflict"
     || code === "credit_unreported"
   ) {

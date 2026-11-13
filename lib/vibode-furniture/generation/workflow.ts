@@ -566,11 +566,13 @@ function photoRecord(image: InspectedFurnitureImage): FurniturePhotoRecord {
   };
 }
 
-function reserveMessage(code: "disabled" | "unsupported_settings" | "quota_exhausted" | "concurrency_limited" | "idempotency_conflict" | "invalid_input"): string {
+function reserveMessage(code: "disabled" | "unsupported_settings" | "quota_exhausted" | "concurrency_limited" | "idempotency_conflict" | "invalid_input" | "submission_not_authorized" | "account_deletion_in_progress"): string {
   if (code === "quota_exhausted") return "The generation test budget is used up.";
   if (code === "concurrency_limited") return "A generation is already in progress.";
   if (code === "disabled") return "Generation is turned off.";
   if (code === "idempotency_conflict") return "This generation request does not match the earlier one.";
   if (code === "unsupported_settings") return "Those settings are not available.";
+  if (code === "submission_not_authorized") return "AI generation is temporarily unavailable.";
+  if (code === "account_deletion_in_progress") return "Generation is not available.";
   return "The generation request could not be stored.";
 }
