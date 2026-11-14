@@ -38,6 +38,8 @@ test("empty, error, and populated dashboard states stay read-only", () => {
   assert.match(empty, /No historical jobs without a tester allowance\./);
   assert.match(empty, new RegExp(escapeRegExp(FURNITURE_GENERATION_WORKER_STATUS)));
   assert.match(empty, /Database live_enabled/);
+  assert.match(empty, /Save beta budget/);
+  assert.match(empty, /Consumed credits stay at/);
   assert.match(empty, /Generation environment admission/);
   assert.match(empty, /Off/);
   assert.doesNotMatch(empty, /method="post"|Enable generation|Grant allowance|Increase spending|Paid retry/i);

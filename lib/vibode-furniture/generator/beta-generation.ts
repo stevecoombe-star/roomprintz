@@ -129,7 +129,7 @@ export function customerEntitlement(input: Readonly<{
       canGenerate: false,
       state: "exhausted",
       ...counts,
-      reason: "No AI generations remain.",
+      reason: "No AI generations remain. An administrator can add another generation to this account.",
     };
   }
   if (!input.generationEnabled || !input.liveEnabled) {

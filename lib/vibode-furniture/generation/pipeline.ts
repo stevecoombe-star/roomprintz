@@ -709,14 +709,14 @@ function photoRecord(image: InspectedFurnitureImage): FurniturePhotoRecord {
 }
 
 function reserveMessage(code: string): string {
-  if (code === "quota_exhausted") return "The generation test budget is used up.";
+  if (code === "quota_exhausted") return "The generation budget is used up. An administrator can add more capacity.";
   if (code === "concurrency_limited") return "A generation is already in progress.";
   if (code === "disabled") return "Generation is turned off.";
   if (code === "idempotency_conflict") return "This generation request does not match the earlier one.";
   if (code === "unsupported_settings") return "Those settings are not available.";
   if (code === "allowance_required") return "A generation allowance is required.";
   if (code === "allowance_disabled") return "Generation access is turned off for this account.";
-  if (code === "allowance_exhausted") return "No generations remain on this account.";
+  if (code === "allowance_exhausted") return "No generations remain on this account. An administrator can add another one.";
   if (code === "submission_not_authorized") return "AI generation is temporarily unavailable.";
   if (code === "account_deletion_in_progress") return "Generation is not available.";
   return "The generation request could not be stored.";

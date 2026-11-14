@@ -61,6 +61,18 @@ export type FurnitureGenerationDashboardViewProps = {
   onEditReason?: (value: string) => void;
   onEditConfirmed?: (value: boolean) => void;
   onSaveTester?: () => void;
+  budgetCeiling?: string;
+  budgetAuthorized?: string;
+  budgetLive?: boolean;
+  budgetReason?: string;
+  budgetConfirmed?: boolean;
+  budgetMessage?: string | null;
+  onBudgetCeiling?: (value: string) => void;
+  onBudgetAuthorized?: (value: string) => void;
+  onBudgetLive?: (value: boolean) => void;
+  onBudgetReason?: (value: string) => void;
+  onBudgetConfirmed?: (value: boolean) => void;
+  onSaveBudget?: () => void;
 };
 
 const METRICS: Array<[string, keyof DashboardOverview]> = [
@@ -116,6 +128,22 @@ export function FurnitureGenerationDashboardView(props: FurnitureGenerationDashb
           <>
             <Overview overview={props.overview} />
             <ProductionStatus overview={props.overview} />
+            <BudgetSection
+              overview={props.overview}
+              ceiling={props.budgetCeiling ?? String(props.overview.creditCeiling)}
+              authorized={props.budgetAuthorized ?? String(props.overview.paidSubmissionsAuthorized)}
+              liveEnabled={props.budgetLive ?? props.overview.liveEnabled}
+              reason={props.budgetReason ?? ""}
+              confirmed={props.budgetConfirmed ?? false}
+              message={props.budgetMessage ?? null}
+              saving={props.managementSaving ?? false}
+              onCeiling={props.onBudgetCeiling}
+              onAuthorized={props.onBudgetAuthorized}
+              onLive={props.onBudgetLive}
+              onReason={props.onBudgetReason}
+              onConfirmed={props.onBudgetConfirmed}
+              onSave={props.onSaveBudget}
+            />
             <TesterSection
               overview={props.overview}
               testers={props.testers}
@@ -207,7 +235,7 @@ function ProductionStatus({ overview }: { overview: DashboardOverview }) {
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4" aria-label="Production safety status">
       <h2 className="text-base font-medium text-slate-100">Production safety status</h2>
-      <p className="mt-1 text-xs text-slate-400">Read-only. This page cannot change generation, spending, or credentials.</p>
+      <p className="mt-1 text-xs text-slate-400">This page cannot change credentials or contact the provider.</p>
       <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
         {rows.map(([label, value]) => (
           <div key={label} className="rounded-xl border border-slate-800 px-3 py-2">
@@ -217,6 +245,68 @@ function ProductionStatus({ overview }: { overview: DashboardOverview }) {
         ))}
       </dl>
       <p className="mt-4 text-sm text-slate-200">{overview.workerConfiguration}</p>
+    </section>
+  );
+}
+
+function BudgetSection(props: {
+  overview: DashboardOverview;
+  ceiling: string;
+  authorized: string;
+  liveEnabled: boolean;
+  reason: string;
+  confirmed: boolean;
+  message: string | null;
+  saving: boolean;
+  onCeiling?: (value: string) => void;
+  onAuthorized?: (value: string) => void;
+  onLive?: (value: boolean) => void;
+  onReason?: (value: string) => void;
+  onConfirmed?: (value: boolean) => void;
+  onSave?: () => void;
+}) {
+  return (
+    <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4" aria-label="Beta budget">
+      <h2 className="text-base font-medium text-slate-100">Beta budget</h2>
+      <p className="mt-1 text-xs text-slate-400">
+        Consumed credits stay at {formatCount(props.overview.creditsConsumed)}. Paid attempts already used stay at {formatCount(props.overview.paidSubmissionsUsed)}. Concurrency stays at 1. The ceiling cannot exceed 600, and paid attempts cannot exceed 20.
+      </p>
+      <form
+        className="mt-4 grid gap-3 sm:grid-cols-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          props.onSave?.();
+        }}
+      >
+        <label className="flex flex-col gap-1 text-xs text-slate-400">
+          Credit ceiling
+          <input aria-label="Credit ceiling" inputMode="numeric" value={props.ceiling} onChange={(event) => props.onCeiling?.(event.target.value)} className={fieldClass} />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-slate-400">
+          Paid attempts authorized
+          <input aria-label="Paid attempts authorized" inputMode="numeric" value={props.authorized} onChange={(event) => props.onAuthorized?.(event.target.value)} className={fieldClass} />
+        </label>
+        <label className="flex items-center gap-2 text-xs text-slate-300 sm:col-span-2">
+          <input aria-label="Database admission" type="checkbox" checked={props.liveEnabled} onChange={(event) => props.onLive?.(event.target.checked)} />
+          Database admission
+        </label>
+        <div className="sm:col-span-2">
+          <ReasonField label="Budget reason" value={props.reason} onChange={props.onReason} />
+        </div>
+        <label className="flex items-center gap-2 text-xs text-slate-300 sm:col-span-2">
+          <input
+            aria-label="I confirm this budget change."
+            type="checkbox"
+            checked={props.confirmed}
+            onChange={(event) => props.onConfirmed?.(event.target.checked)}
+          />
+          I confirm this budget change.
+        </label>
+        <button type="submit" disabled={props.saving || !props.confirmed} className={buttonClass}>
+          Save beta budget
+        </button>
+      </form>
+      {props.message ? <p className="mt-3 text-sm text-slate-200" aria-live="polite">{props.message}</p> : null}
     </section>
   );
 }

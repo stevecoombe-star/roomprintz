@@ -78,6 +78,16 @@ test("beta entitlement fails closed and does not invent a balance", () => {
     generationEnabled: true,
     liveEnabled: true,
   }).state, "exhausted");
+  assert.match(customerEntitlement({
+    approved: true,
+    enabled: true,
+    authorized: 1,
+    reserved: 0,
+    consumed: 1,
+    remaining: 0,
+    generationEnabled: true,
+    liveEnabled: true,
+  }).reason ?? "", /No AI generations remain. An administrator can add another generation/);
   const ready = customerEntitlement({
     approved: true,
     enabled: true,

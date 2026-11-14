@@ -15,6 +15,7 @@ import {
   type TesterJobPage,
   type TesterPage,
 } from "@/lib/vibode-furniture/generation/admin-dashboard";
+import { parseBudgetAdjustment } from "@/lib/vibode-furniture/generation/admin-budget";
 import { parseTesterMutation } from "@/lib/vibode-furniture/generation/admin-tester";
 
 import {
@@ -56,6 +57,12 @@ export default function FurnitureGenerationDashboard() {
   const [editConfirmed, setEditConfirmed] = useState(false);
   const [managementMessage, setManagementMessage] = useState<string | null>(null);
   const [managementSaving, setManagementSaving] = useState(false);
+  const [budgetCeiling, setBudgetCeiling] = useState("");
+  const [budgetAuthorized, setBudgetAuthorized] = useState("");
+  const [budgetLive, setBudgetLive] = useState(false);
+  const [budgetReason, setBudgetReason] = useState("");
+  const [budgetConfirmed, setBudgetConfirmed] = useState(false);
+  const [budgetMessage, setBudgetMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,6 +82,7 @@ export default function FurnitureGenerationDashboard() {
         }
         setOverview(parsedOverview);
         setTesters(parsedTesters);
+        applyBudget(parsedOverview);
         setPhase("ready");
       } catch (error) {
         if (cancelled) return;
@@ -158,7 +166,43 @@ export default function FurnitureGenerationDashboard() {
     if (!parsedOverview || !parsedTesters) throw new Error(ADMIN_UNAVAILABLE);
     setOverview(parsedOverview);
     setTesters(parsedTesters);
+    applyBudget(parsedOverview);
     if (focusUserId && focusUserId === jobsUserId) await loadJobs(focusUserId, 0);
+  }
+
+  function applyBudget(next: DashboardOverview) {
+    setBudgetCeiling(String(next.creditCeiling));
+    setBudgetAuthorized(String(next.paidSubmissionsAuthorized));
+    setBudgetLive(next.liveEnabled);
+  }
+
+  async function saveBudget() {
+    const creditCeiling = readBudgetInteger(budgetCeiling, 600);
+    const paidSubmissionsAuthorized = readBudgetInteger(budgetAuthorized, 20);
+    if (creditCeiling == null || paidSubmissionsAuthorized == null) {
+      setBudgetMessage("The ceiling must stay within 600 and paid attempts must stay within 20.");
+      return;
+    }
+    setManagementSaving(true);
+    setBudgetMessage(null);
+    try {
+      const body = await sendJson("/api/admin/furniture-generation/budget", "POST", {
+        creditCeiling,
+        paidSubmissionsAuthorized,
+        liveEnabled: budgetLive,
+        reason: budgetReason,
+        confirmed: budgetConfirmed,
+      });
+      const saved = parseBudgetAdjustment(body);
+      if (!saved) throw new Error(ADMIN_UNAVAILABLE);
+      await refreshDashboard(null);
+      setBudgetConfirmed(false);
+      setBudgetMessage(saved.unchanged ? "The beta budget is unchanged." : "The beta budget was saved.");
+    } catch (error) {
+      setBudgetMessage(error instanceof Error ? error.message : ADMIN_UNAVAILABLE);
+    } finally {
+      setManagementSaving(false);
+    }
   }
 
   async function approveTester() {
@@ -303,8 +347,29 @@ export default function FurnitureGenerationDashboard() {
       onSaveTester={() => {
         void saveTester();
       }}
+      budgetCeiling={budgetCeiling}
+      budgetAuthorized={budgetAuthorized}
+      budgetLive={budgetLive}
+      budgetReason={budgetReason}
+      budgetConfirmed={budgetConfirmed}
+      budgetMessage={budgetMessage}
+      onBudgetCeiling={setBudgetCeiling}
+      onBudgetAuthorized={setBudgetAuthorized}
+      onBudgetLive={setBudgetLive}
+      onBudgetReason={setBudgetReason}
+      onBudgetConfirmed={setBudgetConfirmed}
+      onSaveBudget={() => {
+        void saveBudget();
+      }}
     />
   );
+}
+
+function readBudgetInteger(value: string, maximum: number): number | null {
+  if (!/^\d+$/.test(value.trim())) return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > maximum) return null;
+  return parsed;
 }
 
 function readWholeAllowance(value: string): number | null {

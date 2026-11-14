@@ -567,7 +567,7 @@ function photoRecord(image: InspectedFurnitureImage): FurniturePhotoRecord {
 }
 
 function reserveMessage(code: "disabled" | "unsupported_settings" | "quota_exhausted" | "concurrency_limited" | "idempotency_conflict" | "invalid_input" | "submission_not_authorized" | "account_deletion_in_progress"): string {
-  if (code === "quota_exhausted") return "The generation test budget is used up.";
+  if (code === "quota_exhausted") return "The generation budget is used up. An administrator can add more capacity.";
   if (code === "concurrency_limited") return "A generation is already in progress.";
   if (code === "disabled") return "Generation is turned off.";
   if (code === "idempotency_conflict") return "This generation request does not match the earlier one.";
