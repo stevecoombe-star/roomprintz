@@ -12,6 +12,7 @@ import test from "node:test";
 const CONTAINER = "vibode-furniture-1e-pg";
 const DATABASE = "furniture1e";
 const MIGRATION = "supabase/migrations/20261114200000_vibode_furniture_generation_persistent_beta.sql";
+const IDENTITY = "supabase/migrations/20261114220000_vibode_furniture_generation_admin_identity.sql";
 const BASELINE = [
   "supabase/migrations/20261105180000_vibode_furniture_assets.sql",
   "supabase/migrations/20261106234500_vibode_furniture_generation.sql",
@@ -400,6 +401,89 @@ test("the persistent beta keeps the certified ledger until an administrator rais
     assert.equal(raised.credits_consumed, 60);
     assert.equal(await fingerprint(), "false|1|150|90|60|4|2");
     assert.notEqual(await fingerprint(), beforeConcurrent);
+
+    const identityMigration = readFileSync(path.join(process.cwd(), IDENTITY), "utf8");
+    assert.doesNotMatch(identityMigration, /current_setting\(\s*'vibode\.admin_email'/);
+    assert.doesNotMatch(identityMigration, /credits_consumed\s*=|paid_submissions_used\s*=/i);
+    await psql(identityMigration);
+    assert.equal(await fingerprint(), "false|1|150|90|60|4|2");
+    const sessionOnly = await call(adjustSql(ADMIN, 150, 4, false, "A session setting cannot authorize the administrator"));
+    assert.equal(sessionOnly.code, "budget_unauthorized");
+    assert.equal(await psql(`
+      select has_table_privilege('anon', 'public.vibode_furniture_generation_admin_identity', 'select')::text
+        || has_table_privilege('authenticated', 'public.vibode_furniture_generation_admin_identity', 'insert')::text
+        || has_table_privilege('authenticated', 'public.vibode_furniture_generation_admin_identity', 'update')::text
+        || has_table_privilege('service_role', 'public.vibode_furniture_generation_admin_identity', 'insert')::text
+        || has_table_privilege('service_role', 'public.vibode_furniture_generation_admin_identity', 'update')::text
+        || has_table_privilege('service_role', 'public.vibode_furniture_generation_admin_identity', 'select')::text
+        || has_function_privilege('authenticated', 'public.vibode_furniture_generation_budget_actor()', 'execute')::text
+        || has_function_privilege('service_role', 'public.vibode_furniture_generation_budget_actor()', 'execute')::text
+        || has_function_privilege('anon', 'public.vibode_furniture_generation_budget_actor()', 'execute')::text
+    `), "falsefalsefalsefalsefalsefalsefalsefalsefalse");
+    const serviceWrite = await callResult(`
+      set role service_role;
+      insert into public.vibode_furniture_generation_admin_identity (config_id, admin_email)
+      values ('admin', 'other@example.com');
+    `);
+    assert.notEqual(serviceWrite.code, 0);
+    assert.match(serviceWrite.stderr, /permission denied/i);
+    const authenticatedWrite = await callResult(`
+      set role authenticated;
+      update public.vibode_furniture_generation_admin_identity
+      set admin_email = 'other@example.com'
+      where config_id = 'admin';
+    `);
+    assert.notEqual(authenticatedWrite.code, 0);
+    assert.match(authenticatedWrite.stderr, /permission denied/i);
+    await psql(`
+      insert into public.vibode_furniture_generation_admin_identity (config_id, admin_email)
+      values ('admin', 'Owner@Example.com')
+    `);
+    assert.equal(await psql(`
+      select admin_email from public.vibode_furniture_generation_admin_identity where config_id = 'admin'
+    `), "owner@example.com");
+    const forged = await call(adjustSql(OTHER, 150, 4, true, "A forged session email cannot spend", "owner@example.com"));
+    assert.equal(forged.code, "budget_unauthorized");
+    const storedIdentity = await call(`
+      do $session$ begin
+        perform set_config('vibode.admin_email', 'other@example.com', false);
+        perform set_config('request.jwt.claim.sub', '${ADMIN}', false);
+      end $session$;
+      set role authenticated;
+      select public.admin_adjust_vibode_furniture_generation_budget(150, 4, false, 'The stored identity overrides a session setting', true);
+    `);
+    assert.equal(storedIdentity.ok, true);
+    assert.equal(storedIdentity.unchanged, true);
+    const reopenedAfterIdentity = await call(adjustSql(ADMIN, 150, 4, true, "Open admission before the over-ceiling shutdown"));
+    assert.equal(reopenedAfterIdentity.ok, true);
+    assert.equal(reopenedAfterIdentity.live_enabled, true);
+    await psql(`
+      update public.vibode_furniture_generation_controls
+      set credits_consumed = credits_consumed + 40
+      where control_id = 'global'
+    `);
+    assert.equal(await fingerprint(), "true|1|150|90|100|4|2");
+    const shutdown = await call(adjustSql(ADMIN, 150, 4, false, "Turn admission off without raising the exceeded ceiling"));
+    assert.equal(shutdown.ok, true);
+    assert.equal(shutdown.unchanged, false);
+    assert.equal(shutdown.live_enabled, false);
+    assert.equal(shutdown.credit_ceiling, 150);
+    assert.equal(shutdown.credits_consumed, 100);
+    assert.equal(await fingerprint(), "false|1|150|90|100|4|2");
+    assert.equal(await psql(`
+      select live_enabled_before::text || '|' || live_enabled_after::text
+        || '|' || credit_ceiling_before::text || '|' || credit_ceiling_after::text
+        || '|' || credits_consumed::text
+      from public.vibode_furniture_generation_budget_events
+      order by created_at desc
+      limit 1
+    `), "true|false|150|150|100");
+    const shortRaise = await call(adjustSql(ADMIN, 180, 4, false, "A changed ceiling must still cover the exposure"));
+    assert.equal(shortRaise.code, "budget_bounds");
+    const identityHistory = await call(readSql(ADMIN));
+    assert.equal(identityHistory.ok, true);
+    const hiddenIdentity = await call(readSql(OTHER));
+    assert.equal(hiddenIdentity.code, "budget_unauthorized");
   } finally {
     await removeContainer();
   }
