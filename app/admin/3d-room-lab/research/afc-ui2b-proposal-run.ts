@@ -412,7 +412,7 @@ export async function runAfcUi2bControlledProposal(
 
   const apiKey = (dependencies.resolveApiKey ?? resolveAfcUi2bGeminiApiKey)();
   if (!apiKey) return fail("provider_configuration_unavailable");
-  const captureRoot = (dependencies.captureRoot ?? (() => path.join(process.cwd(), AFC_R3C_CAPTURE_ROOT_RELATIVE)))();
+  const captureRoot = (dependencies.captureRoot ?? (() => path.join(/*turbopackIgnore: true*/ process.cwd(), AFC_R3C_CAPTURE_ROOT_RELATIVE)))();
   if (!await preflightCaptureRoot(captureRoot)) return fail("runner_validation_failed");
   let providerCallCount: 0 | 1 = 0;
   const attemptedProviderCalls = () => providerCallCount;

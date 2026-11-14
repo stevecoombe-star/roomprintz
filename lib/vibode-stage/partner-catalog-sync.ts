@@ -3015,8 +3015,8 @@ export function foldPartnerCatalogCurrentState(input: Readonly<{
   let state = emptyFoldedPartnerCatalogState();
 
   for (const documentReg of catalogDocuments) {
-    const jsonPath = path.join(repoRoot, documentReg.jsonRelativePath);
-    if (!existsSync(jsonPath)) {
+    const jsonPath = path.join(/*turbopackIgnore: true*/ repoRoot, documentReg.jsonRelativePath);
+    if (!existsSync(/*turbopackIgnore: true*/ jsonPath)) {
       return {
         ok: false,
         state: null,
@@ -3025,7 +3025,7 @@ export function foldPartnerCatalogCurrentState(input: Readonly<{
     }
     let parsed: ReturnType<typeof parsePartnerCatalogJson>;
     try {
-      parsed = parsePartnerCatalogJson(JSON.parse(readFileSync(jsonPath, "utf8")));
+      parsed = parsePartnerCatalogJson(JSON.parse(readFileSync(/*turbopackIgnore: true*/ jsonPath, "utf8")));
     } catch (error) {
       return {
         ok: false,
@@ -3047,8 +3047,8 @@ export function foldPartnerCatalogCurrentState(input: Readonly<{
   for (const documentReg of syncDocuments) {
     if (documentReg.batchId === input.stopBeforeSyncBatchId) break;
     if (exclude.has(documentReg.batchId)) continue;
-    const jsonPath = path.join(repoRoot, documentReg.jsonRelativePath);
-    if (!existsSync(jsonPath)) {
+    const jsonPath = path.join(/*turbopackIgnore: true*/ repoRoot, documentReg.jsonRelativePath);
+    if (!existsSync(/*turbopackIgnore: true*/ jsonPath)) {
       return {
         ok: false,
         state: null,
@@ -3057,7 +3057,7 @@ export function foldPartnerCatalogCurrentState(input: Readonly<{
     }
     let raw: unknown;
     try {
-      raw = JSON.parse(readFileSync(jsonPath, "utf8"));
+      raw = JSON.parse(readFileSync(/*turbopackIgnore: true*/ jsonPath, "utf8"));
     } catch (error) {
       return {
         ok: false,

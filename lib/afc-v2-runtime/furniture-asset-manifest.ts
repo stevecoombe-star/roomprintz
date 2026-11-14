@@ -181,7 +181,7 @@ export function renderFurnitureAssetManifestJson(
 export function loadFurnitureAssetManifest(repoRoot = process.cwd()): ManifestParseResult {
   const filePath = furnitureAssetRepoPaths(repoRoot).manifest;
   try {
-    const raw = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
+    const raw = JSON.parse(readFileSync(/*turbopackIgnore: true*/ filePath, "utf8")) as unknown;
     return parseFurnitureAssetManifest(raw);
   } catch (error) {
     return {

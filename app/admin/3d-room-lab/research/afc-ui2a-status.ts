@@ -90,7 +90,7 @@ export async function discoverAfcUi2aOriginalPreparations(options: AfcUi2aStatus
     if (!room) continue;
     let names: string[];
     try {
-      names = await readdir(room);
+      names = await readdir(/*turbopackIgnore: true*/ room);
     } catch {
       continue;
     }

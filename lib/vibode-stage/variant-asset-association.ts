@@ -551,8 +551,8 @@ export function isVariantAssociationMigrationFileName(fileName: string): boolean
 
 export function listVariantAssociationMigrations(repoRoot = process.cwd()): string[] {
   const dir = variantAssociationRepoPaths(repoRoot).migrationsDir;
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
+  if (!existsSync(/*turbopackIgnore: true*/ dir)) return [];
+  return readdirSync(/*turbopackIgnore: true*/ dir)
     .filter((name) => isVariantAssociationMigrationFileName(name))
     .sort();
 }
@@ -710,8 +710,8 @@ export function detectVariantAssetAssociationDrift(input: Readonly<{
   }
 
   const generatedMapPath = variantAssociationRepoPaths(repoRoot).generatedMap;
-  if (existsSync(generatedMapPath)) {
-    const onDisk = readFileSync(generatedMapPath, "utf8");
+  if (existsSync(/*turbopackIgnore: true*/ generatedMapPath)) {
+    const onDisk = readFileSync(/*turbopackIgnore: true*/ generatedMapPath, "utf8");
     const expected = renderGeneratedVariantCurrentAssetMap(associations);
     if (onDisk !== expected) {
       issues.push(issue(

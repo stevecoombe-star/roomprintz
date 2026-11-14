@@ -1,0 +1,14 @@
+# `vercel deploy` does not apply .gitignore. These local-only trees were
+# uploaded and then copied into serverless functions by repository-root
+# filesystem tracing. They are not production inputs.
+/.local/
+qa-assets/
+test-results/
+*.tsbuildinfo
+public/3d-lab/furniture-test-chair.glb
+public/3d-lab/room-images/*
+!public/3d-lab/room-images/README.txt
+!public/3d-lab/room-images/P-stale-precondition.jpg
+!public/3d-lab/room-images/P-stale-precondition-v2.jpg
+public/3d-lab/fixtures/*
+!public/3d-lab/fixtures/README.txt

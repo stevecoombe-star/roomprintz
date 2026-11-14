@@ -389,7 +389,7 @@ export async function replayAfcProposalOverlay(options: AfcProposalOverlayReplay
   if (extraction.finishReason !== receipt.provider.finishReason || extraction.modelVersion !== receipt.provider.providerModelVersion) return failure("invalid", "Provider envelope finish or model provenance does not match the receipt.", "$.provider");
   if (JSON.stringify(extraction.usageMetadata) !== JSON.stringify(receipt.provider.usageMetadata)) return failure("invalid", "Provider envelope usage provenance does not match the receipt.", "$.provider.usageMetadata");
   const manifestName = `afc-r3c-${receipt.roomId}.image-manifest.v1.json`;
-  const manifestRoot = path.join(fixedRoot, receipt.roomId);
+  const manifestRoot = path.join(/*turbopackIgnore: true*/ fixedRoot, receipt.roomId);
   const canonicalManifestRoot = await canonicalDirectory(manifestRoot);
   if (!canonicalManifestRoot || !inside(fixedRoot, canonicalManifestRoot)) return failure("invalid", "Room fixed-input directory is unavailable or unsafe.", "$.roomId");
   const manifestBytes = await safeRead(canonicalManifestRoot, manifestName);
@@ -481,7 +481,7 @@ export async function discoverAfcProposalReceipts(options: Pick<AfcProposalOverl
   const captureRoot = await canonicalDirectory(options.captureRoot ?? path.join(process.cwd(), AFC_UI1_CAPTURE_ROOT_RELATIVE));
   if (!captureRoot) return deepFreeze({ receipts: [], invalidCandidateCount: 0 });
   let names: string[];
-  try { names = await readdir(captureRoot); } catch { return deepFreeze({ receipts: [], invalidCandidateCount: 0 }); }
+  try { names = await readdir(/*turbopackIgnore: true*/ captureRoot); } catch { return deepFreeze({ receipts: [], invalidCandidateCount: 0 }); }
   const summaries: AfcProposalReceiptSummary[] = [];
   let invalidCandidateCount = 0;
   for (const name of names.filter(isReceiptFilename).sort(compareInventoryText)) {

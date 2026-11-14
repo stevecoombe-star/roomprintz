@@ -83,7 +83,7 @@ async function verifyImage(
   if (!filePath) return { ok: false, code: missing };
   let bytes: Buffer;
   try {
-    bytes = await readFile(filePath);
+    bytes = await readFile(/*turbopackIgnore: true*/ filePath);
   } catch {
     return { ok: false, code: missing };
   }

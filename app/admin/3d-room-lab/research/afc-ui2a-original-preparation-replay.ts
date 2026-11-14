@@ -104,7 +104,7 @@ export async function replayAfcUi2aOriginalPreparation(args: {
   if (!receiptPath) return fail("original_preparation_not_found", "The selected Original-preparation receipt is unavailable.");
   let receiptBytes: Buffer;
   try {
-    receiptBytes = await readFile(receiptPath);
+    receiptBytes = await readFile(/*turbopackIgnore: true*/ receiptPath);
   } catch {
     return fail("original_preparation_not_found", "The selected Original-preparation receipt is unavailable.");
   }
@@ -124,7 +124,7 @@ export async function replayAfcUi2aOriginalPreparation(args: {
   if (!originalPath) return fail("original_image_missing", "The immutable Original image is unavailable.");
   let bytes: Buffer;
   try {
-    bytes = await readFile(originalPath);
+    bytes = await readFile(/*turbopackIgnore: true*/ originalPath);
   } catch {
     return fail("original_image_missing", "The immutable Original image is unavailable.");
   }

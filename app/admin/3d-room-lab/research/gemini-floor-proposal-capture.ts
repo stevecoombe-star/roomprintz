@@ -25,10 +25,10 @@ function inside(parent: string, child: string): boolean {
  */
 export function validateAfcR3cCaptureDirectory(outputDir: string, repositoryRoot: string): { ok: true; outputDir: string } | { ok: false; reason: string } {
   if (typeof outputDir !== "string" || outputDir.length === 0 || outputDir.includes("\0")) return { ok: false, reason: "capture_output_invalid" };
-  const root = path.resolve(repositoryRoot);
-  const resolved = path.resolve(outputDir);
+  const root = path.resolve(/*turbopackIgnore: true*/ repositoryRoot);
+  const resolved = path.resolve(/*turbopackIgnore: true*/ outputDir);
   if (!inside(root, resolved)) return { ok: true, outputDir: resolved };
-  const approved = path.resolve(root, AFC_R3C_CAPTURE_ROOT_RELATIVE);
+  const approved = path.resolve(/*turbopackIgnore: true*/ root, AFC_R3C_CAPTURE_ROOT_RELATIVE);
   if (!inside(approved, resolved)) return { ok: false, reason: "capture_output_inside_repository" };
   return { ok: true, outputDir: resolved };
 }
@@ -45,37 +45,40 @@ export async function prepareAfcR3cCaptureDirectory(args: {
   const checked = validateAfcR3cCaptureDirectory(args.outputDir, args.repositoryRoot);
   if (!checked.ok) return checked;
   try {
-    const lexicalRoot = path.resolve(args.repositoryRoot);
+    const lexicalRoot = path.resolve(/*turbopackIgnore: true*/ args.repositoryRoot);
     const lexicalOutput = checked.outputDir;
     const lexicalInsideRepository = inside(lexicalRoot, lexicalOutput);
-    const lexicalApprovedRoot = path.resolve(lexicalRoot, AFC_R3C_CAPTURE_ROOT_RELATIVE);
+    const lexicalApprovedRoot = path.resolve(/*turbopackIgnore: true*/ lexicalRoot, AFC_R3C_CAPTURE_ROOT_RELATIVE);
     if (lexicalInsideRepository) {
       try {
-        if ((await lstat(lexicalApprovedRoot)).isSymbolicLink()) {
+        if ((await lstat(/*turbopackIgnore: true*/ lexicalApprovedRoot)).isSymbolicLink()) {
           return { ok: false, reason: "capture_output_symlink_escape" };
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
-    await mkdir(lexicalOutput, { recursive: true });
-    const [realOutput, realRoot] = await Promise.all([realpath(lexicalOutput), realpath(lexicalRoot)]);
+    await mkdir(/*turbopackIgnore: true*/ lexicalOutput, { recursive: true });
+    const [realOutput, realRoot] = await Promise.all([
+      realpath(/*turbopackIgnore: true*/ lexicalOutput),
+      realpath(/*turbopackIgnore: true*/ lexicalRoot),
+    ]);
     if (lexicalInsideRepository) {
-      const realApprovedRoot = await realpath(lexicalApprovedRoot);
+      const realApprovedRoot = await realpath(/*turbopackIgnore: true*/ lexicalApprovedRoot);
       if (!inside(realRoot, realApprovedRoot) || !inside(realApprovedRoot, realOutput)) {
         return { ok: false, reason: "capture_output_symlink_escape" };
       }
     } else if (inside(realRoot, realOutput)) {
       return { ok: false, reason: "capture_output_symlink_into_repository" };
     }
-    const probe = path.join(realOutput, `.afc-r3c-preflight.${randomUUID()}.tmp`);
-    const handle = await open(probe, "wx", 0o600);
+    const probe = path.join(/*turbopackIgnore: true*/ realOutput, `.afc-r3c-preflight.${randomUUID()}.tmp`);
+    const handle = await open(/*turbopackIgnore: true*/ probe, "wx", 0o600);
     try {
       await handle.sync();
     } finally {
       await handle.close();
     }
-    await rm(probe);
+    await rm(/*turbopackIgnore: true*/ probe);
     return { ok: true, outputDir: realOutput };
   } catch {
     return { ok: false, reason: "capture_output_unwritable" };
@@ -104,20 +107,20 @@ export async function writeAfcR3cImmutableCapture(args: {
     return { ok: false, reason: "capture_filename_invalid" };
   }
   try {
-    await mkdir(args.outputDir, { recursive: true });
-    const outputInfo = await stat(args.outputDir);
+    await mkdir(/*turbopackIgnore: true*/ args.outputDir, { recursive: true });
+    const outputInfo = await stat(/*turbopackIgnore: true*/ args.outputDir);
     if (!outputInfo.isDirectory()) return { ok: false, reason: "capture_output_not_directory" };
-    const target = path.join(args.outputDir, args.filename);
+    const target = path.join(/*turbopackIgnore: true*/ args.outputDir, args.filename);
     try {
-      const existing = await readFile(target);
+      const existing = await readFile(/*turbopackIgnore: true*/ target);
       return existing.equals(args.bytes)
         ? { ok: true, filePath: target, reused: true }
         : { ok: false, reason: "capture_existing_bytes_mismatch" };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    const temporary = path.join(args.outputDir, `.${args.filename}.${randomUUID()}.tmp`);
-    const handle = await open(temporary, "wx", 0o600);
+    const temporary = path.join(/*turbopackIgnore: true*/ args.outputDir, `.${args.filename}.${randomUUID()}.tmp`);
+    const handle = await open(/*turbopackIgnore: true*/ temporary, "wx", 0o600);
     try {
       await handle.writeFile(args.bytes);
       await handle.sync();
@@ -125,13 +128,13 @@ export async function writeAfcR3cImmutableCapture(args: {
       await handle.close();
     }
     try {
-      await link(temporary, target);
-      await rm(temporary);
+      await link(/*turbopackIgnore: true*/ temporary, target);
+      await rm(/*turbopackIgnore: true*/ temporary);
       return { ok: true, filePath: target, reused: false };
     } catch (error) {
-      await rm(temporary, { force: true });
+      await rm(/*turbopackIgnore: true*/ temporary, { force: true });
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const existing = await readFile(target);
+      const existing = await readFile(/*turbopackIgnore: true*/ target);
       return existing.equals(args.bytes)
         ? { ok: true, filePath: target, reused: true }
         : { ok: false, reason: "capture_existing_bytes_mismatch" };

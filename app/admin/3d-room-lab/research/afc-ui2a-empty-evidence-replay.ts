@@ -122,7 +122,7 @@ async function verifyReceipt(args: {
   const emptyPath = await localRegularFile(original.roomDirectory, path.basename(receipt.emptyRoomAssist.capturedFilePath));
   if (!emptyPath) return { ok: false, failureCode: "durable_empty_invalid" };
   let bytes: Buffer;
-  try { bytes = await readFile(emptyPath); } catch { return { ok: false, failureCode: "durable_empty_invalid" }; }
+  try { bytes = await readFile(/*turbopackIgnore: true*/ emptyPath); } catch { return { ok: false, failureCode: "durable_empty_invalid" }; }
   const type = mimeFromBytes(bytes);
   const fingerprint = args.dependencies.fingerprint ?? computeCalibrationImageFingerprint;
   if (!type || type !== receipt.emptyRoomAssist.mimeType || bytes.byteLength !== receipt.emptyRoomAssist.byteCount || fingerprint(bytes) !== receipt.emptyRoomAssist.sha256) {
@@ -185,7 +185,7 @@ export async function discoverAfcUi2aDurableEmptyEvidence(
     const receiptPath = await localRegularFile(original.roomDirectory, name);
     if (!receiptPath) { malformed = true; continue; }
     let raw: unknown;
-    try { raw = JSON.parse((await readFile(receiptPath)).toString("utf8")); } catch { malformed = true; continue; }
+    try { raw = JSON.parse((await readFile(/*turbopackIgnore: true*/ receiptPath)).toString("utf8")); } catch { malformed = true; continue; }
     const parsed = parseAfcUi2aFixedEmptySuccessReceipt(raw);
     if (!parsed.ok) { malformed = true; continue; }
     if (parsed.receipt.roomId !== original.roomId || parsed.receipt.original.sha256 !== original.original.sha256 || parsed.receipt.emptyRoomAssist.generatedFromOriginalSha256 !== original.original.sha256) continue;

@@ -68,7 +68,7 @@ export async function replayAfcUi2bBindingReceipt(
   if (!roomId || !safeName(input.bindingFileName) || !/^afc-ui2b-run\.[a-f0-9]{64}\.binding\.json$/.test(input.bindingFileName)) {
     return deepFreeze({ status: "invalid" as const });
   }
-  const rootInput = (dependencies.captureRoot ?? (() => path.join(process.cwd(), AFC_R3C_CAPTURE_ROOT_RELATIVE)))();
+  const rootInput = (dependencies.captureRoot ?? (() => path.join(/*turbopackIgnore: true*/ process.cwd(), AFC_R3C_CAPTURE_ROOT_RELATIVE)))();
   const captureRoot = await canonicalDirectory(rootInput);
   if (!captureRoot) return deepFreeze({ status: "invalid" as const });
   const bytes = await immutableBytes(captureRoot, input.bindingFileName);

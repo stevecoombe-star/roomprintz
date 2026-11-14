@@ -49,10 +49,10 @@ export async function discoverAfcUi2bProposalRuns(
     (input.studyMode !== undefined && !isAfcUi2bStudyMode(input.studyMode))) {
     return deepFreeze({ status: "failure" as const, failureCode: "invalid_input" as const, message: "The proposal-run inventory query is invalid." });
   }
-  const captureRoot = await canonicalDirectory((dependencies.captureRoot ?? (() => path.join(process.cwd(), AFC_R3C_CAPTURE_ROOT_RELATIVE)))());
+  const captureRoot = await canonicalDirectory((dependencies.captureRoot ?? (() => path.join(/*turbopackIgnore: true*/ process.cwd(), AFC_R3C_CAPTURE_ROOT_RELATIVE)))());
   if (!captureRoot) return deepFreeze({ status: "failure" as const, failureCode: "inventory_unavailable" as const, message: "The proposal-run inventory is unavailable." });
   let names: string[];
-  try { names = await readdir(captureRoot); } catch {
+  try { names = await readdir(/*turbopackIgnore: true*/ captureRoot); } catch {
     return deepFreeze({ status: "failure" as const, failureCode: "inventory_unavailable" as const, message: "The proposal-run inventory is unavailable." });
   }
   let invalidCandidateCount = 0;

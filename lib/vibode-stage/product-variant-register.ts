@@ -405,7 +405,7 @@ export function productRegistrationRepoPaths(repoRoot = process.cwd()) {
   return {
     repoRoot,
     commercialSeed: path.join(repoRoot, COMMERCIAL_SEED_RELATIVE_PATH),
-    generatedMap: path.join(repoRoot, VARIANT_ASSOCIATION_MAP_RELATIVE_PATH),
+    generatedMap: path.join(/*turbopackIgnore: true*/ repoRoot, VARIANT_ASSOCIATION_MAP_RELATIVE_PATH),
     migrationsDir: path.join(repoRoot, "supabase/migrations"),
   };
 }
@@ -432,8 +432,8 @@ export function isProductRegistrationMigrationFileName(fileName: string): boolea
 
 export function listProductRegistrationMigrations(repoRoot = process.cwd()): string[] {
   const dir = productRegistrationRepoPaths(repoRoot).migrationsDir;
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
+  if (!existsSync(/*turbopackIgnore: true*/ dir)) return [];
+  return readdirSync(/*turbopackIgnore: true*/ dir)
     .filter((name) => isProductRegistrationMigrationFileName(name))
     .sort();
 }
@@ -1314,8 +1314,8 @@ export function isVariantRegistrationMigrationFileName(fileName: string): boolea
 
 export function listVariantRegistrationMigrations(repoRoot = process.cwd()): string[] {
   const dir = productRegistrationRepoPaths(repoRoot).migrationsDir;
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
+  if (!existsSync(/*turbopackIgnore: true*/ dir)) return [];
+  return readdirSync(/*turbopackIgnore: true*/ dir)
     .filter((name) => isVariantRegistrationMigrationFileName(name))
     .sort();
 }

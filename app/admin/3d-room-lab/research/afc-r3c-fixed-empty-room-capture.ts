@@ -600,7 +600,7 @@ export async function captureAfcR3cFixedEmptyRoom(
     });
   }
 
-  const repositoryRoot = path.resolve(dependencies.repositoryRoot ?? process.cwd());
+  const repositoryRoot = path.resolve(/*turbopackIgnore: true*/ dependencies.repositoryRoot ?? process.cwd());
   // This package is stricter than the older generic R3C helper: pilot inputs
   // must be outside the repository, never in its approved local subdirectory.
   if (inside(repositoryRoot, path.resolve(request.outputDir))) return failure("output_preflight_failed");

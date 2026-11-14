@@ -1288,7 +1288,7 @@ export function importPartnerCatalog(input: Readonly<{
       collectionCount: plan.collectionCount,
     };
   }
-  if (existsSync(plan.migration)) {
+  if (existsSync(/*turbopackIgnore: true*/ plan.migration)) {
     return {
       ok: false,
       check,

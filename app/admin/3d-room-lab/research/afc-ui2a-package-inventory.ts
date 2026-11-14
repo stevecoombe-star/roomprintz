@@ -125,7 +125,7 @@ export async function discoverAfcUi2aPreparedPackages(roomLabel: unknown, depend
   const roomDirectory = await safeRoomDirectory(root.root, roomId);
   if (!roomDirectory) return failure("inventory_unavailable", "Prepared-package inventory is unavailable.");
   let names: string[];
-  try { names = await readdir(roomDirectory); }
+  try { names = await readdir(/*turbopackIgnore: true*/ roomDirectory); }
   catch { return failure("inventory_unavailable", "Prepared-package inventory is unavailable."); }
   const candidate = new RegExp(`^afc-ui2a-prepared-input\\.${roomId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.([a-f0-9]{64})\\.receipt\\.json$`);
   const packages: InventoryPackage[] = [];
