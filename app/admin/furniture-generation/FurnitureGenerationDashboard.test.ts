@@ -35,6 +35,7 @@ test("empty, error, and populated dashboard states stay read-only", () => {
   assert.match(empty, /AI Furniture Generation/);
   assert.match(empty, /Beta Access &amp; Usage Management/);
   assert.match(empty, /No approved beta accounts\./);
+  assert.match(empty, /No historical jobs without a tester allowance\./);
   assert.match(empty, new RegExp(escapeRegExp(FURNITURE_GENERATION_WORKER_STATUS)));
   assert.match(empty, /Database live_enabled/);
   assert.match(empty, /Generation environment admission/);

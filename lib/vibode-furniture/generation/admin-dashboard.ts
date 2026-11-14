@@ -299,7 +299,7 @@ export async function furnitureGenerationOverviewResponse(deps: {
   if (outcome !== "ready") return errorResult(500, ADMIN_UNAVAILABLE);
   const overview = parseSqlOverview(read.data);
   if (!overview) return errorResult(500, ADMIN_UNAVAILABLE);
-  return { status: 200, body: jsonBody(withProductionStatus(overview, deps.generationAdmissionEnabled)) };
+  return { status: 200, body: successBody(withProductionStatus(overview, deps.generationAdmissionEnabled)) };
 }
 
 export async function furnitureGenerationTestersResponse(
@@ -534,7 +534,7 @@ function mapParsed<T extends object>(
   if (outcome !== "ready") return errorResult(500, ADMIN_UNAVAILABLE);
   const parsed = parse(value);
   if (!parsed) return errorResult(500, ADMIN_UNAVAILABLE);
-  return { status: 200, body: jsonBody(parsed) };
+  return { status: 200, body: successBody(parsed) };
 }
 
 function readOutcome(value: unknown): "ready" | "not_found" | "invalid" | "unreadable" {
@@ -611,7 +611,9 @@ function parseJob(value: unknown): GenerationJobRecord | null {
   const providerTaskConfirmed = readBool(readField(body, "provider_task_confirmed", "providerTaskConfirmed"));
   const providerCreditReview = readChoice(readField(body, "provider_credit_review", "providerCreditReview"), CREDIT_REVIEWS);
   const savedAssetStatus = readChoice(readField(body, "saved_asset_status", "savedAssetStatus"), SAVED_STATES);
-  const unresolved = readBool(readField(body, "unresolved", "unresolved"));
+  const unresolvedValue = readField(body, "unresolved", "unresolved");
+  // `false OR (null IN (...))` is null when error_class is null and the job is resolved.
+  const unresolved = unresolvedValue === null ? false : readBool(unresolvedValue);
   const profile = parseProfile(readField(body, "profile", "profile"), operation, aiModel);
   if (
     !jobId || !userId || !createdAt || !status || !operation || !aiModel || allowanceValue !== null && !allowanceState
@@ -860,6 +862,10 @@ function asObject(value: unknown): Record<string, unknown> | null {
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function successBody(value: object): Record<string, unknown> {
+  return jsonBody({ ...value, ok: true });
 }
 
 function jsonBody(value: object): Record<string, unknown> {

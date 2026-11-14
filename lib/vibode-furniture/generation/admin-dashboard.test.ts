@@ -26,6 +26,7 @@ import {
   parseJobDetail,
   parseSqlOverview,
   parseTesterJobs,
+  parseTesterPage,
   withProductionStatus,
   type AdminReadName,
 } from "./admin-dashboard";
@@ -125,12 +126,46 @@ test("an authorized read keeps credits, generations, admission, and worker state
   assert.equal(response.body.consumedGenerations, 6);
   assert.equal(response.body.creditsConsumed, 20);
   assert.equal(response.body.workerConfiguration, FURNITURE_GENERATION_WORKER_STATUS);
+  assert.equal(response.body.ok, true);
+  const clientOverview = parseDashboardOverview(response.body);
+  assert.equal(clientOverview?.liveEnabled, true);
+  assert.equal(clientOverview?.generationAdmissionEnabled, false);
+  assert.equal(clientOverview?.historicalJobs.length, 0);
   assert.equal(JSON.stringify(response.body).includes(ADMIN_ID), false);
   assert.equal(JSON.stringify(response.body).includes("Railway"), false);
+  const testers = await furnitureGenerationTestersResponse(fakeClient().deps, new URLSearchParams("limit=25&offset=0"));
+  assert.equal(testers.status, 200);
+  assert.equal(parseTesterPage(testers.body)?.total, 0);
+  assert.deepEqual(parseTesterPage(testers.body)?.testers, []);
   const admitted = withProductionStatus(parseSqlOverview(overviewSql({ live_enabled: false }))!, true);
   assert.equal(admitted.liveEnabled, false);
   assert.equal(admitted.generationAdmissionEnabled, true);
   assert.equal(admitted.workerConfiguration, FURNITURE_GENERATION_WORKER_STATUS);
+});
+
+test("a resolved historical job with a null unresolved flag stays on the dashboard", async () => {
+  const harness = fakeClient({
+    data: overviewSql({
+      historical_jobs_without_allowance: 1,
+      historical_jobs: [jobSql({ unresolved: null, allowance_state: null })],
+    }),
+  });
+  const response = await furnitureGenerationOverviewResponse({
+    ...harness.deps,
+    generationAdmissionEnabled: false,
+  });
+  assert.equal(response.status, 200);
+  const parsed = parseDashboardOverview(response.body);
+  assert.equal(parsed?.historicalJobs.length, 1);
+  assert.equal(parsed?.historicalJobs[0]?.status, "saved");
+  assert.equal(parsed?.historicalJobs[0]?.allowanceState, null);
+  assert.equal(parsed?.historicalJobs[0]?.unresolved, false);
+  const { unresolved: _present, ...omitted } = jobSql();
+  const dropped = parseSqlOverview(overviewSql({
+    historical_jobs_without_allowance: 1,
+    historical_jobs: [omitted],
+  }));
+  assert.equal(dropped?.historicalJobs.length, 0);
 });
 
 test("database failures and private paths are not returned to the browser", async () => {
