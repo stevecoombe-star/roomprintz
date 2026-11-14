@@ -40,6 +40,10 @@ test("empty, error, and populated dashboard states stay read-only", () => {
   assert.match(empty, /Database live_enabled/);
   assert.match(empty, /Save beta budget/);
   assert.match(empty, /Consumed credits stay at/);
+  assert.match(empty, /Estimated additional generations/);
+  assert.match(empty, /Meshy API key monthly limit/);
+  assert.match(empty, /No budget adjustments have been recorded/);
+  assert.match(empty, /1000000000/);
   assert.match(empty, /Generation environment admission/);
   assert.match(empty, /Off/);
   assert.doesNotMatch(empty, /method="post"|Enable generation|Grant allowance|Increase spending|Paid retry/i);
@@ -124,7 +128,7 @@ test("empty, error, and populated dashboard states stay read-only", () => {
   assert.match(populated, /Save tester changes/);
   assert.match(populated, /Manage/);
   assert.match(populated, /Allow new generations/);
-  assert.match(populated, /Production switches and spending limits stay unchanged/);
+  assert.match(populated, /Approving an account does not change the global credit ceiling/);
   assert.equal(populated.includes(USER_C), true);
   assert.doesNotMatch(populated, /legacy@example.com|candidate\.glb|users\/hidden|MESHY_API_KEY|method="post"/);
 });
@@ -162,7 +166,24 @@ test("a removed account shows retained audit events without a tester allowance",
       creditResolutions: [],
     },
     jobsPhase: "ready",
+    budgetEvents: [{
+      eventId: "cccccccc-cccc-4ccc-8ccc-ccccccccccc1",
+      actorUserId: "55555555-5555-4555-8555-555555555555",
+      reason: "Owner approved the operating budget",
+      liveEnabledBefore: false,
+      liveEnabledAfter: false,
+      creditCeilingBefore: 60,
+      creditCeilingAfter: 300,
+      paidSubmissionsAuthorizedBefore: 2,
+      paidSubmissionsAuthorizedAfter: 10,
+      creditsConsumed: 60,
+      creditsReserved: 0,
+      paidSubmissionsUsed: 2,
+      createdAt: "2026-11-14T20:00:00.000Z",
+    }],
   }));
+  assert.match(html, /Owner approved the operating budget/);
+  assert.match(html, /Ceiling 60 to 300/);
   assert.match(html, /No beta allowance on this account/);
   assert.match(html, /No generation jobs for this account/);
   assert.match(html, /Initial beta allowance/);

@@ -4,9 +4,12 @@ import test from "node:test";
 import {
   ADMIN_BUDGET_BOUNDS,
   ADMIN_BUDGET_CONFIRM,
+  ADMIN_BUDGET_STEP,
   ADMIN_BUDGET_UNAUTHORIZED,
+  furnitureGenerationBudgetHistoryResponse,
   furnitureGenerationBudgetResponse,
   parseBudgetAdjustment,
+  parseBudgetHistory,
 } from "@/lib/vibode-furniture/generation/admin-budget";
 
 const ADMIN = { id: "55555555-5555-4555-8555-555555555555" };
@@ -18,6 +21,7 @@ test("a confirmed administrator budget change keeps the historical consumption",
       assert.equal(args.p_credit_ceiling, 300);
       assert.equal(args.p_paid_submissions_authorized, 10);
       assert.equal(args.p_live_enabled, false);
+      assert.equal(args.p_confirmed, true);
       return {
         data: {
           ok: true,
@@ -68,14 +72,27 @@ test("budget changes fail closed without confirmation, authority, or a bounded v
       throw new Error("unexpected");
     },
   }, request({
-    creditCeiling: 601,
+    creditCeiling: 1_000_000_001,
     paidSubmissionsAuthorized: 10,
     liveEnabled: false,
-    reason: "Above the hard rail",
+    reason: "Above the infrastructure boundary",
     confirmed: true,
   }));
   assert.equal(oversized.status, 400);
   assert.equal(oversized.body.error, ADMIN_BUDGET_BOUNDS);
+
+  const stepped = await furnitureGenerationBudgetResponse({
+    getAdmin: async () => ADMIN,
+    adjust: async () => ({ data: { ok: false, code: "budget_step" }, error: null }),
+  }, request({
+    creditCeiling: 20_000,
+    paidSubmissionsAuthorized: 10,
+    liveEnabled: false,
+    reason: "The database rejects an oversized single step",
+    confirmed: true,
+  }));
+  assert.equal(stepped.status, 400);
+  assert.equal(stepped.body.error, ADMIN_BUDGET_STEP);
 
   const unauthorized = await furnitureGenerationBudgetResponse({
     getAdmin: async () => ADMIN,
@@ -89,6 +106,48 @@ test("budget changes fail closed without confirmation, authority, or a bounded v
   }));
   assert.equal(unauthorized.status, 403);
   assert.equal(unauthorized.body.error, ADMIN_BUDGET_UNAUTHORIZED);
+});
+
+test("budget history keeps the administrator, the reason, and the previous values", async () => {
+  const response = await furnitureGenerationBudgetHistoryResponse({
+    getAdmin: async () => ADMIN,
+    read: async () => ({
+      data: {
+        ok: true,
+        events: [{
+          event_id: "cccccccc-cccc-4ccc-8ccc-ccccccccccc1",
+          actor_user_id: ADMIN.id,
+          reason: "Owner approved the operating budget",
+          live_enabled_before: false,
+          live_enabled_after: false,
+          credit_ceiling_before: 60,
+          credit_ceiling_after: 300,
+          paid_submissions_authorized_before: 2,
+          paid_submissions_authorized_after: 10,
+          credits_consumed: 60,
+          credits_reserved: 0,
+          paid_submissions_used: 2,
+          created_at: "2026-11-14T20:00:00.000Z",
+        }],
+      },
+      error: null,
+    }),
+  });
+  assert.equal(response.status, 200);
+  const events = parseBudgetHistory(response.body);
+  assert.equal(events?.length, 1);
+  assert.equal(events?.[0]?.reason, "Owner approved the operating budget");
+  assert.equal(events?.[0]?.creditCeilingBefore, 60);
+  assert.equal(events?.[0]?.creditsConsumed, 60);
+  assert.equal(events?.[0]?.paidSubmissionsUsed, 2);
+
+  const hidden = await furnitureGenerationBudgetHistoryResponse({
+    getAdmin: async () => null,
+    read: async () => {
+      throw new Error("unexpected");
+    },
+  });
+  assert.equal(hidden.status, 403);
 });
 
 function request(body: unknown): Request {

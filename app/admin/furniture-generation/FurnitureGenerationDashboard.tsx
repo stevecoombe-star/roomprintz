@@ -15,7 +15,18 @@ import {
   type TesterJobPage,
   type TesterPage,
 } from "@/lib/vibode-furniture/generation/admin-dashboard";
-import { parseBudgetAdjustment } from "@/lib/vibode-furniture/generation/admin-budget";
+import {
+  ADMIN_BUDGET_BOUNDS,
+  ADMIN_BUDGET_STEP,
+  BETA_CREDIT_INFRASTRUCTURE_MAX,
+  BETA_CREDIT_STEP_FLOOR,
+  BETA_PAID_INFRASTRUCTURE_MAX,
+  BETA_PAID_STEP_FLOOR,
+  budgetIncreaseLimit,
+  parseBudgetAdjustment,
+  parseBudgetHistory,
+  type BudgetEventRecord,
+} from "@/lib/vibode-furniture/generation/admin-budget";
 import { parseTesterMutation } from "@/lib/vibode-furniture/generation/admin-tester";
 
 import {
@@ -63,6 +74,8 @@ export default function FurnitureGenerationDashboard() {
   const [budgetReason, setBudgetReason] = useState("");
   const [budgetConfirmed, setBudgetConfirmed] = useState(false);
   const [budgetMessage, setBudgetMessage] = useState<string | null>(null);
+  const [budgetEvents, setBudgetEvents] = useState<BudgetEventRecord[]>([]);
+  const [budgetHistoryMessage, setBudgetHistoryMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,6 +96,7 @@ export default function FurnitureGenerationDashboard() {
         setOverview(parsedOverview);
         setTesters(parsedTesters);
         applyBudget(parsedOverview);
+        await loadBudgetHistory();
         setPhase("ready");
       } catch (error) {
         if (cancelled) return;
@@ -167,7 +181,21 @@ export default function FurnitureGenerationDashboard() {
     setOverview(parsedOverview);
     setTesters(parsedTesters);
     applyBudget(parsedOverview);
+    await loadBudgetHistory();
     if (focusUserId && focusUserId === jobsUserId) await loadJobs(focusUserId, 0);
+  }
+
+  async function loadBudgetHistory() {
+    try {
+      const body = await getJson("/api/admin/furniture-generation/budget");
+      const events = parseBudgetHistory(body);
+      if (!events) throw new Error(ADMIN_UNAVAILABLE);
+      setBudgetEvents(events);
+      setBudgetHistoryMessage(null);
+    } catch (error) {
+      setBudgetEvents([]);
+      setBudgetHistoryMessage(error instanceof Error ? error.message : ADMIN_UNAVAILABLE);
+    }
   }
 
   function applyBudget(next: DashboardOverview) {
@@ -177,10 +205,23 @@ export default function FurnitureGenerationDashboard() {
   }
 
   async function saveBudget() {
-    const creditCeiling = readBudgetInteger(budgetCeiling, 600);
-    const paidSubmissionsAuthorized = readBudgetInteger(budgetAuthorized, 20);
-    if (creditCeiling == null || paidSubmissionsAuthorized == null) {
-      setBudgetMessage("The ceiling must stay within 600 and paid attempts must stay within 20.");
+    const creditCeiling = readBudgetInteger(budgetCeiling, BETA_CREDIT_INFRASTRUCTURE_MAX);
+    const paidSubmissionsAuthorized = readBudgetInteger(budgetAuthorized, BETA_PAID_INFRASTRUCTURE_MAX);
+    if (
+      !overview
+      || creditCeiling == null
+      || paidSubmissionsAuthorized == null
+      || creditCeiling < overview.creditsConsumed + overview.creditsReserved
+      || paidSubmissionsAuthorized < overview.paidSubmissionsUsed
+    ) {
+      setBudgetMessage(ADMIN_BUDGET_BOUNDS);
+      return;
+    }
+    if (
+      creditCeiling > budgetIncreaseLimit(overview.creditCeiling, BETA_CREDIT_STEP_FLOOR)
+      || paidSubmissionsAuthorized > budgetIncreaseLimit(overview.paidSubmissionsAuthorized, BETA_PAID_STEP_FLOOR)
+    ) {
+      setBudgetMessage(ADMIN_BUDGET_STEP);
       return;
     }
     setManagementSaving(true);
@@ -361,6 +402,8 @@ export default function FurnitureGenerationDashboard() {
       onSaveBudget={() => {
         void saveBudget();
       }}
+      budgetEvents={budgetEvents}
+      budgetHistoryMessage={budgetHistoryMessage}
     />
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import type { BudgetEventRecord } from "@/lib/vibode-furniture/generation/admin-budget";
 import type {
   AllowanceEventRecord,
   BetaTesterRecord,
@@ -73,6 +74,8 @@ export type FurnitureGenerationDashboardViewProps = {
   onBudgetReason?: (value: string) => void;
   onBudgetConfirmed?: (value: boolean) => void;
   onSaveBudget?: () => void;
+  budgetEvents?: BudgetEventRecord[];
+  budgetHistoryMessage?: string | null;
 };
 
 const METRICS: Array<[string, keyof DashboardOverview]> = [
@@ -143,6 +146,8 @@ export function FurnitureGenerationDashboardView(props: FurnitureGenerationDashb
               onReason={props.onBudgetReason}
               onConfirmed={props.onBudgetConfirmed}
               onSave={props.onSaveBudget}
+              events={props.budgetEvents ?? []}
+              historyMessage={props.budgetHistoryMessage ?? null}
             />
             <TesterSection
               overview={props.overview}
@@ -264,12 +269,40 @@ function BudgetSection(props: {
   onReason?: (value: string) => void;
   onConfirmed?: (value: boolean) => void;
   onSave?: () => void;
+  events: BudgetEventRecord[];
+  historyMessage: string | null;
 }) {
+  const remainingPaid = props.overview.paidSubmissionsAuthorized - props.overview.paidSubmissionsUsed;
+  const estimated = estimatedAdditionalGenerations(props.overview);
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4" aria-label="Beta budget">
       <h2 className="text-base font-medium text-slate-100">Beta budget</h2>
       <p className="mt-1 text-xs text-slate-400">
-        Consumed credits stay at {formatCount(props.overview.creditsConsumed)}. Paid attempts already used stay at {formatCount(props.overview.paidSubmissionsUsed)}. Concurrency stays at 1. The ceiling cannot exceed 600, and paid attempts cannot exceed 20.
+        This is Vibode&apos;s internal operating budget. Saving it does not change the Meshy API key monthly limit or buy credits.
+      </p>
+      <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {([
+          ["Global credit ceiling", props.overview.creditCeiling],
+          ["Credits consumed", props.overview.creditsConsumed],
+          ["Credits reserved", props.overview.creditsReserved],
+          ["Remaining available credit budget", props.overview.remainingCreditBudget],
+          ["Paid submissions authorized", props.overview.paidSubmissionsAuthorized],
+          ["Paid submissions used", props.overview.paidSubmissionsUsed],
+          ["Remaining paid submissions", remainingPaid],
+          ["Estimated additional generations", estimated],
+          ["Unresolved provider-credit exposure", props.overview.unresolvedProviderCreditExposure],
+        ] as const).map(([label, value]) => (
+          <div key={label} className="rounded-xl border border-slate-800 px-3 py-2">
+            <dt className="text-xs text-slate-400">{label}</dt>
+            <dd className={`mt-1 text-sm ${typeof value === "number" && value < 0 ? "text-amber-200" : "text-slate-100"}`}>{formatCount(value)}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-3 text-xs text-slate-400">
+        Global generation admission is {props.overview.liveEnabled ? "on" : "off"}. Concurrency stays at 1.
+        Consumed credits stay at {formatCount(props.overview.creditsConsumed)} and paid attempts already used stay at {formatCount(props.overview.paidSubmissionsUsed)}.
+        One save can raise the ceiling by 10,000 credits or double it, and can raise paid attempts by 20 or double them. A later confirmed save can go further.
+        The exceptional infrastructure boundary is 1000000000. The estimate uses the certified 30-credit reservation and the smaller of the remaining credit and paid-attempt capacity.
       </p>
       <form
         className="mt-4 grid gap-3 sm:grid-cols-2"
@@ -307,8 +340,35 @@ function BudgetSection(props: {
         </button>
       </form>
       {props.message ? <p className="mt-3 text-sm text-slate-200" aria-live="polite">{props.message}</p> : null}
+      <div className="mt-4 space-y-2">
+        <h3 className="text-sm font-medium text-slate-100">Budget adjustment history</h3>
+        {props.historyMessage ? <p className="text-sm text-amber-200">{props.historyMessage}</p> : null}
+        {props.events.length === 0 ? <p className="text-sm text-slate-300">No budget adjustments have been recorded.</p> : null}
+        {props.events.map((event) => (
+          <article key={event.eventId} className="rounded-xl border border-slate-800 px-3 py-2 text-xs text-slate-300">
+            <p>
+              <time dateTime={event.createdAt}>{formatTimestamp(event.createdAt)}</time>
+              {" · "}
+              Administrator {event.actorUserId}
+            </p>
+            <p className="mt-1 text-slate-100">{event.reason}</p>
+            <p className="mt-1">
+              Ceiling {formatCount(event.creditCeilingBefore)} to {formatCount(event.creditCeilingAfter)}.
+              Paid attempts {formatCount(event.paidSubmissionsAuthorizedBefore)} to {formatCount(event.paidSubmissionsAuthorizedAfter)}.
+              Admission {event.liveEnabledBefore ? "on" : "off"} to {event.liveEnabledAfter ? "on" : "off"}.
+              Consumed {formatCount(event.creditsConsumed)}, reserved {formatCount(event.creditsReserved)}, used {formatCount(event.paidSubmissionsUsed)}.
+            </p>
+          </article>
+        ))}
+      </div>
     </section>
   );
+}
+
+function estimatedAdditionalGenerations(overview: DashboardOverview): number {
+  const credits = Math.max(0, Math.floor(overview.remainingCreditBudget / 30));
+  const attempts = Math.max(0, overview.paidSubmissionsAuthorized - overview.paidSubmissionsUsed);
+  return Math.min(credits, attempts);
 }
 
 function TesterSection(props: {
@@ -477,7 +537,7 @@ function TesterManagement(props: {
         }}
       >
         <h3 className="text-sm font-medium text-slate-100">Approve an existing account</h3>
-        <p className="text-xs text-slate-400">Exact email. Production switches and spending limits stay unchanged.</p>
+        <p className="text-xs text-slate-400">Exact email. Approving an account does not change the global credit ceiling.</p>
         <label className="flex flex-col gap-1 text-xs text-slate-400">
           Exact email
           <input

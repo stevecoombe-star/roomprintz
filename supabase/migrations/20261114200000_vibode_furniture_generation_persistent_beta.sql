@@ -11,8 +11,14 @@
 -- administrator whose email matches the database setting vibode.admin_email.
 -- Until that setting is present, every adjustment fails closed.
 --
--- Hard rails: credit ceiling cannot pass 600, and paid authorization cannot
--- pass 20. Concurrency stays 1. Nothing in this file replenishes a budget.
+-- Operating budgets are adjusted from the admin dashboard. One confirmed
+-- save can raise the credit ceiling by 10,000 or double it, whichever is
+-- larger, and can raise paid attempts by 20 or double them. A later save
+-- can go further. The only fixed boundaries are integer infrastructure
+-- limits of 1,000,000,000. Nothing in this file replenishes a budget or
+-- changes consumed credits, reserved credits, or attempts already used.
+-- A provider settlement may record a charge above the operating ceiling.
+-- New reservations then fail closed until an administrator raises it.
 
 begin;
 
@@ -21,8 +27,8 @@ alter table public.vibode_furniture_generation_controls
 alter table public.vibode_furniture_generation_controls
   add constraint vibode_furniture_generation_controls_ceiling
     check (
-      credit_ceiling >= credits_consumed + credits_reserved
-      and credit_ceiling <= 600
+      credit_ceiling >= 0
+      and credit_ceiling <= 1000000000
     );
 
 alter table public.vibode_furniture_generation_controls
@@ -30,14 +36,15 @@ alter table public.vibode_furniture_generation_controls
 alter table public.vibode_furniture_generation_controls
   add constraint vibode_furniture_generation_paid_authorized_range
     check (
-      paid_submissions_authorized >= paid_submissions_used
-      and paid_submissions_authorized <= 20
+      paid_submissions_authorized >= 0
+      and paid_submissions_authorized <= 1000000000
+      and paid_submissions_authorized >= paid_submissions_used
     );
 
 comment on column public.vibode_furniture_generation_controls.credit_ceiling is
-  'Global Meshy credit ceiling. An audited administrator adjustment may set it from credits already consumed or reserved through 600.';
+  'Global Vibode credit ceiling. An audited administrator adjustment may raise it in confirmed steps. It cannot be lowered below credits already consumed or reserved. The infrastructure boundary is 1000000000.';
 comment on column public.vibode_furniture_generation_controls.paid_submissions_authorized is
-  'Paid Meshy submissions authorized for the beta. An audited administrator adjustment may set it from attempts already used through 20. It does not replenish itself.';
+  'Paid submissions authorized for the beta. An audited administrator adjustment may raise it in confirmed steps and cannot lower it below attempts already used. It does not replenish itself. The infrastructure boundary is 1000000000.';
 
 create table public.vibode_furniture_generation_budget_events (
   event_id uuid primary key default gen_random_uuid(),
@@ -67,35 +74,47 @@ language plpgsql
 set search_path = pg_catalog, public, pg_temp
 as $fn$
 declare
-  v_adjust text := current_setting('vibode.furniture_budget_adjustment', true);
+  v_owner name;
+  v_privileged boolean := false;
+  v_grant boolean;
 begin
   if new.control_id is distinct from old.control_id
     or new.max_concurrent is distinct from old.max_concurrent
   then
     raise exception 'VIBODE_FURNITURE_GENERATION:CONTROLS_LOCKED';
   end if;
-  if v_adjust is distinct from 'on' and (
-    new.credit_ceiling is distinct from old.credit_ceiling
-    or new.live_enabled is distinct from old.live_enabled
-    or (
-      new.paid_submissions_authorized is distinct from old.paid_submissions_authorized
-      and not (
-        old.paid_submissions_authorized = 0
-        and new.paid_submissions_authorized = 1
-      )
-    )
+  v_grant := old.paid_submissions_authorized = 0
+    and new.paid_submissions_authorized = 1
+    and new.credit_ceiling is not distinct from old.credit_ceiling
+    and new.live_enabled is not distinct from old.live_enabled;
+  if v_grant or (
+    new.credit_ceiling is not distinct from old.credit_ceiling
+    and new.live_enabled is not distinct from old.live_enabled
+    and new.paid_submissions_authorized is not distinct from old.paid_submissions_authorized
   ) then
+    return new;
+  end if;
+  if current_setting('vibode.furniture_budget_adjustment', true) = 'on' then
+    select pg_catalog.pg_get_userbyid(proowner) into v_owner
+    from pg_catalog.pg_proc
+    where oid = 'public.admin_adjust_vibode_furniture_generation_budget(integer,integer,boolean,text,boolean)'::regprocedure;
+    v_privileged := current_user = v_owner;
+  end if;
+  if not v_privileged then
     raise exception 'VIBODE_FURNITURE_GENERATION:CONTROLS_LOCKED';
   end if;
   return new;
 end;
 $fn$;
 
+drop function if exists public.admin_adjust_vibode_furniture_generation_budget(integer, integer, boolean, text);
+
 create or replace function public.admin_adjust_vibode_furniture_generation_budget(
   p_credit_ceiling integer,
   p_paid_submissions_authorized integer,
   p_live_enabled boolean,
-  p_reason text
+  p_reason text,
+  p_confirmed boolean
 ) returns jsonb
 language plpgsql
 security definer
@@ -117,6 +136,9 @@ begin
   if v_email is null or v_email is distinct from v_admin then
     return jsonb_build_object('ok', false, 'code', 'budget_unauthorized');
   end if;
+  if p_confirmed is distinct from true then
+    return jsonb_build_object('ok', false, 'code', 'budget_confirm');
+  end if;
   v_reason := public.vibode_furniture_generation_admin_reason(p_reason);
   if v_reason is null or p_credit_ceiling is null or p_paid_submissions_authorized is null or p_live_enabled is null then
     return jsonb_build_object('ok', false, 'code', 'invalid_input');
@@ -130,12 +152,21 @@ begin
   if not found then
     return jsonb_build_object('ok', false, 'code', 'invalid_input');
   end if;
-  if p_credit_ceiling < v_controls.credits_consumed + v_controls.credits_reserved
-    or p_credit_ceiling > 600
+  if p_credit_ceiling < 0
+    or p_paid_submissions_authorized < 0
+    or p_credit_ceiling > 1000000000
+    or p_paid_submissions_authorized > 1000000000
+    or p_credit_ceiling::bigint < v_controls.credits_consumed::bigint + v_controls.credits_reserved::bigint
     or p_paid_submissions_authorized < v_controls.paid_submissions_used
-    or p_paid_submissions_authorized > 20
   then
     return jsonb_build_object('ok', false, 'code', 'budget_bounds');
+  end if;
+  if p_credit_ceiling::bigint > v_controls.credit_ceiling::bigint
+    + greatest(10000, v_controls.credit_ceiling)::bigint
+    or p_paid_submissions_authorized::bigint > v_controls.paid_submissions_authorized::bigint
+    + greatest(20, v_controls.paid_submissions_authorized)::bigint
+  then
+    return jsonb_build_object('ok', false, 'code', 'budget_step');
   end if;
   if p_credit_ceiling = v_controls.credit_ceiling
     and p_paid_submissions_authorized = v_controls.paid_submissions_authorized
@@ -160,6 +191,7 @@ begin
     paid_submissions_authorized = p_paid_submissions_authorized,
     live_enabled = p_live_enabled
   where control_id = 'global';
+  perform set_config('vibode.furniture_budget_adjustment', 'off', true);
   insert into public.vibode_furniture_generation_budget_events (
     actor_user_id, reason,
     live_enabled_before, live_enabled_after,
@@ -187,9 +219,62 @@ begin
 end;
 $fn$;
 
-revoke all on function public.admin_adjust_vibode_furniture_generation_budget(integer, integer, boolean, text)
+revoke all on function public.admin_adjust_vibode_furniture_generation_budget(integer, integer, boolean, text, boolean)
   from public, anon, authenticated, service_role;
-grant execute on function public.admin_adjust_vibode_furniture_generation_budget(integer, integer, boolean, text)
+grant execute on function public.admin_adjust_vibode_furniture_generation_budget(integer, integer, boolean, text, boolean)
+  to authenticated;
+
+create or replace function public.admin_read_vibode_furniture_generation_budget_events(
+  p_limit integer
+) returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $fn$
+declare
+  v_actor uuid := auth.uid();
+  v_email text;
+  v_admin text := lower(btrim(coalesce(current_setting('vibode.admin_email', true), '')));
+  v_limit integer := least(greatest(coalesce(p_limit, 20), 1), 20);
+  v_events jsonb;
+begin
+  if v_actor is null or v_admin = '' then
+    return jsonb_build_object('ok', false, 'code', 'budget_unauthorized');
+  end if;
+  select lower(email) into v_email
+  from auth.users
+  where id = v_actor;
+  if v_email is null or v_email is distinct from v_admin then
+    return jsonb_build_object('ok', false, 'code', 'budget_unauthorized');
+  end if;
+  select coalesce(jsonb_agg(to_jsonb(event) order by event.created_at desc), '[]'::jsonb)
+  into v_events
+  from (
+    select
+      event_id,
+      actor_user_id,
+      reason,
+      live_enabled_before,
+      live_enabled_after,
+      credit_ceiling_before,
+      credit_ceiling_after,
+      paid_submissions_authorized_before,
+      paid_submissions_authorized_after,
+      credits_consumed,
+      credits_reserved,
+      paid_submissions_used,
+      created_at
+    from public.vibode_furniture_generation_budget_events
+    order by created_at desc
+    limit v_limit
+  ) event;
+  return jsonb_build_object('ok', true, 'events', v_events);
+end;
+$fn$;
+
+revoke all on function public.admin_read_vibode_furniture_generation_budget_events(integer)
+  from public, anon, authenticated, service_role;
+grant execute on function public.admin_read_vibode_furniture_generation_budget_events(integer)
   to authenticated;
 
 create or replace function public.claim_next_vibode_furniture_generation(
@@ -255,7 +340,9 @@ revoke all on function public.claim_next_vibode_furniture_generation(boolean)
   from public, anon, authenticated;
 grant execute on function public.claim_next_vibode_furniture_generation(boolean) to service_role;
 
-comment on function public.admin_adjust_vibode_furniture_generation_budget(integer, integer, boolean, text) is
-  'Audited administrator change to the beta ceiling, paid-attempt authorization, and database admission. Historical consumed credits and used attempts stay put.';
+comment on function public.admin_adjust_vibode_furniture_generation_budget(integer, integer, boolean, text, boolean) is
+  'Audited administrator change to the operating ceiling, paid-attempt authorization, and database admission. Historical consumed credits and used attempts stay put. The adjustment guard is cleared before the function returns.';
+comment on function public.admin_read_vibode_furniture_generation_budget_events(integer) is
+  'Recent audited budget changes for the signed-in administrator. service_role cannot execute it.';
 
 commit;

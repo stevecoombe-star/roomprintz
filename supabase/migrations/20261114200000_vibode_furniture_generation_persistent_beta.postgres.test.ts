@@ -59,8 +59,10 @@ const SETTINGS = JSON.stringify({
 
 test("the persistent beta keeps the certified ledger until an administrator raises it", { timeout: 180_000 }, async () => {
   const migration = readFileSync(path.join(process.cwd(), MIGRATION), "utf8");
-  assert.match(migration, /credit_ceiling <= 600/);
-  assert.match(migration, /paid_submissions_authorized <= 20/);
+  assert.match(migration, /credit_ceiling <= 1000000000/);
+  assert.match(migration, /paid_submissions_authorized <= 1000000000/);
+  assert.doesNotMatch(migration, /credit_ceiling <= 600/);
+  assert.doesNotMatch(migration, /paid_submissions_authorized <= 20/);
   assert.doesNotMatch(migration, /update public\.vibode_furniture_generation_controls\s+set credits_consumed|set paid_submissions_used/i);
   const dockerProbe = spawnSync("docker", ["info", "--format", "{{.ServerVersion}}"], { encoding: "utf8" });
   if (dockerProbe.status !== 0) throw new Error(dockerProbe.stderr);
@@ -114,20 +116,20 @@ test("the persistent beta keeps the certified ledger until an administrator rais
       select pg_get_constraintdef(oid)
       from pg_constraint
       where conname = 'vibode_furniture_generation_controls_ceiling'
-    `), /credit_ceiling <= 600/);
+    `), /credit_ceiling <= 1000000000/);
     assert.equal(await caughtUpdate("credit_ceiling = 120"), "CONTROLS_LOCKED");
     assert.equal(await caughtUpdate("live_enabled = true"), "CONTROLS_LOCKED");
     assert.equal(await caughtUpdate("paid_submissions_authorized = 4"), "CONTROLS_LOCKED");
     assert.equal(await fingerprint(), "false|1|60|0|60|2|2");
     assert.equal(await psql(`
-      select has_function_privilege('service_role', 'public.admin_adjust_vibode_furniture_generation_budget(integer, integer, boolean, text)', 'execute')::text
+      select has_function_privilege('service_role', 'public.admin_adjust_vibode_furniture_generation_budget(integer, integer, boolean, text, boolean)', 'execute')::text
     `), "false");
     assert.equal(await psql(`
       select has_table_privilege('service_role', 'public.vibode_furniture_generation_controls', 'update')::text
     `), "false");
     const serviceDenied = await callResult(`
       set role service_role;
-      select public.admin_adjust_vibode_furniture_generation_budget(120, 4, true, 'Service role cannot spend');
+      select public.admin_adjust_vibode_furniture_generation_budget(120, 4, true, 'Service role cannot spend', true);
     `);
     assert.notEqual(serviceDenied.code, 0);
     assert.match(serviceDenied.stderr, /permission denied/i);
@@ -138,12 +140,16 @@ test("the persistent beta keeps the certified ledger until an administrator rais
     assert.equal(closed.code, "budget_unauthorized");
     const lowCeiling = await call(adjustSql(ADMIN, 59, 2, false, "Cannot erase the historical charge"));
     assert.equal(lowCeiling.code, "budget_bounds");
-    const highCeiling = await call(adjustSql(ADMIN, 601, 2, false, "Cannot remove the hard ceiling"));
+    const highCeiling = await call(adjustSql(ADMIN, 1000000001, 2, false, "Cannot pass the infrastructure boundary"));
     assert.equal(highCeiling.code, "budget_bounds");
     const lowAttempts = await call(adjustSql(ADMIN, 60, 1, false, "Cannot erase a used paid attempt"));
     assert.equal(lowAttempts.code, "budget_bounds");
-    const highAttempts = await call(adjustSql(ADMIN, 60, 21, false, "Cannot authorize an unbounded number of attempts"));
-    assert.equal(highAttempts.code, "budget_bounds");
+    const highAttempts = await call(adjustSql(ADMIN, 60, 100, false, "Cannot jump paid attempts in one save"));
+    assert.equal(highAttempts.code, "budget_step");
+    const wideStep = await call(adjustSql(ADMIN, 20000, 2, false, "Cannot jump the credit ceiling in one save"));
+    assert.equal(wideStep.code, "budget_step");
+    const unconfirmed = await call(adjustSql(ADMIN, 120, 4, true, "A direct call still needs confirmation", "owner@example.com", false));
+    assert.equal(unconfirmed.code, "budget_confirm");
     assert.equal(await fingerprint(), "false|1|60|0|60|2|2");
     const same = await call(adjustSql(ADMIN, 60, 2, false, "Record that the certified ledger stays closed"));
     assert.equal(same.ok, true);
@@ -161,6 +167,74 @@ test("the persistent beta keeps the certified ledger until an administrator rais
         || '|' || credits_consumed::text || '|' || paid_submissions_used::text
       from public.vibode_furniture_generation_budget_events
     `), "60|120|2|4|60|2");
+    const spoofed = await call(`
+      alter table auth.users add column if not exists raw_user_meta_data jsonb;
+      update auth.users
+      set raw_user_meta_data = '{"email":"owner@example.com"}'::jsonb
+      where id = '${OTHER}';
+      do $session$ begin
+        perform set_config('vibode.admin_email', 'owner@example.com', false);
+        perform set_config('request.jwt.claim.sub', '${OTHER}', false);
+        perform set_config('request.jwt.claim.email', 'owner@example.com', false);
+      end $session$;
+      set role authenticated;
+      select public.admin_adjust_vibode_furniture_generation_budget(300, 10, true, 'A forged email claim cannot spend', true);
+    `);
+    assert.equal(spoofed.code, "budget_unauthorized");
+    const intruder = await callResult(`
+      begin;
+      create role budget_intruder nologin bypassrls;
+      grant usage on schema public to budget_intruder;
+      grant select, update on table public.vibode_furniture_generation_controls to budget_intruder;
+      set role budget_intruder;
+      select set_config('vibode.furniture_budget_adjustment', 'on', true);
+      update public.vibode_furniture_generation_controls
+      set credit_ceiling = 300
+      where control_id = 'global';
+      rollback;
+    `);
+    assert.notEqual(intruder.code, 0);
+    assert.match(intruder.stderr, /CONTROLS_LOCKED/);
+    const emergency = await callResult(`
+      begin;
+      select set_config('vibode.furniture_budget_adjustment', 'on', true);
+      update public.vibode_furniture_generation_controls
+      set live_enabled = false
+      where control_id = 'global';
+      rollback;
+    `);
+    assert.equal(emergency.code, 0);
+    assert.equal(await fingerprint(), "true|1|120|0|60|4|2");
+    const cleared = await callResult(`
+      begin;
+      do $session$ begin
+        perform set_config('vibode.admin_email', 'owner@example.com', true);
+        perform set_config('request.jwt.claim.sub', '${ADMIN}', true);
+      end $session$;
+      set role authenticated;
+      select public.admin_adjust_vibode_furniture_generation_budget(90, 4, true, 'Lower the ceiling inside a rolled-back transaction', true);
+      select current_setting('vibode.furniture_budget_adjustment', true);
+      rollback;
+    `);
+    assert.equal(cleared.code, 0);
+    assert.equal(cleared.stdout.trim().split("\n").filter(Boolean).at(-1), "off");
+    assert.equal(await fingerprint(), "true|1|120|0|60|4|2");
+    assert.equal(await psql("select count(*)::text from public.vibode_furniture_generation_budget_events"), "1");
+    const history = await call(readSql(ADMIN));
+    assert.equal(history.ok, true);
+    const events = history.events as Array<Record<string, unknown>>;
+    assert.equal(events[0]?.reason, "Authorize eight more credits of headroom for two testers");
+    assert.equal(events[0]?.actor_user_id, ADMIN);
+    assert.equal(events[0]?.credits_consumed, 60);
+    assert.equal(events[0]?.paid_submissions_used, 2);
+    const hiddenHistory = await call(readSql(OTHER));
+    assert.equal(hiddenHistory.code, "budget_unauthorized");
+    assert.equal(await psql(`
+      select has_function_privilege('service_role', 'public.admin_read_vibode_furniture_generation_budget_events(integer)', 'execute')::text
+    `), "false");
+    assert.equal(await psql(`
+      select has_function_privilege('anon', 'public.admin_adjust_vibode_furniture_generation_budget(integer, integer, boolean, text, boolean)', 'execute')::text
+    `), "false");
     const grant = await call("select public.grant_vibode_furniture_generation_paid_submission(true)");
     assert.equal(grant.code, "allowance_closed");
 
@@ -193,19 +267,134 @@ test("the persistent beta keeps the certified ledger until an administrator rais
       select status from public.vibode_furniture_generation_jobs where job_id = '${JOB}'
     `), "needs_review");
     assert.equal(await fingerprint(), "true|1|120|60|60|4|2");
+    await psql(`
+      update public.vibode_furniture_generation_controls
+      set credits_reserved = credits_reserved - 30,
+        credits_consumed = credits_consumed + 35
+      where control_id = 'global'
+    `);
+    assert.equal(await fingerprint(), "true|1|120|30|95|4|2");
+    await psql(`
+      update public.vibode_furniture_generation_controls
+      set credits_reserved = 60,
+        credits_consumed = 60
+      where control_id = 'global'
+    `);
+    const stopped = await call(adjustSql(ADMIN, 120, 4, false, "Stop new reservations and uncontacted submissions"));
+    assert.equal(stopped.ok, true);
+    assert.equal(await fingerprint(), "false|1|120|60|60|4|2");
+    const reservedWhileOff = await call(reserveSql(THIRD, THIRD_JOB, "shutdown-beta-job"));
+    assert.equal(reservedWhileOff.code, "disabled");
+    const reviewWhileOff = await call("select public.claim_next_vibode_furniture_generation(true)");
+    assert.equal(reviewWhileOff.outcome, "claimed");
+    assert.equal(reviewWhileOff.job_id, JOB);
+    await psql(`
+      update public.vibode_furniture_generation_jobs
+      set claim_nonce = null, claim_expires_at = null
+      where job_id = '${OTHER_JOB}'
+    `);
+    const skipped = await call("select public.claim_next_vibode_furniture_generation(true)");
+    assert.equal(skipped.outcome, "disabled");
+    assert.equal(await psql(`
+      select status || '|' || coalesce(provider_contacted_at::text, '')
+      from public.vibode_furniture_generation_jobs
+      where job_id = '${OTHER_JOB}'
+    `), "reserved|");
+    const reopened = await call(adjustSql(ADMIN, 120, 4, true, "Lease the reserved job before closing admission again"));
+    assert.equal(reopened.ok, true);
+    const leased = await call("select public.claim_next_vibode_furniture_generation(true)");
+    assert.equal(leased.job_id, OTHER_JOB);
+    assert.equal(typeof leased.claim_nonce, "string");
+    const closedAgain = await call(adjustSql(ADMIN, 120, 4, false, "Close admission before the leased job is submitted"));
+    assert.equal(closedAgain.ok, true);
+    const blockedCommit = await call(`
+      select public.commit_vibode_furniture_generation_submission(
+        '${OTHER}', '${OTHER_JOB}', '${String(leased.claim_nonce)}'
+      )
+    `);
+    assert.equal(blockedCommit.code, "disabled");
+    assert.equal(await psql(`
+      select status || '|' || coalesce(provider_contacted_at::text, '') || '|' || paid_submissions_used::text
+      from public.vibode_furniture_generation_jobs as job
+      cross join public.vibode_furniture_generation_controls
+      where job.job_id = '${OTHER_JOB}'
+    `), "reserved||2");
+    await psql(`
+      update public.vibode_furniture_generation_jobs
+      set status = 'cancelled', claim_nonce = null, claim_expires_at = null
+      where job_id = '${OTHER_JOB}';
+      update public.vibode_furniture_generation_jobs
+      set status = 'running',
+        provider_task_id = 'task-12345678',
+        claim_nonce = null,
+        claim_expires_at = null
+      where job_id = '${JOB}'
+    `);
+    const polled = await call("select public.claim_next_vibode_furniture_generation(true)");
+    assert.equal(polled.outcome, "claimed");
+    assert.equal(polled.job_id, JOB);
+    assert.equal(polled.purpose, "poll");
+    assert.equal(await fingerprint(), "false|1|120|60|60|4|2");
+    const beforeConcurrent = await fingerprint();
+    const hold = psql(`
+      begin;
+      select pg_advisory_xact_lock(hashtext('vibode-furniture-generation')::bigint);
+      update public.vibode_furniture_generation_controls
+      set credits_reserved = credits_reserved + 30
+      where control_id = 'global';
+      select pg_sleep(6);
+      commit;
+    `);
+    let lockHeld = false;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const locks = await psql("select count(*)::text from pg_locks where locktype = 'advisory' and granted");
+      if (locks !== "0") {
+        lockHeld = true;
+        break;
+      }
+      await delay(100);
+    }
+    assert.equal(lockHeld, true);
+    const waiting = await callResult(`
+      set lock_timeout = '250ms';
+      ${adjustSql(ADMIN, 150, 4, false, "A budget change waits for the reservation lock")}
+    `);
+    assert.notEqual(waiting.code, 0);
+    assert.match(`${waiting.stderr}\n${waiting.stdout}`, /lock timeout/i);
+    await hold;
+    assert.equal(await fingerprint(), "false|1|120|90|60|4|2");
+    const covered = await call(adjustSql(ADMIN, 120, 4, false, "The old ceiling no longer covers the new reservation"));
+    assert.equal(covered.code, "budget_bounds");
+    const raised = await call(adjustSql(ADMIN, 150, 4, false, "Cover the reservation that landed during the lock"));
+    assert.equal(raised.ok, true);
+    assert.equal(raised.credits_consumed, 60);
+    assert.equal(await fingerprint(), "false|1|150|90|60|4|2");
+    assert.notEqual(await fingerprint(), beforeConcurrent);
   } finally {
     await removeContainer();
   }
 });
 
-function adjustSql(actor: string, ceiling: number, authorized: number, live: boolean, reason: string, adminEmail = "owner@example.com"): string {
+function adjustSql(actor: string, ceiling: number, authorized: number, live: boolean, reason: string, adminEmail = "owner@example.com", confirmed = true): string {
   return `
     do $session$ begin
       perform set_config('vibode.admin_email', '${adminEmail}', false);
       perform set_config('request.jwt.claim.sub', '${actor}', false);
     end $session$;
     set role authenticated;
-    select public.admin_adjust_vibode_furniture_generation_budget(${ceiling}, ${authorized}, ${live}, '${reason}');
+    select public.admin_adjust_vibode_furniture_generation_budget(${ceiling}, ${authorized}, ${live}, '${reason}', ${confirmed});
+  `;
+}
+
+function readSql(actor: string): string {
+  return `
+    do $session$ begin
+      perform set_config('vibode.admin_email', 'owner@example.com', false);
+      perform set_config('request.jwt.claim.sub', '${actor}', false);
+      perform set_config('request.jwt.claim.email', 'owner@example.com', false);
+    end $session$;
+    set role authenticated;
+    select public.admin_read_vibode_furniture_generation_budget_events(20);
   `;
 }
 
@@ -254,6 +443,9 @@ type JsonRow = Record<string, unknown> & {
   unchanged?: boolean;
   outcome?: string;
   job_id?: string;
+  claim_nonce?: string;
+  purpose?: string;
+  events?: unknown;
   created?: boolean;
   credits_consumed?: number;
   paid_submissions_used?: number;

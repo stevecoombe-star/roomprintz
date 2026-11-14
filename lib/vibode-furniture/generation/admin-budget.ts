@@ -12,19 +12,44 @@ import {
   type AdminReadResult,
 } from "@/lib/vibode-furniture/generation/admin-dashboard";
 
-export const BETA_CREDIT_CEILING_MAX = 600;
-export const BETA_PAID_ATTEMPT_MAX = 20;
+export const BETA_CREDIT_INFRASTRUCTURE_MAX = 1_000_000_000;
+export const BETA_PAID_INFRASTRUCTURE_MAX = 1_000_000_000;
+export const BETA_CREDIT_STEP_FLOOR = 10_000;
+export const BETA_PAID_STEP_FLOOR = 20;
 
 export const ADMIN_BUDGET_UNAUTHORIZED = "Budget changes are not authorized for this session.";
-export const ADMIN_BUDGET_BOUNDS = "The ceiling must cover credits already used and stay within 600. Paid attempts must cover attempts already used and stay within 20.";
+export const ADMIN_BUDGET_BOUNDS = "The ceiling must cover credits already consumed or reserved, and paid attempts must cover attempts already used. Neither value can pass 1000000000.";
+export const ADMIN_BUDGET_STEP = "That increase is larger than one confirmed step. Raise the credit ceiling by at most 10,000 or double it, and raise paid attempts by at most 20 or double them. Save again to go further.";
 export const ADMIN_BUDGET_CONFIRM = "Confirm the budget change before saving it.";
+
+export function budgetIncreaseLimit(current: number, floor: number): number {
+  return current + Math.max(floor, current);
+}
 
 const LEAK = /users\/|candidate\.glb|msy_|api\.meshy|MESHY_API_KEY|supabase\.co|:\/\//i;
 
 const SQL_ERRORS: Record<string, { status: number; error: string }> = {
   budget_unauthorized: { status: 403, error: ADMIN_BUDGET_UNAUTHORIZED },
   budget_bounds: { status: 400, error: ADMIN_BUDGET_BOUNDS },
+  budget_step: { status: 400, error: ADMIN_BUDGET_STEP },
+  budget_confirm: { status: 400, error: ADMIN_BUDGET_CONFIRM },
   invalid_input: { status: 400, error: ADMIN_BAD_REQUEST },
+};
+
+export type BudgetEventRecord = {
+  eventId: string;
+  actorUserId: string;
+  reason: string;
+  liveEnabledBefore: boolean;
+  liveEnabledAfter: boolean;
+  creditCeilingBefore: number;
+  creditCeilingAfter: number;
+  paidSubmissionsAuthorizedBefore: number;
+  paidSubmissionsAuthorizedAfter: number;
+  creditsConsumed: number;
+  creditsReserved: number;
+  paidSubmissionsUsed: number;
+  createdAt: string;
 };
 
 export type BudgetAdjustment = {
@@ -42,7 +67,10 @@ type BudgetRpc = (args: {
   p_paid_submissions_authorized: number;
   p_live_enabled: boolean;
   p_reason: string;
+  p_confirmed: boolean;
 }) => Promise<{ data: unknown; error: { message: string } | null }>;
+
+type BudgetRead = () => Promise<{ data: unknown; error: { message: string } | null }>;
 
 export async function furnitureGenerationBudgetResponse(
   deps: {
@@ -59,8 +87,8 @@ export async function furnitureGenerationBudgetResponse(
   const payload = await readPayload(request);
   if (!payload) return errorResult(400, ADMIN_BAD_REQUEST);
   if (payload.confirmed !== true) return errorResult(400, ADMIN_BUDGET_CONFIRM);
-  const creditCeiling = readBoundedInteger(payload.creditCeiling, 0, BETA_CREDIT_CEILING_MAX);
-  const paidSubmissionsAuthorized = readBoundedInteger(payload.paidSubmissionsAuthorized, 0, BETA_PAID_ATTEMPT_MAX);
+  const creditCeiling = readBoundedInteger(payload.creditCeiling, 0, BETA_CREDIT_INFRASTRUCTURE_MAX);
+  const paidSubmissionsAuthorized = readBoundedInteger(payload.paidSubmissionsAuthorized, 0, BETA_PAID_INFRASTRUCTURE_MAX);
   const liveEnabled = typeof payload.liveEnabled === "boolean" ? payload.liveEnabled : null;
   const reason = readReason(payload.reason);
   if (creditCeiling == null || paidSubmissionsAuthorized == null || liveEnabled == null || !reason) {
@@ -73,6 +101,7 @@ export async function furnitureGenerationBudgetResponse(
       p_paid_submissions_authorized: paidSubmissionsAuthorized,
       p_live_enabled: liveEnabled,
       p_reason: reason,
+      p_confirmed: true,
     });
   } catch {
     return errorResult(500, ADMIN_UNAVAILABLE);
@@ -83,6 +112,82 @@ export async function furnitureGenerationBudgetResponse(
   const parsed = parseBudgetAdjustment(written.data);
   if (!parsed) return errorResult(500, ADMIN_MISCONFIGURED);
   return { status: 200, body: { ok: true, ...parsed } };
+}
+
+export async function furnitureGenerationBudgetHistoryResponse(
+  deps: {
+    getAdmin: () => Promise<unknown>;
+    read: BudgetRead;
+  },
+): Promise<AdminReadResult> {
+  const actor = await deps.getAdmin();
+  if (!actor || typeof actor !== "object" || !("id" in actor) || typeof actor.id !== "string") {
+    return errorResult(403, ADMIN_REQUIRED);
+  }
+  let written: { data: unknown; error: { message: string } | null };
+  try {
+    written = await deps.read();
+  } catch {
+    return errorResult(500, ADMIN_UNAVAILABLE);
+  }
+  if (written.error || written.data == null) return errorResult(500, ADMIN_UNAVAILABLE);
+  const failure = sqlFailure(written.data);
+  if (failure) return failure;
+  const events = parseBudgetHistory(written.data);
+  if (!events) return errorResult(500, ADMIN_MISCONFIGURED);
+  return { status: 200, body: { ok: true, events } };
+}
+
+export function parseBudgetHistory(value: unknown): BudgetEventRecord[] | null {
+  const body = asObject(value);
+  if (!body || body.ok !== true || !Array.isArray(body.events)) return null;
+  const events: BudgetEventRecord[] = [];
+  for (const item of body.events) {
+    const parsed = parseBudgetEvent(item);
+    if (!parsed) return null;
+    events.push(parsed);
+  }
+  return events;
+}
+
+function parseBudgetEvent(value: unknown): BudgetEventRecord | null {
+  const body = asObject(value);
+  if (!body) return null;
+  const eventId = readText(body.event_id ?? body.eventId);
+  const actorUserId = readText(body.actor_user_id ?? body.actorUserId);
+  const reason = readText(body.reason);
+  const createdAt = readText(body.created_at ?? body.createdAt);
+  const liveEnabledBefore = readBool(body.live_enabled_before ?? body.liveEnabledBefore);
+  const liveEnabledAfter = readBool(body.live_enabled_after ?? body.liveEnabledAfter);
+  const creditCeilingBefore = readCount(body.credit_ceiling_before ?? body.creditCeilingBefore);
+  const creditCeilingAfter = readCount(body.credit_ceiling_after ?? body.creditCeilingAfter);
+  const paidSubmissionsAuthorizedBefore = readCount(body.paid_submissions_authorized_before ?? body.paidSubmissionsAuthorizedBefore);
+  const paidSubmissionsAuthorizedAfter = readCount(body.paid_submissions_authorized_after ?? body.paidSubmissionsAuthorizedAfter);
+  const creditsConsumed = readCount(body.credits_consumed ?? body.creditsConsumed);
+  const creditsReserved = readCount(body.credits_reserved ?? body.creditsReserved);
+  const paidSubmissionsUsed = readCount(body.paid_submissions_used ?? body.paidSubmissionsUsed);
+  if (
+    !eventId || !actorUserId || !reason || !createdAt
+    || liveEnabledBefore == null || liveEnabledAfter == null
+    || creditCeilingBefore == null || creditCeilingAfter == null
+    || paidSubmissionsAuthorizedBefore == null || paidSubmissionsAuthorizedAfter == null
+    || creditsConsumed == null || creditsReserved == null || paidSubmissionsUsed == null
+  ) return null;
+  return {
+    eventId,
+    actorUserId,
+    reason,
+    liveEnabledBefore,
+    liveEnabledAfter,
+    creditCeilingBefore,
+    creditCeilingAfter,
+    paidSubmissionsAuthorizedBefore,
+    paidSubmissionsAuthorizedAfter,
+    creditsConsumed,
+    creditsReserved,
+    paidSubmissionsUsed,
+    createdAt,
+  };
 }
 
 export function parseBudgetAdjustment(value: unknown): BudgetAdjustment | null {
@@ -149,6 +254,10 @@ function readReason(value: unknown): string | null {
 
 function readBool(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
+}
+
+function readText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function readCount(value: unknown): number | null {
