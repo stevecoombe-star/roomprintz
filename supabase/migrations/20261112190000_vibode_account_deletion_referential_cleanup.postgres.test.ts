@@ -80,7 +80,7 @@ const SETTINGS = JSON.stringify({
 test("deletion cleanup can null foreign keys without reopening account writes", { timeout: 240_000 }, async () => {
   const barrierSql = readFileSync(path.join(process.cwd(), BARRIER), "utf8");
   const fixSql = readFileSync(path.join(process.cwd(), FIX), "utf8");
-  assert.match(barrierSql, /not exists \(\s*select 1\s*from pg_trigger/s);
+  assert.match(barrierSql, /not exists \(\s*select 1\s*from pg_trigger/);
   assert.match(fixSql, /pg_trigger_depth\(\) < 2/);
   assert.match(fixSql, /confdeltype = 'n'/);
   assert.match(fixSql, /a_vibode_account_deletion_block_write/);

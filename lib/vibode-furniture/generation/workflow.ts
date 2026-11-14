@@ -89,7 +89,7 @@ export function createMemoryObjectStore(): GenerationObjectStore {
 
 export type GenerationWorkflowFailure = {
   ok: false;
-  errorClass: "unauthorized" | "disabled" | "unsupported_settings" | "invalid_input" | "quota_exhausted" | "concurrency_limited" | "idempotency_conflict" | "not_found" | "lease_held" | "not_claimable" | "needs_reconciliation" | "task_immutable" | "provider_rejected" | "provider_payment" | "provider_auth" | "provider_forbidden" | "rate_limited" | "ambiguous_timeout" | "provider_failed" | "invalid_output" | "oversized_output" | "ingest_failed" | "input_storage_failed" | "credit_unreported";
+  errorClass: "unauthorized" | "disabled" | "unsupported_settings" | "invalid_input" | "quota_exhausted" | "concurrency_limited" | "idempotency_conflict" | "submission_not_authorized" | "account_deletion_in_progress" | "not_found" | "lease_held" | "not_claimable" | "needs_reconciliation" | "task_immutable" | "conflict" | "provider_rejected" | "provider_payment" | "provider_auth" | "provider_forbidden" | "rate_limited" | "ambiguous_timeout" | "provider_failed" | "invalid_output" | "oversized_output" | "ingest_failed" | "input_storage_failed" | "credit_unreported";
   message: string;
   retryAfterMs?: number;
 };
@@ -206,7 +206,7 @@ export async function submitFurnitureGeneration(input: {
   jobId: string;
   nowMs: number;
 }): Promise<
-  | { ok: true; action: "submitted" | "poll" | "reconcile" | "rate_limited"; job: GenerationJob; retryAfterMs?: number }
+  | { ok: true; action: "submitted" | "prepare" | "poll" | "reconcile" | "rate_limited"; job: GenerationJob; retryAfterMs?: number }
   | GenerationWorkflowFailure
 > {
   const job = readGeneration(input.db, input.actorUserId, input.jobId);

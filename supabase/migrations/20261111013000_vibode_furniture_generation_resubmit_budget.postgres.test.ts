@@ -417,7 +417,15 @@ async function pass(
     objects,
     adapter: createMeshyAdapter(provider),
     download: async () => ({ kind: "network" }),
-    validate: async () => ({ ok: false, errorClass: "invalid_output" }),
+    validate: async () => ({
+      accepted: false,
+      sha256: "00".repeat(32),
+      byteSize: 0,
+      widthM: null,
+      heightM: null,
+      depthM: null,
+      errors: [{ code: "invalid_output", message: "invalid_output" }],
+    }),
     nowMs,
     submitAllowed: true,
   });
