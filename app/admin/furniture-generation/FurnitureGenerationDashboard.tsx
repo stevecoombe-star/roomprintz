@@ -23,6 +23,7 @@ import {
   BETA_PAID_INFRASTRUCTURE_MAX,
   BETA_PAID_STEP_FLOOR,
   budgetIncreaseLimit,
+  budgetLimitsCoverObligations,
   parseBudgetAdjustment,
   parseBudgetHistory,
   type BudgetEventRecord,
@@ -211,8 +212,15 @@ export default function FurnitureGenerationDashboard() {
       !overview
       || creditCeiling == null
       || paidSubmissionsAuthorized == null
-      || creditCeiling < overview.creditsConsumed + overview.creditsReserved
-      || paidSubmissionsAuthorized < overview.paidSubmissionsUsed
+      || !budgetLimitsCoverObligations({
+        creditCeiling,
+        paidSubmissionsAuthorized,
+        currentCeiling: overview.creditCeiling,
+        currentPaidSubmissionsAuthorized: overview.paidSubmissionsAuthorized,
+        creditsConsumed: overview.creditsConsumed,
+        creditsReserved: overview.creditsReserved,
+        paidSubmissionsUsed: overview.paidSubmissionsUsed,
+      })
     ) {
       setBudgetMessage(ADMIN_BUDGET_BOUNDS);
       return;

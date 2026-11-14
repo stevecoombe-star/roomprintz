@@ -26,6 +26,22 @@ export function budgetIncreaseLimit(current: number, floor: number): number {
   return current + Math.max(floor, current);
 }
 
+export function budgetLimitsCoverObligations(input: {
+  creditCeiling: number;
+  paidSubmissionsAuthorized: number;
+  currentCeiling: number;
+  currentPaidSubmissionsAuthorized: number;
+  creditsConsumed: number;
+  creditsReserved: number;
+  paidSubmissionsUsed: number;
+}): boolean {
+  const ceilingUnchanged = input.creditCeiling === input.currentCeiling;
+  const paidUnchanged = input.paidSubmissionsAuthorized === input.currentPaidSubmissionsAuthorized;
+  if (!ceilingUnchanged && input.creditCeiling < input.creditsConsumed + input.creditsReserved) return false;
+  if (!paidUnchanged && input.paidSubmissionsAuthorized < input.paidSubmissionsUsed) return false;
+  return true;
+}
+
 const LEAK = /users\/|candidate\.glb|msy_|api\.meshy|MESHY_API_KEY|supabase\.co|:\/\//i;
 
 const SQL_ERRORS: Record<string, { status: number; error: string }> = {

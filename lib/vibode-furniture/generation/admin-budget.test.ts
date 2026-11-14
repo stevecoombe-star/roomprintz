@@ -6,6 +6,7 @@ import {
   ADMIN_BUDGET_CONFIRM,
   ADMIN_BUDGET_STEP,
   ADMIN_BUDGET_UNAUTHORIZED,
+  budgetLimitsCoverObligations,
   furnitureGenerationBudgetHistoryResponse,
   furnitureGenerationBudgetResponse,
   parseBudgetAdjustment,
@@ -106,6 +107,60 @@ test("budget changes fail closed without confirmation, authority, or a bounded v
   }));
   assert.equal(unauthorized.status, 403);
   assert.equal(unauthorized.body.error, ADMIN_BUDGET_UNAUTHORIZED);
+});
+
+test("admission can turn off without raising a ceiling that settlement already exceeded", async () => {
+  assert.equal(budgetLimitsCoverObligations({
+    creditCeiling: 120,
+    paidSubmissionsAuthorized: 4,
+    currentCeiling: 120,
+    currentPaidSubmissionsAuthorized: 4,
+    creditsConsumed: 95,
+    creditsReserved: 30,
+    paidSubmissionsUsed: 2,
+  }), true);
+  assert.equal(budgetLimitsCoverObligations({
+    creditCeiling: 124,
+    paidSubmissionsAuthorized: 4,
+    currentCeiling: 120,
+    currentPaidSubmissionsAuthorized: 4,
+    creditsConsumed: 95,
+    creditsReserved: 30,
+    paidSubmissionsUsed: 2,
+  }), false);
+
+  const response = await furnitureGenerationBudgetResponse({
+    getAdmin: async () => ADMIN,
+    adjust: async (args) => {
+      assert.equal(args.p_credit_ceiling, 120);
+      assert.equal(args.p_paid_submissions_authorized, 4);
+      assert.equal(args.p_live_enabled, false);
+      assert.equal(args.p_confirmed, true);
+      return {
+        data: {
+          ok: true,
+          unchanged: false,
+          live_enabled: false,
+          credit_ceiling: 120,
+          paid_submissions_authorized: 4,
+          credits_consumed: 95,
+          credits_reserved: 30,
+          paid_submissions_used: 2,
+        },
+        error: null,
+      };
+    },
+  }, request({
+    creditCeiling: 120,
+    paidSubmissionsAuthorized: 4,
+    liveEnabled: false,
+    reason: "Turn admission off while settlement exceeds the ceiling",
+    confirmed: true,
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(parseBudgetAdjustment(response.body)?.liveEnabled, false);
+  assert.equal(parseBudgetAdjustment(response.body)?.creditCeiling, 120);
+  assert.equal(parseBudgetAdjustment(response.body)?.creditsConsumed, 95);
 });
 
 test("budget history keeps the administrator, the reason, and the previous values", async () => {

@@ -274,6 +274,32 @@ test("the persistent beta keeps the certified ledger until an administrator rais
       where control_id = 'global'
     `);
     assert.equal(await fingerprint(), "true|1|120|30|95|4|2");
+    const overCeilingShutdown = await call(adjustSql(
+      ADMIN,
+      120,
+      4,
+      false,
+      "Turn admission off while settlement exceeds the ceiling",
+    ));
+    assert.equal(overCeilingShutdown.ok, true);
+    assert.equal(overCeilingShutdown.unchanged, false);
+    assert.equal(overCeilingShutdown.live_enabled, false);
+    assert.equal(overCeilingShutdown.credit_ceiling, 120);
+    assert.equal(overCeilingShutdown.credits_consumed, 95);
+    assert.equal(overCeilingShutdown.paid_submissions_used, 2);
+    assert.equal(await fingerprint(), "false|1|120|30|95|4|2");
+    assert.equal(await psql(`
+      select live_enabled_before::text || '|' || live_enabled_after::text
+        || '|' || credit_ceiling_before::text || '|' || credit_ceiling_after::text
+        || '|' || credits_consumed::text || '|' || credits_reserved::text
+        || '|' || paid_submissions_used::text
+      from public.vibode_furniture_generation_budget_events
+      order by created_at desc
+      limit 1
+    `), "true|false|120|120|95|30|2");
+    const stillShort = await call(adjustSql(ADMIN, 124, 4, false, "A lower ceiling still has to cover the exposure"));
+    assert.equal(stillShort.code, "budget_bounds");
+    assert.equal(await fingerprint(), "false|1|120|30|95|4|2");
     await psql(`
       update public.vibode_furniture_generation_controls
       set credits_reserved = 60,
@@ -363,7 +389,11 @@ test("the persistent beta keeps the certified ledger until an administrator rais
     assert.match(`${waiting.stderr}\n${waiting.stdout}`, /lock timeout/i);
     await hold;
     assert.equal(await fingerprint(), "false|1|120|90|60|4|2");
-    const covered = await call(adjustSql(ADMIN, 120, 4, false, "The old ceiling no longer covers the new reservation"));
+    const heldCeiling = await call(adjustSql(ADMIN, 120, 4, false, "Keep the ceiling while the reservation exceeds it"));
+    assert.equal(heldCeiling.ok, true);
+    assert.equal(heldCeiling.unchanged, true);
+    assert.equal(await fingerprint(), "false|1|120|90|60|4|2");
+    const covered = await call(adjustSql(ADMIN, 149, 4, false, "A changed ceiling must cover the new reservation"));
     assert.equal(covered.code, "budget_bounds");
     const raised = await call(adjustSql(ADMIN, 150, 4, false, "Cover the reservation that landed during the lock"));
     assert.equal(raised.ok, true);

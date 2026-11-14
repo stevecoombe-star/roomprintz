@@ -156,8 +156,14 @@ begin
     or p_paid_submissions_authorized < 0
     or p_credit_ceiling > 1000000000
     or p_paid_submissions_authorized > 1000000000
-    or p_credit_ceiling::bigint < v_controls.credits_consumed::bigint + v_controls.credits_reserved::bigint
-    or p_paid_submissions_authorized < v_controls.paid_submissions_used
+    or (
+      p_credit_ceiling is distinct from v_controls.credit_ceiling
+      and p_credit_ceiling::bigint < v_controls.credits_consumed::bigint + v_controls.credits_reserved::bigint
+    )
+    or (
+      p_paid_submissions_authorized is distinct from v_controls.paid_submissions_authorized
+      and p_paid_submissions_authorized < v_controls.paid_submissions_used
+    )
   then
     return jsonb_build_object('ok', false, 'code', 'budget_bounds');
   end if;
