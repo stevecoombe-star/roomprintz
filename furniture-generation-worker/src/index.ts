@@ -68,49 +68,50 @@ async function main(): Promise<void> {
   const code = await runFurnitureGenerationWorker({
     enabled: () => startup.processingEnabled || startup.cleanupEnabled,
     once: startup.once,
-    execute: () => runFurnitureGenerationMaintenance({
-      cleanupEnabled: startup.cleanupEnabled,
-      processingEnabled: startup.processingEnabled,
-      cleanup: async () => {
-        const cleaned = await cleanupTemporaryGenerationObjects({
-          commands: deps.commands,
-          objects: deps.objects,
-          nowMs: Date.now(),
-          log,
-        });
-        log("cleanup_pass", {
-          processed: cleaned.processed,
-          deleted: cleaned.deleted,
-          skipped: cleaned.skipped,
-          failed: cleaned.failed,
-          retainedForReview: cleaned.retainedForReview,
-          action: "cleanup",
-          jobId: null,
-        });
-        return cleaned;
-      },
-      sweep: async () => {
-        await deps.commands.sweep(Date.now());
-        try {
-          await sweepExpiredPhotoPreparations();
-        } catch {
-          log("photo_preparation_sweep_failed", {
+    execute: async () => {
+      const result = await runFurnitureGenerationMaintenance({
+        cleanupEnabled: startup.cleanupEnabled,
+        processingEnabled: startup.processingEnabled,
+        cleanup: async () => {
+          const cleaned = await cleanupTemporaryGenerationObjects({
+            commands: deps.commands,
+            objects: deps.objects,
+            nowMs: Date.now(),
+            log,
+          });
+          log("cleanup_pass", {
+            processed: cleaned.processed,
+            deleted: cleaned.deleted,
+            skipped: cleaned.skipped,
+            failed: cleaned.failed,
+            retainedForReview: cleaned.retainedForReview,
             action: "cleanup",
             jobId: null,
-            deleted: null,
           });
-        }
-      },
-      claim: () => executeFurnitureGenerationClaim({
-        commands: deps.commands,
-        objects: deps.objects,
-        adapter: runtime.runtime.adapter,
-        download: runtime.runtime.download,
-        validate: validatePersonalFurnitureGlb,
-        nowMs: Date.now(),
-        submitAllowed: runtime.runtime.submitAllowed,
-      }),
-    }),
+          return cleaned;
+        },
+        sweep: () => deps.commands.sweep(Date.now()),
+        claim: () => executeFurnitureGenerationClaim({
+          commands: deps.commands,
+          objects: deps.objects,
+          adapter: runtime.runtime.adapter,
+          download: runtime.runtime.download,
+          validate: validatePersonalFurnitureGlb,
+          nowMs: Date.now(),
+          submitAllowed: runtime.runtime.submitAllowed,
+        }),
+      });
+      try {
+        await sweepExpiredPhotoPreparations();
+      } catch {
+        log("photo_preparation_sweep_failed", {
+          action: "cleanup",
+          jobId: null,
+          deleted: null,
+        });
+      }
+      return result;
+    },
     pollIntervalMs: startup.pollIntervalMs,
     shouldStop: () => stop,
     sleep: (ms) => interruptibleSleep(ms, () => stop),

@@ -213,10 +213,12 @@ test("preparation routes stay off the generation ledger and the worker sweep can
   assert.match(readFileSync(path.join(root, "lib/photo-preparation/production.server.ts"), "utf8"), /purpose === "furniture"/);
   assert.match(readFileSync(path.join(root, "lib/photo-preparation/production.server.ts"), "utf8"), /authorizeFurnitureGenerationCaller/);
   const worker = readFileSync(path.join(root, "furniture-generation-worker/src/index.ts"), "utf8");
-  const sweepAt = worker.indexOf("await deps.commands.sweep(Date.now());");
+  const maintenanceAt = worker.indexOf("await runFurnitureGenerationMaintenance");
   const photoSweepAt = worker.indexOf("await sweepExpiredPhotoPreparations();");
-  assert.ok(sweepAt > 0 && photoSweepAt > sweepAt);
-  assert.ok(worker.slice(sweepAt, photoSweepAt).includes("try {"));
+  const claimAt = worker.indexOf("claim: () => executeFurnitureGenerationClaim");
+  assert.ok(maintenanceAt > 0 && claimAt > maintenanceAt && photoSweepAt > claimAt);
+  assert.ok(worker.slice(photoSweepAt - 40, photoSweepAt).includes("try {"));
+  assert.match(worker, /sweep: \(\) => deps\.commands\.sweep\(Date\.now\(\)\)/);
   const deletion = readFileSync(path.join(root, "app/api/admin/delete-user/route.ts"), "utf8");
   assert.match(deletion, /vibode-photo-preparations/);
   assert.match(deletion, /delete_vibode_photo_preparations_for_user/);
