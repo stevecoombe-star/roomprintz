@@ -19,6 +19,12 @@ export const PHOTO_PREPARATION_HOURLY_LIMIT = 30;
 
 export const PHOTO_PREPARATION_UPLOAD_TTL_MS = 10 * 60 * 1000;
 
+/** createSignedUploadUrl is valid for 2 hours and this SDK cannot set a shorter expiry. */
+export const PHOTO_PREPARATION_SIGNED_UPLOAD_TTL_MS = 2 * 60 * 60 * 1000;
+
+/** Covers a 25 MiB upload that starts just before the token expires, at about 100 KB/s, plus clock skew. */
+export const PHOTO_PREPARATION_CLEANUP_MARGIN_MS = 30 * 60 * 1000;
+
 export const PHOTO_PREPARATION_CONVERT_LEASE_MS = 90 * 1000;
 
 export const PHOTO_PREPARATION_JSON_MAX_BYTES = 8_192;

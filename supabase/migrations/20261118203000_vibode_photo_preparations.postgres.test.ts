@@ -12,6 +12,7 @@ import test from "node:test";
 const CONTAINER = "vibode-photo-prep-2a2-pg";
 const DATABASE = "photoprep2a2";
 const MIGRATION = "supabase/migrations/20261118203000_vibode_photo_preparations.sql";
+const RETENTION = "supabase/migrations/20261119170000_vibode_photo_preparation_cleanup_retention.sql";
 const USER_A = "11111111-1111-4111-8111-111111111111";
 const USER_B = "22222222-2222-4222-8222-222222222222";
 const NOW = "2026-11-18T20:00:00Z";
@@ -47,11 +48,13 @@ test("photo preparation storage is private, owned, and capacity-limited", { time
       create table storage.objects (
         id uuid primary key default gen_random_uuid(),
         bucket_id text,
-        name text
+        name text,
+        created_at timestamptz not null default now()
       );
       alter table storage.objects enable row level security;
     `);
     await psql(migration);
+    await psql(readFileSync(path.join(process.cwd(), RETENTION), "utf8"));
 
     const bucket = await psql(`
       select id || ':' || public::text || ':' || file_size_limit::text || ':' || allowed_mime_types::text
@@ -128,6 +131,54 @@ test("photo preparation storage is private, owned, and capacity-limited", { time
     assert.equal(await psql(`select count(*)::text from public.vibode_photo_preparations where user_id = '${USER_B}'`), "1");
     const anonDelete = await psqlErrorAs("anon", `select public.delete_vibode_photo_preparations_for_user('${USER_B}')`);
     assert.match(anonDelete, /permission denied/i);
+    const anonConfirm = await psqlErrorAs("anon", `select public.confirm_vibode_photo_preparation_cleared('users/${USER_B}/preparations/${kept.preparationId}/source.heic', '${NOW}')`);
+    assert.match(anonConfirm, /permission denied/i);
+
+    await psql("delete from public.vibode_photo_preparations");
+    await psql("delete from storage.objects");
+    const late = await json(`select public.begin_vibode_photo_preparation('${USER_A}', 'room', 4000300, '${NOW}')`);
+    assert.equal(late.ok, true);
+    const latePath = String(late.objectPath);
+    const cancelled = await json(`select public.close_vibode_photo_preparation('${USER_A}', '${late.preparationId}', '${NOW}')`);
+    assert.equal(cancelled.ok, true);
+
+    const duringToken = await json(`select public.sweep_vibode_photo_preparations('2026-11-18T22:00:00Z')`);
+    assert.equal((duringToken.paths as string[]).includes(latePath), true);
+    assert.equal(await psql(`select count(*)::text from public.vibode_photo_preparations where preparation_id = '${late.preparationId}'`), "1");
+    const keptThroughExpiry = await json(`select public.confirm_vibode_photo_preparation_cleared('${latePath}', '2026-11-18T22:00:00Z')`);
+    assert.equal(keptThroughExpiry.retired, false);
+    assert.equal(await psql(`select count(*)::text from public.vibode_photo_preparations where preparation_id = '${late.preparationId}'`), "1");
+
+    const stillInsideMargin = await json(`select public.confirm_vibode_photo_preparation_cleared('${latePath}', '2026-11-18T22:29:59Z')`);
+    assert.equal(stillInsideMargin.retired, false);
+    const retired = await json(`select public.confirm_vibode_photo_preparation_cleared('${latePath}', '2026-11-18T22:30:00Z')`);
+    assert.equal(retired.retired, true);
+    assert.equal(await psql(`select count(*)::text from public.vibode_photo_preparations where preparation_id = '${late.preparationId}'`), "0");
+
+    const retry = await json(`select public.begin_vibode_photo_preparation('${USER_A}', 'room', 4000301, '${NOW}')`);
+    await json(`select public.close_vibode_photo_preparation('${USER_A}', '${retry.preparationId}', '${NOW}')`);
+    await json(`select public.sweep_vibode_photo_preparations('2026-11-18T23:30:00Z')`);
+    assert.equal(await psql(`select count(*)::text from public.vibode_photo_preparations where preparation_id = '${retry.preparationId}'`), "1");
+
+    const active = await json(`select public.begin_vibode_photo_preparation('${USER_B}', 'furniture', 4000302, '${NOW}')`);
+    const leased = await json(`select public.claim_vibode_photo_preparation('${USER_B}', '${active.preparationId}', '${NOW}')`);
+    assert.equal(leased.ok, true);
+    const protectedSweep = await json(`select public.sweep_vibode_photo_preparations('2026-11-18T20:00:30Z')`);
+    assert.equal((protectedSweep.paths as string[]).includes(String(leased.objectPath)), false);
+    const protectedConfirm = await json(`select public.confirm_vibode_photo_preparation_cleared('${leased.objectPath}', '2026-11-18T20:00:30Z')`);
+    assert.equal(protectedConfirm.code, "busy");
+    assert.equal(await psql(`select status from public.vibode_photo_preparations where preparation_id = '${active.preparationId}'`), "converting");
+
+    const orphanPath = `users/${USER_A}/preparations/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/source.heic`;
+    const youngPath = `users/${USER_A}/preparations/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/source.heic`;
+    await psql(`
+      insert into storage.objects (bucket_id, name, created_at) values
+        ('vibode-photo-preparations', '${orphanPath}', '2026-11-18T19:40:00Z'),
+        ('vibode-photo-preparations', '${youngPath}', '2026-11-18T19:59:00Z'),
+        ('vibode-photo-preparations', '${leased.objectPath}', '2026-11-18T19:00:00Z')
+    `);
+    const orphans = await json(`select public.list_orphan_vibode_photo_preparations('${NOW}')`);
+    assert.deepEqual(orphans.paths, [orphanPath]);
   } finally {
     await removeContainer();
   }

@@ -227,4 +227,11 @@ test("preparation routes stay off the generation ledger and the worker sweep can
   assert.match(migration, /revoke all on table public\.vibode_photo_preparations from public, anon, authenticated, service_role/);
   assert.match(migration, /public boolean not null|false,/);
   assert.doesNotMatch(migration, /vibode-furniture-generation-inputs|vibode-base-images|vibode-furniture-assets/);
+  const retention = readFileSync(path.join(root, "supabase/migrations/20261119170000_vibode_photo_preparation_cleanup_retention.sql"), "utf8");
+  assert.match(retention, /interval '2 hours 30 minutes'/);
+  assert.match(retention, /confirm_vibode_photo_preparation_cleared/);
+  assert.match(retention, /list_orphan_vibode_photo_preparations/);
+  assert.match(retention, /limit 40/);
+  const maintenance = readFileSync(path.join(root, "furniture-generation-worker/src/maintenance.ts"), "utf8");
+  assert.doesNotMatch(maintenance, /sweepExpiredPhotoPreparations|vibode_photo_preparations/);
 });
