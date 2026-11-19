@@ -88,6 +88,8 @@ test("New Room still normalizes JPEG, PNG, and WebP in the browser and leaves HE
   assert.match(editor, /prepareRoomImageForUpload/);
   assert.match(editor, /isHeicLikeFile/);
   assert.match(editor, /SUPPORTED_STILL_IMAGE_ACCEPT_ATTR/);
+  assert.match(editor, /prepareLargeRoomPhoto/);
+  assert.match(editor, /PHOTO_PREPARATION_DIRECT_MAX_BYTES/);
   assert.doesNotMatch(editor, /prepareFurniturePhoto|furniture-photo-preparation/);
   assert.match(upload, /convertHeicBufferToJpeg\(/);
   assert.doesNotMatch(upload, /convertHeicBufferToBoundedJpeg/);
@@ -279,20 +281,42 @@ test("a compliant JPEG is kept and every other supported photo is prepared witho
 
   const oversized = new Uint8Array(FURNITURE_HEIC_SERVER_MAX_BYTES + 1);
   oversized.set(heic.subarray(0, 32));
-  await assert.rejects(() => prepareFurniturePhoto(new File([oversized], "large.heic", { type: "image/heic" }), {
+  let storedBody = "";
+  let uploadCalls = 0;
+  const stored = await prepareFurniturePhoto(new File([oversized], "large.heic", { type: "image/heic" }), {
     encodeFile: async () => {
       throw new Error("decode");
     },
-    fetchImpl: async () => {
+    readToken: async () => "owner-token",
+    fetchImpl: async (input, init) => {
       fetches += 1;
-      throw new Error("fetch");
+      const url = String(input);
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (url === "/api/vibode/photo-preparations") {
+        storedBody = body;
+        assert.equal(body.includes("large.heic"), false);
+        return Response.json({
+          ok: true,
+          preparationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          signedUrl: "https://storage.example/upload",
+        });
+      }
+      if (url === "/api/vibode/photo-preparations/complete") {
+        assert.equal(body.includes("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), true);
+        assert.equal(body.includes("furniture"), true);
+        return new Response(serverJpeg, { status: 200, headers: { "content-type": "image/jpeg" } });
+      }
+      throw new Error(url);
     },
-  }), (error: unknown) => {
-    assert.ok(error instanceof FurniturePhotoPreparationError);
-    assert.equal(error.message, FURNITURE_PHOTO_MESSAGES.heicTooLarge);
-    return true;
+    uploadImpl: async (signedUrl) => {
+      uploadCalls += 1;
+      assert.equal(signedUrl, "https://storage.example/upload");
+    },
   });
-  assert.equal(fetches, 0);
+  assert.equal(uploadCalls, 1);
+  assert.equal(stored.type, "image/jpeg");
+  assert.equal(storedBody.includes("byteSize"), true);
+  assert.equal(fetches, 2);
 
   await assert.rejects(() => prepareFurniturePhoto(new File([Uint8Array.of(0x47, 0x49, 0x46, 0x38, 0x39, 0x61)], "animated.gif", { type: "image/gif" })), (error: unknown) => {
     assert.ok(error instanceof FurniturePhotoPreparationError);

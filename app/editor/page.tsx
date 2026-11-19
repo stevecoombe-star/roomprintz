@@ -54,7 +54,9 @@ import {
   isPasteToPlaceCancelledResponsePayload,
   type PasteToPlaceJobControl,
 } from "@/lib/pasteToPlaceJobControl";
-import { PrepareRoomImageError, prepareRoomImageForUpload } from "@/lib/prepareRoomImageForUpload";
+import { PrepareRoomImageError, prepareRoomImageForUpload, MAX_INPUT_BYTES } from "@/lib/prepareRoomImageForUpload";
+import { PhotoPreparationError, prepareLargeRoomPhoto } from "@/lib/photo-preparation/browser";
+import { PHOTO_PREPARATION_DIRECT_MAX_BYTES } from "@/lib/photo-preparation/limits";
 import {
   isHeicLikeFile,
   isLivePhotoMovCompanion,
@@ -3078,6 +3080,7 @@ function EditorPageInner() {
   const requestedRoomIdRef = useRef<string | null>(requestedRoomId);
   const vibodeRoomIdRef = useRef<string | null>(vibodeRoomId);
   const roomUploadSerialRef = useRef(0);
+  const roomPhotoPrepareAbortRef = useRef<AbortController | null>(null);
   const lastStageOutputsRef = useRef<StageOutputMap>(lastStageOutputs);
   const pendingPlacementNodeHydrationRef = useRef<ScenePlacement[] | null>(null);
   const clearLegacyPlacementNodes = useCallback(() => {
@@ -6567,6 +6570,13 @@ function EditorPageInner() {
       return;
     }
 
+    if (file.size > MAX_INPUT_BYTES) {
+      const message = "This image is too large. Please upload a photo under 25MB.";
+      setRoomPhotoUploadError(message);
+      pushSnack(message);
+      return;
+    }
+
     setRoomPhotoUploadError(null);
     let uploadFile: File = file;
 
@@ -6584,6 +6594,34 @@ function EditorPageInner() {
         return;
       } finally {
         setIsOptimizingRoomImage(false);
+      }
+    } else if (file.size > PHOTO_PREPARATION_DIRECT_MAX_BYTES) {
+      roomPhotoPrepareAbortRef.current?.abort();
+      const prepareAbort = new AbortController();
+      roomPhotoPrepareAbortRef.current = prepareAbort;
+      setIsOptimizingRoomImage(true);
+      try {
+        uploadFile = await prepareLargeRoomPhoto(file, {
+          signal: prepareAbort.signal,
+          readToken: tryGetSupabaseAccessToken,
+        });
+      } catch (err: unknown) {
+        if (prepareAbort.signal.aborted) return;
+        if (err instanceof PhotoPreparationError && err.code === "sign_in") {
+          pushSnack("Your session expired. Redirecting to sign in...");
+          router.push(`/login?next=${encodeURIComponent("/editor")}`);
+          return;
+        }
+        const message = err instanceof PhotoPreparationError
+          ? err.message
+          : "We couldn't prepare this photo. Try another one.";
+        setRoomPhotoUploadError(message);
+        pushSnack(message);
+        return;
+      } finally {
+        if (roomPhotoPrepareAbortRef.current === prepareAbort) {
+          setIsOptimizingRoomImage(false);
+        }
       }
     }
 

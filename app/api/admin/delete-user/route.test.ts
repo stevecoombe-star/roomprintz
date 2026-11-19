@@ -119,6 +119,9 @@ function createRouteSupabase(
       if (name === "release_vibode_account_deletion_claim" || name === "note_vibode_account_deletion_succeeded") {
         return { data: { ok: true }, error: null };
       }
+      if (name === "delete_vibode_photo_preparations_for_user") {
+        return { data: { ok: true, deleted: 0 }, error: null };
+      }
       return { data: null, error: { message: "unexpected rpc", code: "XX000" } };
     },
     storage: {
@@ -678,11 +681,13 @@ test("account deletion storage limits stay fail-closed and follow the hold check
   assert.ok(removeAt > cleanupAt);
   assert.ok(authDeleteAt > removeAt);
   assert.ok(releaseAt > authDeleteAt);
-  assert.equal(source.match(/maxFiles: 10000/g)?.length, 2);
-  assert.equal(source.match(/maxDirectories: 10000/g)?.length, 2);
+  assert.equal(source.match(/maxFiles: 10000/g)?.length, 3);
+  assert.equal(source.match(/maxDirectories: 10000/g)?.length, 3);
   assert.match(source, /vibode-furniture-assets/);
   assert.match(source, /GENERATION_INPUT_BUCKET/);
+  assert.match(source, /vibode-photo-preparations/);
   assert.match(source, /Generation input cleanup is incomplete/);
   assert.match(source, /Furniture storage cleanup is incomplete/);
+  assert.match(source, /Photo preparation cleanup is incomplete/);
   assert.doesNotMatch(source, /api\.meshy\.ai|MESHY_API_KEY/);
 });

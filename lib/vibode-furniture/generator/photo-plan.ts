@@ -37,7 +37,7 @@ export type FurniturePhotoPlan =
   | Readonly<{ action: "reject"; message: string }>
   | Readonly<{ action: "passthrough" }>
   | Readonly<{ action: "browser" }>
-  | Readonly<{ action: "heic"; serverAllowed: boolean }>;
+  | Readonly<{ action: "heic"; transport: "direct" | "storage" | "none" }>;
 
 export function planFurniturePhoto(input: Readonly<{
   fileName: string;
@@ -70,11 +70,14 @@ export function planFurniturePhoto(input: Readonly<{
   }
   if (input.magic === "png" || input.magic === "webp") return { action: "browser" };
   if (input.magic === "heic") {
-    return { action: "heic", serverAllowed: input.byteLength <= FURNITURE_HEIC_SERVER_MAX_BYTES };
+    return {
+      action: "heic",
+      transport: input.byteLength <= FURNITURE_HEIC_SERVER_MAX_BYTES ? "direct" : "storage",
+    };
   }
   const described = { name: input.fileName, type: input.mimeType };
   if (isHeicLikeFile(described)) {
-    return { action: "heic", serverAllowed: false };
+    return { action: "heic", transport: "none" };
   }
   if (isSupportedStillImageFile(described)) return { action: "browser" };
   return { action: "reject", message: FURNITURE_PHOTO_MESSAGES.unsupported };

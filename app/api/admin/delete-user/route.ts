@@ -225,6 +225,31 @@ async function safeListStoragePathsByPrefix(args: {
   }
 }
 
+async function deletePhotoPreparationRows(
+  supabaseAdmin: AnySupabaseClient,
+  userId: string,
+): Promise<number> {
+  const { data, error } = await supabaseAdmin.rpc("delete_vibode_photo_preparations_for_user", {
+    p_user_id: userId,
+  });
+  if (error) {
+    if (
+      isMissingRelationError(error)
+      || error.code === "42883"
+      || error.code === "PGRST202"
+      || /does not exist/i.test(error.message)
+    ) {
+      return 0;
+    }
+    throw new Error("Failed deleting photo preparation rows.");
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data) || (data as { ok?: unknown }).ok !== true) {
+    throw new Error("Failed deleting photo preparation rows.");
+  }
+  const deleted = (data as { deleted?: unknown }).deleted;
+  return typeof deleted === "number" && Number.isFinite(deleted) ? deleted : 0;
+}
+
 async function deleteRowsByUserId(args: {
   supabaseAdmin: AnySupabaseClient;
   table: string;
@@ -612,12 +637,18 @@ export function createAdminDeleteUserPostHandler(
       maxFiles: 10000,
       maxDirectories: 10000,
     },
+    {
+      bucket: "vibode-photo-preparations",
+      prefix: `users/${userId}`,
+      maxFiles: 10000,
+      maxDirectories: 10000,
+    },
     { bucket: VIBODE_STAGED_BUCKET, prefix: userId },
     { bucket: VIBODE_THUMBNAILS_BUCKET, prefix: userId },
   ];
 
   for (const target of userScopedListingTargets) {
-    if (target.bucket === VIBODE_FURNITURE_ASSETS_BUCKET || target.bucket === GENERATION_INPUT_BUCKET) {
+    if (target.bucket === VIBODE_FURNITURE_ASSETS_BUCKET || target.bucket === GENERATION_INPUT_BUCKET || target.bucket === "vibode-photo-preparations") {
       let furnitureListing: Awaited<ReturnType<typeof listStoragePathsByPrefix>>;
       try {
         furnitureListing = await listStoragePathsByPrefix({
@@ -631,7 +662,9 @@ export function createAdminDeleteUserPostHandler(
         return json(500, {
           error: target.bucket === GENERATION_INPUT_BUCKET
             ? "Generation input cleanup failed. Account deletion was not finished."
-            : "Furniture storage cleanup failed. Account deletion was not finished.",
+            : target.bucket === "vibode-photo-preparations"
+              ? "Photo preparation cleanup failed. Account deletion was not finished."
+              : "Furniture storage cleanup failed. Account deletion was not finished.",
           deletedStorageFiles: afcCleanup.deleted,
           skippedStorageFiles: storageSkipCounter.skipped + afcCleanup.skipped,
           deletedRowsByTable,
@@ -643,7 +676,9 @@ export function createAdminDeleteUserPostHandler(
         return json(500, {
           error: target.bucket === GENERATION_INPUT_BUCKET
             ? "Generation input cleanup is incomplete. Account deletion was not finished."
-            : "Furniture storage cleanup is incomplete. Account deletion was not finished.",
+            : target.bucket === "vibode-photo-preparations"
+              ? "Photo preparation cleanup is incomplete. Account deletion was not finished."
+              : "Furniture storage cleanup is incomplete. Account deletion was not finished.",
           deletedStorageFiles: afcCleanup.deleted,
           skippedStorageFiles: storageSkipCounter.skipped + afcCleanup.skipped,
           deletedRowsByTable,
@@ -737,6 +772,7 @@ export function createAdminDeleteUserPostHandler(
   }
 
   const deletionOrder = [
+    "vibode_photo_preparations",
     "vibode_furniture_events",
     "vibode_user_furniture",
     "vibode_generation_runs",
@@ -754,6 +790,10 @@ export function createAdminDeleteUserPostHandler(
 
   for (const table of deletionOrder) {
     try {
+      if (table === "vibode_photo_preparations") {
+        deletedRowsByTable[table] = await deletePhotoPreparationRows(supabaseAdmin, userId);
+        continue;
+      }
       const deleteColumn = table === "profiles" ? "id" : "user_id";
       const result = await deleteRowsByUserId({
         supabaseAdmin,

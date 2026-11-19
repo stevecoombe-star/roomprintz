@@ -11,11 +11,11 @@ import {
   loadRoomImageElement,
   PrepareRoomImageError,
 } from "@/lib/prepareRoomImageForUpload";
+import { PhotoPreparationError, preparePhotoThroughStorage, type StoredPhotoDependencies } from "@/lib/photo-preparation/browser";
 import { detectStillMagic, inspectJpeg } from "@/lib/stillImageKind";
 import { readGenerationAccessToken } from "@/lib/vibode-furniture/generator/beta-generation-client";
 
 import {
-  FURNITURE_HEIC_SERVER_MAX_BYTES,
   FURNITURE_JPEG_MATTE_CSS,
   FURNITURE_PHOTO_MAX_DECODED_EDGE_PX,
   FURNITURE_PHOTO_MAX_DECODED_PIXELS,
@@ -56,6 +56,7 @@ export type PrepareFurniturePhotoDependencies = {
   readToken?: () => Promise<string | null>;
   fetchImpl?: typeof fetch;
   encodeFile?: (file: File, signal?: AbortSignal) => Promise<File>;
+  uploadImpl?: StoredPhotoDependencies["uploadImpl"];
 };
 
 export async function prepareFurniturePhoto(
@@ -93,15 +94,38 @@ export async function prepareFurniturePhoto(
     return await encodeBrowser(file, deps);
   } catch (error) {
     if (isAbortError(error) || deps.signal?.aborted) throw abortError();
-    if (!plan.serverAllowed) {
-      throw new FurniturePhotoPreparationError(
-        file.size > FURNITURE_HEIC_SERVER_MAX_BYTES
-          ? FURNITURE_PHOTO_MESSAGES.heicTooLarge
-          : FURNITURE_PHOTO_MESSAGES.heicFailed,
-      );
+    if (plan.transport === "none") {
+      throw new FurniturePhotoPreparationError(FURNITURE_PHOTO_MESSAGES.heicFailed);
     }
+    if (plan.transport === "storage") return requestStoredHeic(file, deps);
     return requestServerHeicJpeg(file, deps);
   }
+}
+
+async function requestStoredHeic(file: File, deps: PrepareFurniturePhotoDependencies): Promise<File> {
+  try {
+    const prepared = await preparePhotoThroughStorage(file, "furniture", {
+      signal: deps.signal,
+      readToken: deps.readToken ?? readGenerationAccessToken,
+      fetchImpl: deps.fetchImpl,
+      uploadImpl: deps.uploadImpl,
+    });
+    return assertSubmissionJpeg(prepared);
+  } catch (error) {
+    if (isAbortError(error) || deps.signal?.aborted) throw abortError();
+    if (error instanceof PhotoPreparationError) {
+      throw new FurniturePhotoPreparationError(furnitureMessage(error));
+    }
+    throw new FurniturePhotoPreparationError(FURNITURE_PHOTO_MESSAGES.heicFailed);
+  }
+}
+
+function furnitureMessage(error: PhotoPreparationError): string {
+  if (error.code === "sign_in") return FURNITURE_PHOTO_MESSAGES.signIn;
+  if (error.code === "too_large") return FURNITURE_PHOTO_MESSAGES.tooLarge;
+  if (error.code === "busy") return "Another photo is still being prepared. Try again in a moment.";
+  if (error.code === "rate") return "Too many photos were prepared just now. Try again in a little while.";
+  return FURNITURE_PHOTO_MESSAGES.heicFailed;
 }
 
 async function encodeBrowser(file: File, deps: PrepareFurniturePhotoDependencies): Promise<File> {

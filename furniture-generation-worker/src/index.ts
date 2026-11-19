@@ -9,6 +9,7 @@ import {
   executeFurnitureGenerationClaim,
 } from "@/lib/vibode-furniture/generation/pipeline";
 import { productionFurnitureGenerationDeps } from "@/lib/vibode-furniture/generation/production.server";
+import { sweepExpiredPhotoPreparations } from "@/lib/photo-preparation/sweep.server";
 import { validatePersonalFurnitureGlb } from "@/lib/vibode-furniture/validate.server";
 
 import { runFurnitureGenerationMaintenance } from "./maintenance";
@@ -88,7 +89,18 @@ async function main(): Promise<void> {
         });
         return cleaned;
       },
-      sweep: () => deps.commands.sweep(Date.now()),
+      sweep: async () => {
+        await deps.commands.sweep(Date.now());
+        try {
+          await sweepExpiredPhotoPreparations();
+        } catch {
+          log("photo_preparation_sweep_failed", {
+            action: "cleanup",
+            jobId: null,
+            deleted: null,
+          });
+        }
+      },
       claim: () => executeFurnitureGenerationClaim({
         commands: deps.commands,
         objects: deps.objects,
