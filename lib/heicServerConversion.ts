@@ -1,5 +1,13 @@
 import type sharp from "sharp";
 
+import {
+  boundStillImageToJpeg,
+  BoundedJpegError,
+  type BoundJpegOptions,
+  type BoundedJpeg,
+} from "@/lib/boundStillImageToJpeg";
+import { detectStillMagic } from "@/lib/stillImageKind";
+
 export type HeicConversionFailureCode =
   | "SHARP_UNAVAILABLE"
   | "LIBVIPS_HEIF_UNAVAILABLE"
@@ -211,4 +219,65 @@ export async function convertHeicBufferToJpeg(args: ConversionArgs): Promise<Con
           }
     );
   }
+}
+
+/**
+ * HEIC/HEIF to one JPEG that already fits a caller-supplied edge and byte
+ * contract. Sharp is tried first. The existing heic-convert fallback runs
+ * only when Sharp lacks the HEVC codec, and that JPEG is not encoded again
+ * when it already fits.
+ */
+export async function convertHeicBufferToBoundedJpeg(
+  inputBuffer: Uint8Array,
+  options: BoundJpegOptions,
+): Promise<BoundedJpeg> {
+  if (!(inputBuffer instanceof Uint8Array) || inputBuffer.byteLength <= 0) {
+    throw new HeicConversionError("INVALID_HEIC_INPUT", "This photo is not a HEIC or HEIF image.");
+  }
+  if (detectStillMagic(inputBuffer) !== "heic") {
+    throw new HeicConversionError("INVALID_HEIC_INPUT", "This photo is not a HEIC or HEIF image.");
+  }
+  try {
+    return await boundStillImageToJpeg(inputBuffer, options);
+  } catch (error) {
+    if (error instanceof BoundedJpegError || !shouldTryFallbackAfterSharpError(error)) {
+      throw heicFailure(error);
+    }
+    console.warn("[heic-conversion] sharp failed; attempting fallback", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    let fallback: Uint8Array;
+    try {
+      fallback = await convertHeicViaFallback(inputBuffer);
+    } catch (fallbackError) {
+      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      throw new HeicConversionError("UNSUPPORTED_HEIC_CODEC", "Failed to convert HEIC/HEIF input to JPEG.", {
+        message: fallbackMessage,
+        name: fallbackError instanceof Error ? fallbackError.name : "FallbackConversionError",
+        code: resolveErrorCode(fallbackError),
+        stack: fallbackError instanceof Error ? fallbackError.stack ?? null : null,
+      });
+    }
+    try {
+      return await boundStillImageToJpeg(fallback, options);
+    } catch (boundError) {
+      throw heicFailure(boundError);
+    }
+  }
+}
+
+function heicFailure(error: unknown): HeicConversionError {
+  if (error instanceof HeicConversionError) return error;
+  return new HeicConversionError(
+    error instanceof BoundedJpegError && error.code === "too_many_pixels" ? "INVALID_HEIC_INPUT" : classifyHeicConversionFailure(error),
+    "Failed to convert HEIC/HEIF input to JPEG.",
+    error instanceof Error
+      ? {
+          message: error.message,
+          name: error.name,
+          code: resolveErrorCode(error),
+          stack: error.stack ?? null,
+        }
+      : { message: String(error) },
+  );
 }

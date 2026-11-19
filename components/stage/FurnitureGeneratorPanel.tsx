@@ -7,10 +7,17 @@ import {
   FURNITURE_VIEW_SLOT_ORDER,
   furnitureInputMode,
   previewUrlsToRevoke,
-  validateFurniturePhotoFile,
   validateFurniturePhotoPixels,
   type FurnitureViewSlot,
 } from "@/lib/vibode-furniture/generator/images";
+import { FURNITURE_PHOTO_MAX_OUTPUT_BYTES } from "@/lib/vibode-furniture/generator/photo-limits";
+import {
+  createPhotoPreparationGate,
+  FURNITURE_PHOTO_MESSAGES,
+  FurniturePhotoPreparationError,
+  prepareFurniturePhoto,
+} from "@/lib/vibode-furniture/generator/prepare-photo";
+import { isSupportedStillImageFile, SUPPORTED_STILL_IMAGE_ACCEPT_ATTR } from "@/lib/uploadImageFileTypes";
 import { CandidatePreviewEntry } from "@/components/stage/CandidatePreviewEntry";
 import {
   allowanceBalanceLine,
@@ -71,8 +78,6 @@ const FOCUS =
 const FIELD =
   "w-full min-w-0 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-xs text-neutral-100 outline-none focus:border-neutral-500 disabled:cursor-not-allowed disabled:text-neutral-600";
 
-const PREVIEW_EDGE_PX = 160;
-
 const GEOMETRY_OPTIONS: readonly { value: MeshyGeometryResolution; label: string }[] = [
   { value: "standard", label: "Standard" },
   { value: "2k", label: "2K Ultra" },
@@ -108,6 +113,7 @@ export function FurnitureGeneratorPanel({
     job?: CustomerJobSnapshot | null;
     recent?: readonly RecoverableGeneration[];
     notice?: string | null;
+    preparingFront?: boolean;
   };
 }) {
   const recovered = initialRecoveredSelection(fixture);
@@ -120,9 +126,14 @@ export function FurnitureGeneratorPanel({
   const [reloadNonce, setReloadNonce] = useState(0);
   const [notice, setNotice] = useState<string | null>(fixture?.notice ?? null);
   const [busy, setBusy] = useState(false);
+  const [preparing, setPreparing] = useState<Partial<Record<FurnitureViewSlot, boolean>>>(
+    fixture?.preparingFront ? { front: true } : {},
+  );
   const stateRef = useRef(state);
   const filesRef = useRef<Partial<Record<FurnitureViewSlot, File>>>({});
-  const photoTokenRef = useRef<Partial<Record<FurnitureViewSlot, number>>>({});
+  const preparingRef = useRef(preparing);
+  const preparationGateRef = useRef(createPhotoPreparationGate());
+  const photoAbortRef = useRef<Partial<Record<FurnitureViewSlot, AbortController>>>({});
   const mountedRef = useRef(true);
   const submissionRef = useRef<{ busy: boolean; key: string | null }>({ busy: false, key: null });
   const jobRef = useRef<CustomerJobSnapshot | null>(recovered.job);
@@ -131,13 +142,16 @@ export function FurnitureGeneratorPanel({
   const userSelectedRef = useRef(false);
   const pollFlightRef = useRef(false);
   stateRef.current = state;
+  preparingRef.current = preparing;
   jobRef.current = job;
   recentRef.current = recent;
 
   useEffect(() => {
+    const aborts = photoAbortRef.current;
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      for (const controller of Object.values(aborts)) controller?.abort();
       for (const url of previewUrlsToRevoke(stateRef.current.previewUrls)) {
         URL.revokeObjectURL(url);
       }
@@ -322,73 +336,87 @@ export function FurnitureGeneratorPanel({
     setState(result.state);
   }
 
+  function markPreparing(slot: FurnitureViewSlot, active: boolean) {
+    const next = { ...preparingRef.current };
+    if (active) next[slot] = true;
+    else delete next[slot];
+    preparingRef.current = next;
+    setPreparing(next);
+  }
+
   async function acceptFile(slot: FurnitureViewSlot, file: File) {
-    const token = (photoTokenRef.current[slot] ?? 0) + 1;
-    photoTokenRef.current[slot] = token;
-    const fileCheck = validateFurniturePhotoFile({
-      fileName: file.name,
-      mimeType: file.type,
-      byteLength: file.size,
-    });
-    if (!fileCheck.ok) {
-      apply({ type: "slot-error", slot, message: fileCheck.message });
-      return;
-    }
-    if (fileCheck.mimeType !== "image/jpeg") {
-      apply({ type: "slot-error", slot, message: "Beta generation uses a JPEG photo." });
-      return;
-    }
+    const token = preparationGateRef.current.begin();
+    photoAbortRef.current[slot]?.abort();
+    const controller = new AbortController();
+    photoAbortRef.current[slot] = controller;
+    delete filesRef.current[slot];
+    apply({ type: "remove-photo", slot });
+    markPreparing(slot, true);
+    setNotice(null);
     let bitmap: ImageBitmap | null = null;
     let previewUrl: string | null = null;
     try {
-      bitmap = await createImageBitmap(file);
+      const prepared = await prepareFurniturePhoto(file, { signal: controller.signal });
+      if (!mountedRef.current || !preparationGateRef.current.isCurrent(token)) return;
+      bitmap = await createImageBitmap(prepared);
       const pixels = validateFurniturePhotoPixels({
         widthPx: bitmap.width,
         heightPx: bitmap.height,
       });
       if (!pixels.ok) {
-        if (photoTokenRef.current[slot] === token && mountedRef.current) {
+        if (mountedRef.current && preparationGateRef.current.isCurrent(token)) {
           apply({ type: "slot-error", slot, message: pixels.message });
         }
         return;
       }
-      const blob = await thumbnailBlob(bitmap);
-      previewUrl = URL.createObjectURL(blob);
-      if (!mountedRef.current || photoTokenRef.current[slot] !== token) {
-        URL.revokeObjectURL(previewUrl);
+      if (prepared.type !== "image/jpeg" || prepared.size <= 0 || prepared.size > FURNITURE_PHOTO_MAX_OUTPUT_BYTES) {
+        if (mountedRef.current && preparationGateRef.current.isCurrent(token)) {
+          apply({ type: "slot-error", slot, message: FURNITURE_PHOTO_MESSAGES.prepareFailed });
+        }
         return;
       }
-      filesRef.current[slot] = file;
+      previewUrl = URL.createObjectURL(prepared);
+      if (!mountedRef.current || !preparationGateRef.current.isCurrent(token)) {
+        URL.revokeObjectURL(previewUrl);
+        previewUrl = null;
+        return;
+      }
+      filesRef.current[slot] = prepared;
       apply({
         type: "set-photo",
         previewUrl,
         photo: {
           slot,
-          fileName: file.name,
-          mimeType: fileCheck.mimeType,
-          byteLength: file.size,
+          fileName: file.name || prepared.name,
+          mimeType: "image/jpeg",
+          byteLength: prepared.size,
           widthPx: bitmap.width,
           heightPx: bitmap.height,
         },
       });
       previewUrl = null;
-    } catch {
+    } catch (error) {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
-      if (mountedRef.current && photoTokenRef.current[slot] === token) {
-        apply({
-          type: "slot-error",
-          slot,
-          message: "This image could not be read. Use a JPEG, PNG, or WebP photo.",
-        });
-      }
+      if (!mountedRef.current || !preparationGateRef.current.isCurrent(token) || controller.signal.aborted) return;
+      const message = error instanceof FurniturePhotoPreparationError
+        ? error.message
+        : FURNITURE_PHOTO_MESSAGES.prepareFailed;
+      apply({ type: "slot-error", slot, message });
     } finally {
       bitmap?.close();
+      if (preparationGateRef.current.isCurrent(token)) {
+        if (photoAbortRef.current[slot] === controller) delete photoAbortRef.current[slot];
+        markPreparing(slot, false);
+      }
     }
   }
 
   function removePhoto(slot: FurnitureViewSlot) {
-    photoTokenRef.current[slot] = (photoTokenRef.current[slot] ?? 0) + 1;
+    preparationGateRef.current.begin();
+    photoAbortRef.current[slot]?.abort();
+    delete photoAbortRef.current[slot];
     delete filesRef.current[slot];
+    markPreparing(slot, false);
     apply({ type: "remove-photo", slot });
   }
 
@@ -403,8 +431,20 @@ export function FurnitureGeneratorPanel({
   async function generate() {
     const front = stateRef.current.photos.front;
     const file = filesRef.current.front;
-    if (!entitlement?.canGenerate || !front || front.mimeType !== "image/jpeg" || !file) {
-      setNotice("Add a front JPEG before generating.");
+    if (preparingRef.current.front) {
+      setNotice("Wait for the photo to finish preparing.");
+      return;
+    }
+    if (
+      !entitlement?.canGenerate
+      || !front
+      || front.mimeType !== "image/jpeg"
+      || !file
+      || file.type !== "image/jpeg"
+      || file.size <= 0
+      || file.size > FURNITURE_PHOTO_MAX_OUTPUT_BYTES
+    ) {
+      setNotice("Add a front photo before generating.");
       return;
     }
     const claimed = claimBetaSubmission(submissionRef.current, betaSubmissionKey);
@@ -490,7 +530,14 @@ export function FurnitureGeneratorPanel({
   }
 
   const mode = furnitureInputMode(state.photos);
-  const frontIsJpeg = state.photos.front?.mimeType === "image/jpeg";
+  const frontPhoto = state.photos.front;
+  const frontReady = Boolean(
+    frontPhoto
+    && frontPhoto.mimeType === "image/jpeg"
+    && frontPhoto.byteLength > 0
+    && frontPhoto.byteLength <= FURNITURE_PHOTO_MAX_OUTPUT_BYTES
+    && !preparing.front
+  );
   const visibleRecent = recent.filter((item) => !readyCandidateExpired(item, Date.now()));
   const displayedJob = job && readyCandidateExpired(job, Date.now())
     ? { ...job, status: "expired", previewAvailable: false }
@@ -500,7 +547,7 @@ export function FurnitureGeneratorPanel({
     recentReady: recentPhase === "ready",
     blocking: recentGenerationBlocksNew(visibleRecent),
     busy,
-    frontReady: frontIsJpeg,
+    frontReady,
   });
   const previewReady = displayedJob?.status === "ready" && displayedJob.previewAvailable !== false;
 
@@ -523,12 +570,13 @@ export function FurnitureGeneratorPanel({
     <div
       className="mt-3 flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-contain pr-1"
       data-furniture-generator="ready"
+      data-front-preparing={preparing.front ? "true" : "false"}
       data-input-mode={mode}
       data-generation-available={entitlement?.canGenerate ? "true" : "false"}
     >
       <h2 className="text-sm font-medium text-neutral-100">3D Furniture Generator</h2>
       <p className="mt-1 text-[11px] leading-5 text-neutral-400">
-        Beta preset: one front JPEG, standard geometry, and 2K textures. Other settings stay fixed.
+        Beta preset: one front photo, standard geometry, and 2K textures. Other settings stay fixed.
       </p>
       <p className="mt-1 text-[11px] leading-5 text-neutral-500" data-eligibility={entitlement?.state ?? "unknown"}>
         {entitlement ? allowanceBalanceLine(entitlement) ?? entitlement.reason : "AI generation availability is checked when this panel opens."}
@@ -545,6 +593,7 @@ export function FurnitureGeneratorPanel({
             fileName={state.photos[slot]?.fileName ?? null}
             previewUrl={state.previewUrls[slot] ?? null}
             error={state.slotErrors[slot] ?? null}
+            preparing={preparing[slot] === true}
             onFile={(file) => {
               void acceptFile(slot, file);
             }}
@@ -833,7 +882,7 @@ export function FurnitureGeneratorPanel({
         </button>
       ) : null}
       <p id="furniture-generator-unavailable" className="mt-1 text-[11px] leading-5 text-neutral-500">
-        {notice ?? "Generate stays off until this account is approved and a front JPEG is ready."}
+        {notice ?? "Generate stays off until this account is approved and a front photo is ready."}
       </p>
       {recentPhase === "failed" && !fixture ? (
         <button
@@ -869,6 +918,7 @@ function PhotoSlot({
   fileName,
   previewUrl,
   error,
+  preparing,
   onFile,
   onRemove,
 }: {
@@ -876,13 +926,28 @@ function PhotoSlot({
   fileName: string | null;
   previewUrl: string | null;
   error: string | null;
+  preparing: boolean;
   onFile: (file: File) => void;
   onRemove: () => void;
 }) {
   const label = FURNITURE_VIEW_LABELS[slot];
   const required = slot === "front";
   return (
-    <div className="min-w-0 rounded-md border border-neutral-800 p-2">
+    <div
+      className="min-w-0 rounded-md border border-neutral-800 p-2"
+      data-photo-drop="true"
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        const files = Array.from(event.dataTransfer.files ?? []);
+        const still = files.find((candidate) => isSupportedStillImageFile(candidate));
+        const file = still ?? files[0];
+        if (file) onFile(file);
+      }}
+    >
       <div className="flex items-center justify-between gap-2">
         <div className="text-[11px] text-neutral-200">
           {label}{" "}
@@ -902,7 +967,7 @@ function PhotoSlot({
         <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-900">
           {previewUrl ? (
             // eslint-disable-next-line @next/next/no-img-element -- local object URL thumbnail, revoked with the photo
-            <img src={previewUrl} alt="" className="h-full w-full object-cover" />
+            <img src={previewUrl} alt="" className="h-full w-full object-contain" />
           ) : (
             <span className="text-[10px] text-neutral-600">None</span>
           )}
@@ -910,7 +975,9 @@ function PhotoSlot({
         <div className="min-w-0 flex-1">
           <input
             type="file"
-            accept="image/jpeg,.jpg,.jpeg"
+            accept={SUPPORTED_STILL_IMAGE_ACCEPT_ATTR}
+            aria-busy={preparing}
+            data-photo-status={preparing ? "preparing" : fileName ? "ready" : "empty"}
             aria-label={required ? `${label} view, required` : `${label} view, optional`}
             onChange={(event) => {
               const file = event.target.files?.[0];
@@ -922,24 +989,19 @@ function PhotoSlot({
           {fileName ? (
             <div className="mt-1 truncate text-[10px] text-neutral-500">{fileName}</div>
           ) : null}
+          {preparing ? (
+            <div className="mt-1 text-[10px] leading-4 text-neutral-400" role="status">
+              {FURNITURE_PHOTO_MESSAGES.preparing}
+            </div>
+          ) : null}
           {error ? <div className="mt-1 text-[10px] leading-4 text-amber-200">{error}</div> : null}
+          {required ? (
+            <div className="mt-1 text-[10px] leading-4 text-neutral-500">
+              JPG, PNG, WebP, and iPhone HEIC photos are prepared automatically. Live Photos use the still image only.
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
   );
-}
-
-async function thumbnailBlob(bitmap: ImageBitmap): Promise<Blob> {
-  const scale = Math.min(1, PREVIEW_EDGE_PX / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("preview");
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  const blob = await new Promise<Blob | null>((resolve) => {
-    canvas.toBlob((next) => resolve(next), "image/jpeg", 0.82);
-  });
-  if (!blob) throw new Error("preview");
-  return blob;
 }
