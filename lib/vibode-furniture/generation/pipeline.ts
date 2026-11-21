@@ -559,14 +559,32 @@ async function pollClaim(
     return { ok: true, action: "running", jobId: claim.jobId };
   }
   if (!read.task.glbUrl) {
-    await input.commands.failOutput({
+    const failed = await input.commands.failOutput({
       userId: claim.userId,
       jobId: claim.jobId,
       claimNonce: claim.claimNonce,
       errorClass: "invalid_output",
       nowMs: input.nowMs,
     });
-    return { ok: true, action: "failed", jobId: claim.jobId };
+    return {
+      ok: true,
+      action: failed.ok && failed.status === "needs_review" ? "needs_review" : "failed",
+      jobId: claim.jobId,
+    };
+  }
+  const started = await input.commands.beginOutputAttempt({
+    userId: claim.userId,
+    jobId: claim.jobId,
+    claimNonce: claim.claimNonce,
+    nowMs: input.nowMs,
+  });
+  if (!started.ok) return { ok: true, action: "waiting", jobId: claim.jobId };
+  if (!started.proceed) {
+    return {
+      ok: true,
+      action: started.status === "needs_review" ? "needs_review" : "failed",
+      jobId: claim.jobId,
+    };
   }
   const intake = await intakeProviderGlb({
     url: read.task.glbUrl,
@@ -575,24 +593,48 @@ async function pollClaim(
     assetId: `vibode-furniture/generation/${claim.jobId}`,
     download: input.download,
     validate: input.validate,
+    beforeValidate: async () => (await input.commands.renewClaim({
+      userId: claim.userId,
+      jobId: claim.jobId,
+      claimNonce: claim.claimNonce,
+      nowMs: input.nowMs,
+    })).ok,
   });
   if (!intake.ok) {
-    await input.commands.failOutput({
+    if (intake.errorClass === "ingest_failed") {
+      return deferOutput(input, claim, "download");
+    }
+    const failed = await input.commands.failOutput({
       userId: claim.userId,
       jobId: claim.jobId,
       claimNonce: claim.claimNonce,
       errorClass: intake.errorClass,
       nowMs: input.nowMs,
     });
-    return { ok: true, action: "failed", jobId: claim.jobId };
+    return {
+      ok: true,
+      action: failed.ok && failed.status === "needs_review" ? "needs_review" : "failed",
+      jobId: claim.jobId,
+    };
   }
-  const path = generationCandidatePath(claim.userId, claim.jobId);
-  await input.objects.put({
-    bucket: candidateBucket(),
-    path,
-    bytes: intake.bytes,
-    contentType: "model/gltf-binary",
+  const renewed = await input.commands.renewClaim({
+    userId: claim.userId,
+    jobId: claim.jobId,
+    claimNonce: claim.claimNonce,
+    nowMs: input.nowMs,
   });
+  if (!renewed.ok) return { ok: true, action: "waiting", jobId: claim.jobId };
+  const path = generationCandidatePath(claim.userId, claim.jobId);
+  try {
+    await input.objects.put({
+      bucket: candidateBucket(),
+      path,
+      bytes: intake.bytes,
+      contentType: "model/gltf-binary",
+    });
+  } catch {
+    return deferOutput(input, claim, "storage");
+  }
   const recorded = await input.commands.recordOutput({
     userId: claim.userId,
     jobId: claim.jobId,
@@ -602,14 +644,34 @@ async function pollClaim(
     nowMs: input.nowMs,
   });
   if (!recorded.ok) {
-    try {
-      await input.objects.remove({ bucket: candidateBucket(), path });
-    } catch {
-      // The candidate was not recorded. A later maintenance pass can retry it.
+    if (recorded.code !== "lease_held") {
+      try {
+        await input.objects.remove({ bucket: candidateBucket(), path });
+      } catch {
+        // The candidate was not recorded. A later pass can replace it.
+      }
     }
     return { ok: true, action: "waiting", jobId: claim.jobId };
   }
   return { ok: true, action: "ready", jobId: claim.jobId };
+}
+
+async function deferOutput(
+  input: { commands: GenerationCommands; nowMs: number },
+  claim: ClaimedGeneration,
+  reason: "download" | "storage",
+): Promise<GenerationPass> {
+  const deferred = await input.commands.deferOutputAttempt({
+    userId: claim.userId,
+    jobId: claim.jobId,
+    claimNonce: claim.claimNonce,
+    reason,
+    nowMs: input.nowMs,
+  });
+  if (!deferred.ok) return { ok: true, action: "waiting", jobId: claim.jobId };
+  if (deferred.status === "needs_review") return { ok: true, action: "needs_review", jobId: claim.jobId };
+  if (deferred.status === "failed") return { ok: true, action: "failed", jobId: claim.jobId };
+  return { ok: true, action: "waiting", jobId: claim.jobId };
 }
 
 async function classifyPreparation(

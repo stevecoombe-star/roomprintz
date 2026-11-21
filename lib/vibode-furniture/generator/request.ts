@@ -5,14 +5,13 @@
  * image bytes. The server must turn `imageSlots` into `image_url` or
  * `image_urls` after it has its own copies of the photos. Front is first.
  *
- * Meshy outputs are not bounded by Vibode's current 25 MiB GLB intake.
- * MESHY-1C.1 keeps that ceiling, rejects anything larger, and does not skip
- * GLB validation. Raising the ceiling or optimizing the file is a later slice.
+ * Meshy textured GLBs can exceed the 25 MiB manual furniture upload.
+ * Generation intake accepts up to 100 MiB and still validates the GLB.
  * The server adapter attaches image bytes and the reconciliation task name.
  * This module still does not call Meshy.
  */
 
-import { PERSONAL_FURNITURE_GLB_MAX_BYTES } from "@/lib/vibode-furniture/asset-id";
+import { GENERATION_OUTPUT_MAX_BYTES } from "@/lib/vibode-furniture/generation/policy";
 
 import {
   furnitureInputMode,
@@ -31,7 +30,7 @@ import {
 } from "./settings";
 
 export const MESHY_OUTPUT_INTAKE_NOTE =
-  "Meshy GLB outputs may exceed 25 MiB. MESHY-1C.1 keeps the personal furniture ceiling, rejects larger files, and does not skip GLB validation.";
+  "Meshy GLB outputs are accepted up to 100 MiB. Manual personal furniture uploads stay at 25 MiB, and every GLB is still validated.";
 
 export type MeshyGenerationBody = Readonly<{
   model_type: "standard";
@@ -122,7 +121,7 @@ export function mapMeshyGenerationDraft(input: Readonly<{
       endpoint: mode === "single" ? "/openapi/v1/image-to-3d" : "/openapi/v1/multi-image-to-3d",
       imageSlots: orderedViewSlots(input.photos),
       body,
-      intakeLimitBytes: PERSONAL_FURNITURE_GLB_MAX_BYTES,
+      intakeLimitBytes: GENERATION_OUTPUT_MAX_BYTES,
       intakeNote: MESHY_OUTPUT_INTAKE_NOTE,
     },
   };

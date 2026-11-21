@@ -40,7 +40,26 @@ export const MESHY_CREATE_TIMEOUT_MS = 60_000;
 
 export const MESHY_GET_TIMEOUT_MS = 30_000;
 
-export const MESHY_DOWNLOAD_TIMEOUT_MS = 60_000;
+/**
+ * A measured Meshy 7.1 2K GLB was 70,297,756 bytes. The download stops at
+ * 90 seconds. The worker renews the 120 second claim before that download,
+ * again before validation, and again before the storage upload.
+ */
+export const MESHY_DOWNLOAD_TIMEOUT_MS = 90_000;
+
+/**
+ * A paid model is downloaded at most this many times. A timeout, a worker
+ * interruption, or a storage rejection uses one attempt. The next pass stops
+ * and leaves the provider task recoverable. This does not allow another POST.
+ */
+export const GENERATION_OUTPUT_ATTEMPT_LIMIT = 3;
+
+/**
+ * Manual personal furniture uploads stay at 25 MiB. Meshy's textured GLB
+ * is a different file: the 2026-11-21 coffee-table task returned
+ * 70,297,756 bytes, so generation intake accepts up to 100 MiB.
+ */
+export const GENERATION_OUTPUT_MAX_BYTES = 100 * 1024 * 1024;
 
 /** Docs: poll at Retry-After, otherwise 5 seconds. Polls count as requests. */
 export const MESHY_POLL_DEFAULT_MS = 5_000;

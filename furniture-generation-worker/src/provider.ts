@@ -93,12 +93,18 @@ export function createBoundedMeshyAssetDownloader(fetchImpl: typeof fetch): Gene
         const location = response.headers.get("location");
         return location ? { kind: "redirect", location } : { kind: "network" };
       }
-      if (response.status !== 200) return { kind: "network" };
+      if (response.status !== 200) {
+        await cancelBody(response);
+        return { kind: "network" };
+      }
       const contentLength = contentLengthOf(response.headers.get("content-length"));
-      if (contentLength != null && contentLength > maxBytes) return { kind: "too_large" };
-      const body = new Uint8Array(await response.arrayBuffer());
-      if (body.byteLength > maxBytes) return { kind: "too_large" };
-      return { kind: "ok", status: 200, body, contentLength };
+      if (contentLength != null && contentLength > maxBytes) {
+        await cancelBody(response);
+        return { kind: "too_large" };
+      }
+      const body = await readBoundedBody(response, maxBytes);
+      if (body.kind !== "bytes") return body;
+      return { kind: "ok", status: 200, body: body.bytes, contentLength };
     } catch {
       return controller.signal.aborted ? { kind: "timeout" } : { kind: "network" };
     } finally {
@@ -130,6 +136,42 @@ function isMeshyAsset(url: URL): boolean {
     && url.username === ""
     && url.password === ""
     && url.port === "";
+}
+
+async function readBoundedBody(
+  response: Response,
+  maxBytes: number,
+): Promise<{ kind: "bytes"; bytes: Uint8Array } | { kind: "too_large" } | { kind: "network" }> {
+  const reader = response.body?.getReader();
+  if (!reader) return { kind: "network" };
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        return { kind: "too_large" };
+      }
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { kind: "bytes", bytes };
+}
+
+async function cancelBody(response: Response): Promise<void> {
+  await response.body?.cancel().catch(() => undefined);
 }
 
 function contentLengthOf(value: string | null): number | null {

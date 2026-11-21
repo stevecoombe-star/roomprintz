@@ -20,10 +20,10 @@ import {
 import { isUuidLike } from "@/lib/vibode-stage/asset-id";
 import {
   PERSONAL_FURNITURE_BUCKET,
-  PERSONAL_FURNITURE_GLB_MAX_BYTES,
   createPersonalFurnitureAssetId,
   personalFurniturePermanentPath,
 } from "@/lib/vibode-furniture/asset-id";
+import { GENERATION_OUTPUT_MAX_BYTES } from "@/lib/vibode-furniture/generation/policy";
 import {
   customerMessageForPersonalGlb,
   type PersonalFurnitureFailure,
@@ -225,7 +225,7 @@ export async function saveCalibratedFurnitureCandidate(
     || !isPlausibleFurnitureAxisM(measuredBaked.measured.widthM)
     || !isPlausibleFurnitureAxisM(measuredBaked.measured.heightM)
     || !isPlausibleFurnitureAxisM(measuredBaked.measured.depthM)
-    || measuredBaked.byteSize > PERSONAL_FURNITURE_GLB_MAX_BYTES
+    || measuredBaked.byteSize > GENERATION_OUTPUT_MAX_BYTES
   ) {
     return failure(500, "BAKE_MISMATCH", "The model could not be calibrated.");
   }
@@ -441,7 +441,7 @@ async function measureGlb(
     glbPath: "calibrated-furniture.glb",
     assetId,
     dimensionAuthority: "measured",
-    maxBytes: PERSONAL_FURNITURE_GLB_MAX_BYTES,
+    maxBytes: GENERATION_OUTPUT_MAX_BYTES,
   });
   if (
     !result.accepted
@@ -451,9 +451,12 @@ async function measureGlb(
     const codes = result.errors.map((item) => item.code);
     if (result.placementScale != null && result.placementScale !== 1) codes.push("NON_UNIT_PLACEMENT_SCALE");
     const status = codes.includes("FILE_TOO_LARGE") ? 413 : 400;
+    const message = codes.includes("FILE_TOO_LARGE")
+      ? "This GLB is too large. The limit is 100 MB."
+      : customerMessageForPersonalGlb(codes);
     return {
       ok: false,
-      failure: failure(status, codes[0] ?? "INVALID_GLB", customerMessageForPersonalGlb(codes)),
+      failure: failure(status, codes[0] ?? "INVALID_GLB", message),
     };
   }
   return {

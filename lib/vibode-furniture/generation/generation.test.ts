@@ -16,7 +16,7 @@ import {
   type FurnitureGeneratorSettings,
 } from "@/lib/vibode-furniture/generator/settings";
 import { previewLoadPlan } from "@/lib/vibode-furniture/generator/preview";
-import { validatePersonalFurnitureGlb } from "@/lib/vibode-furniture/validate.server";
+import { validateGeneratedFurnitureGlb, validatePersonalFurnitureGlb } from "@/lib/vibode-furniture/validate.server";
 
 import { estimateMeshy71Credits } from "./credits";
 import { claimGeneration, createGenerationDatabase } from "./engine";
@@ -35,6 +35,7 @@ import { createMeshyFetchTransport, meshyApiKeyFromEnv } from "./meshy-transport
 import { buildMeshyCreateRequest, meshyTaskNameForJob } from "./payload";
 import {
   GENERATION_INPUT_BUCKET,
+  GENERATION_OUTPUT_MAX_BYTES,
   MESHY_ASSET_HOST,
   MESHY_TEST_CREDIT_CEILING,
   generationAccessDecision,
@@ -729,6 +730,18 @@ test("temporary output is private, size-limited, and not a saved asset", async (
     assert.equal(oversized.ok, false);
     if (!oversized.ok) assert.equal(oversized.errorClass, "oversized_output");
     assert.ok(PERSONAL_FURNITURE_GLB_MAX_BYTES === 25 * 1024 * 1024);
+    assert.ok(GENERATION_OUTPUT_MAX_BYTES >= 70_297_756);
+    const overManual = new Uint8Array(PERSONAL_FURNITURE_GLB_MAX_BYTES + 1);
+    const manual = await validatePersonalFurnitureGlb({
+      bytes: overManual,
+      assetId: "vibode-furniture/generation/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
+    const generated = await validateGeneratedFurnitureGlb({
+      bytes: overManual,
+      assetId: "vibode-furniture/generation/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
+    assert.equal(manual.errors.some((item) => item.code === "FILE_TOO_LARGE"), true);
+    assert.equal(generated.errors.some((item) => item.code === "FILE_TOO_LARGE"), false);
 
     const invalid = await advanceOnFresh({
       body: {

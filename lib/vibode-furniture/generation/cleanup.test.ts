@@ -317,6 +317,7 @@ function addJob(
     claimNonce: null,
     claimExpiresAtMs: null,
     attemptCount: 0,
+    outputAttemptCount: 0,
     providerContactedAtMs: input.providerContactedAtMs ?? null,
     absenceReconciledAtMs: null,
     resubmitAuthorized: false,
@@ -402,6 +403,9 @@ function storageClient(input: {
     async rpc(name: string) {
       if (name === "vibode_furniture_generation_account_has_unsettled_hold") {
         return { data: { ok: true, blocked: false }, error: null };
+      }
+      if (name === "delete_vibode_photo_preparations_for_user") {
+        return { data: { ok: true, deleted: 0 }, error: null };
       }
       if (name === "begin_vibode_account_deletion") {
         return {

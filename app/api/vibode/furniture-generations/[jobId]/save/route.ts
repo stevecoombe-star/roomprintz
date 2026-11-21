@@ -5,6 +5,8 @@ import { postCalibratedFurnitureSave } from "@/lib/vibode-furniture/generation/s
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+/** A generated GLB can be 100 MiB. This route downloads, measures, bakes, and stores it. */
+export const maxDuration = 300;
 
 export async function POST(
   request: Request,

@@ -10,7 +10,7 @@ import {
 } from "@/lib/vibode-furniture/generation/pipeline";
 import { productionFurnitureGenerationDeps } from "@/lib/vibode-furniture/generation/production.server";
 import { sweepExpiredPhotoPreparations } from "@/lib/photo-preparation/sweep.server";
-import { validatePersonalFurnitureGlb } from "@/lib/vibode-furniture/validate.server";
+import { validateGeneratedFurnitureGlb } from "@/lib/vibode-furniture/validate.server";
 
 import { runFurnitureGenerationMaintenance } from "./maintenance";
 import { createFurnitureGenerationWorkerRuntime } from "./provider";
@@ -96,7 +96,7 @@ async function main(): Promise<void> {
           objects: deps.objects,
           adapter: runtime.runtime.adapter,
           download: runtime.runtime.download,
-          validate: validatePersonalFurnitureGlb,
+          validate: validateGeneratedFurnitureGlb,
           nowMs: Date.now(),
           submitAllowed: runtime.runtime.submitAllowed,
         }),

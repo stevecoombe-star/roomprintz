@@ -14,12 +14,14 @@ import {
   applyGenerationObservation,
   attachGenerationInput,
   authorizeGenerationResubmit,
+  beginGenerationOutputAttempt,
   bindGenerationTask,
   claimGeneration,
   commitGenerationSubmission,
   prepareGenerationLease,
   resolveGenerationProviderCredits,
   reviewGenerationContactedInput,
+  deferGenerationOutput,
   discardGenerationCandidate,
   dropGenerationClaim,
   failGenerationBeforeProvider,
@@ -31,6 +33,7 @@ import {
   readGeneration,
   recordGenerationOutput,
   releaseExpiredGenerationHolds,
+  renewGenerationClaim,
   reserveGeneration,
   settleGenerationRateLimit,
   type GenerationDatabase,
@@ -47,6 +50,13 @@ import {
 import { generationCandidateStillPreviewable } from "./preview-access";
 
 const CLAIMABLE = new Set(["reserved", "submitting", "ambiguous", "running", "ingesting", "needs_review"]);
+const RETAINED_OUTPUT_REVIEW = new Set(["oversized_output", "invalid_output", "ingest_failed"]);
+
+function retainedOutputReview(job: GenerationJob): boolean {
+  return job.status === "needs_review"
+    && job.errorClass != null
+    && RETAINED_OUTPUT_REVIEW.has(job.errorClass);
+}
 
 export function createMemoryGenerationCommands(
   db: GenerationDatabase,
@@ -215,6 +225,7 @@ export function createMemoryGenerationCommands(
     async claimNext(submitAllowed, nowMs) {
       const job = db.jobs
         .filter((item) => CLAIMABLE.has(item.status))
+        .filter((item) => !retainedOutputReview(item))
         .filter((item) => item.claimExpiresAtMs == null || item.claimExpiresAtMs <= nowMs)
         .sort((left, right) => left.createdAtMs - right.createdAtMs)[0];
       if (!job) return { ok: true, outcome: "idle" };
@@ -275,6 +286,22 @@ export function createMemoryGenerationCommands(
     },
     async dropClaim(input) {
       dropGenerationClaim(db, input);
+    },
+    async beginOutputAttempt(input) {
+      const started = beginGenerationOutputAttempt(db, input);
+      if (!started.ok) return { ok: false, code: started.code };
+      if (!started.proceed) return { ok: true, proceed: false, status: started.job.status };
+      return { ok: true, proceed: true, attempts: started.job.outputAttemptCount, status: "ingesting" };
+    },
+    async renewClaim(input) {
+      const renewed = renewGenerationClaim(db, input);
+      if (!renewed.ok) return { ok: false, code: renewed.code };
+      return { ok: true, status: renewed.job.status };
+    },
+    async deferOutputAttempt(input) {
+      const deferred = deferGenerationOutput(db, input);
+      if (!deferred.ok) return { ok: false, code: deferred.code };
+      return { ok: true, status: deferred.job.status };
     },
     async markNeedsReview(input) {
       const marked = markGenerationNeedsReview(db, input);
@@ -426,7 +453,7 @@ function recentJob(job: GenerationJob, nowMs: number): OwnerRecentGeneration | n
   return {
     jobId: job.jobId,
     status: job.status,
-    errorClass: customerGenerationErrorClass(job.errorClass),
+    errorClass: customerGenerationErrorClass(job.errorClass, job.errorCode),
     progress: job.progress,
     createdAt: new Date(job.createdAtMs).toISOString(),
     updatedAt: new Date(job.updatedAtMs).toISOString(),

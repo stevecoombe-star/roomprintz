@@ -13,11 +13,13 @@ const CUSTOMER_ERROR_CLASSES = new Set([
   "invalid_output",
   "oversized_output",
   "ingest_failed",
+  "download_failed",
   "input_storage_failed",
   "needs_review",
 ]);
 
-export function customerGenerationErrorClass(value: unknown): string | null {
+export function customerGenerationErrorClass(value: unknown, errorCode?: unknown): string | null {
+  if (value === "ingest_failed" && errorCode === "download") return "download_failed";
   if (value === "credit_unreported") return "needs_review";
   if (value === "provider_payment" || value === "provider_auth" || value === "provider_forbidden") {
     return "provider_failed";

@@ -12,7 +12,7 @@ import {
   PI5D_LOUNGE_CHAIR_AUTHORED_WIDTH_M,
 } from "@/lib/afc-v2-runtime/pi5d-lounge-chair-geometry";
 
-import { PERSONAL_FURNITURE_GLB_MAX_BYTES } from "./asset-id";
+import { GENERATION_OUTPUT_MAX_BYTES } from "./generation/policy";
 import { generationCandidateStillPreviewable } from "./generation/preview-access";
 import { requestCandidatePreview } from "./generator/candidate-preview";
 import { preferredAddCanonicalTransform } from "@/lib/afc-v2-runtime/scene-crud";
@@ -259,7 +259,8 @@ test("provider mapping keeps image bytes out of the request and rejects unsuppor
   assert.equal(single.draft.body.should_remesh, true);
   assert.equal(single.draft.body.target_polycount, 80_000);
   assert.deepEqual(single.draft.body.target_formats, ["glb"]);
-  assert.equal(single.draft.intakeLimitBytes, PERSONAL_FURNITURE_GLB_MAX_BYTES);
+  assert.equal(single.draft.intakeLimitBytes, GENERATION_OUTPUT_MAX_BYTES);
+  assert.match(single.draft.intakeNote, /100 MiB/);
   assert.match(single.draft.intakeNote, /25 MiB/);
   const serialized = JSON.stringify(single.draft);
   assert.doesNotMatch(serialized, /image_url|image_urls|pose_mode|ultra_mode|remove_lighting|api_key|data:image|blob:/);

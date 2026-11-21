@@ -7,6 +7,7 @@ import test from "node:test";
 import sharp from "sharp";
 
 import { PERSONAL_FURNITURE_GLB_MAX_BYTES } from "@/lib/vibode-furniture/asset-id";
+import { GENERATION_OUTPUT_MAX_BYTES } from "@/lib/vibode-furniture/generation/policy";
 import { emptyFurniturePhotoSet } from "@/lib/vibode-furniture/generator/images";
 import { mapMeshyGenerationDraft } from "@/lib/vibode-furniture/generator/request";
 import { defaultFurnitureGeneratorSettings } from "@/lib/vibode-furniture/generator/settings";
@@ -225,6 +226,26 @@ test("asset downloads stay on the Meshy host and remain bounded", async () => {
     maxBytes: PERSONAL_FURNITURE_GLB_MAX_BYTES,
   })).kind, "too_large");
   assert.equal(calls, 1);
+  const measured = createBoundedMeshyAssetDownloader(async () => new Response(new Uint8Array([1, 2, 3]), {
+    status: 200,
+    headers: { "content-length": "70297756" },
+  }));
+  assert.equal((await measured({
+    url: "https://assets.meshy.ai/tasks/abc/output/model.glb",
+    timeoutMs: 1_000,
+    maxBytes: GENERATION_OUTPUT_MAX_BYTES,
+  })).kind, "ok");
+  const uncapped = createBoundedMeshyAssetDownloader(async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(20));
+      controller.close();
+    },
+  }), { status: 200 }));
+  assert.equal((await uncapped({
+    url: "https://assets.meshy.ai/tasks/abc/output/model.glb",
+    timeoutMs: 1_000,
+    maxBytes: 8,
+  })).kind, "too_large");
 
   const redirect = createBoundedMeshyAssetDownloader(async () => new Response(null, {
     status: 302,

@@ -30,6 +30,7 @@ import {
   claimBetaSubmission,
   customerEntitlement,
   customerJobCopy,
+  selectRecoveredGeneration,
   isCertifiedBetaFurnitureSettings,
   mergeRecentGenerationResponse,
   nextPollDelayMs,
@@ -128,6 +129,26 @@ test("beta entitlement fails closed and does not invent a balance", () => {
   assert.equal(customerJobCopy({ jobId: JOB, status: "reserved", errorClass: null, progress: 0 }).title, "Preparing your photo");
   assert.equal(customerJobCopy({ jobId: JOB, status: "needs_review", errorClass: "needs_review", progress: 0 }).title, "Awaiting operator review");
   assert.match(customerJobCopy({ jobId: JOB, status: "failed", errorClass: "provider_failed", progress: 0 }).detail, /could not be generated/);
+  assert.equal(customerJobCopy({ jobId: JOB, status: "failed", errorClass: null, progress: 0 }).detail, "Nothing new was started.");
+  const oversized = customerJobCopy({ jobId: JOB, status: "failed", errorClass: "oversized_output", progress: 100 });
+  assert.equal(oversized.title, "The model is too large to store");
+  assert.equal(oversized.poll, false);
+  assert.doesNotMatch(`${oversized.title} ${oversized.detail}`, /Nothing new was started/);
+  assert.equal(customerJobCopy({ jobId: JOB, status: "needs_review", errorClass: "invalid_output", progress: 100 }).title, "The model could not be read");
+  const download = customerJobCopy({ jobId: JOB, status: "needs_review", errorClass: "download_failed", progress: 100 });
+  assert.equal(download.title, "The model could not be downloaded");
+  assert.match(download.detail, /Meshy finished this model/);
+  assert.equal(download.poll, false);
+  const stored = customerJobCopy({ jobId: JOB, status: "needs_review", errorClass: "ingest_failed", progress: 100 });
+  assert.equal(stored.title, "The model could not be stored");
+  assert.doesNotMatch(`${download.title} ${stored.title}`, /The generation did not finish/);
+  assert.equal(customerJobCopy({ jobId: JOB, status: "failed", errorClass: "provider_failed", progress: 0 }).detail, "The model could not be generated.");
+  assert.equal(customerJobCopy({ jobId: JOB, status: "needs_review", errorClass: "ingest_failed", progress: 100 }).title, "The model could not be stored");
+  assert.equal(selectRecoveredGeneration([
+    { status: "ready" },
+    { status: "needs_review" },
+  ])?.status, "needs_review");
+  assert.equal(selectRecoveredGeneration([{ status: "failed" }, { status: "ready" }])?.status, "ready");
   assert.equal(nextPollDelayMs(2_000), 4_000);
   assert.equal(nextPollDelayMs(8_000), 15_000);
   const first = claimBetaSubmission({ busy: false, key: null }, () => "beta-key-0001");
@@ -413,6 +434,63 @@ test("the generator shows disabled, eligible, preparing, failed, and ready state
   }));
   assert.match(failed, /The generation did not finish/);
   assert.match(failed, /could not be generated/);
+  const tooLarge = renderToStaticMarkup(createElement(FurnitureGeneratorPanel, {
+    onOpenPreview: () => undefined,
+    showFixturePreview: false,
+    fixture: {
+      entitlement: {
+        canGenerate: true,
+        state: "ready",
+        authorized: 3,
+        reserved: 1,
+        consumed: 0,
+        remaining: 2,
+        reason: null,
+      },
+      job: { jobId: JOB, status: "needs_review", errorClass: "oversized_output", progress: 100 },
+    },
+  }));
+  assert.match(tooLarge, /The model is too large to store/);
+  assert.match(tooLarge, /Meshy finished this model/);
+  assert.doesNotMatch(tooLarge, /Nothing new was started/);
+  assert.doesNotMatch(tooLarge, /The generation did not finish/);
+  const downloadFailed = renderToStaticMarkup(createElement(FurnitureGeneratorPanel, {
+    onOpenPreview: () => undefined,
+    showFixturePreview: false,
+    fixture: {
+      entitlement: {
+        canGenerate: true,
+        state: "ready",
+        authorized: 3,
+        reserved: 1,
+        consumed: 0,
+        remaining: 2,
+        reason: null,
+      },
+      job: { jobId: JOB, status: "needs_review", errorClass: "download_failed", progress: 100 },
+    },
+  }));
+  assert.match(downloadFailed, /The model could not be downloaded/);
+  assert.match(downloadFailed, /Meshy finished this model/);
+  assert.doesNotMatch(downloadFailed, /The generation did not finish/);
+  const storageFailed = renderToStaticMarkup(createElement(FurnitureGeneratorPanel, {
+    onOpenPreview: () => undefined,
+    showFixturePreview: false,
+    fixture: {
+      entitlement: {
+        canGenerate: true,
+        state: "ready",
+        authorized: 3,
+        reserved: 1,
+        consumed: 0,
+        remaining: 2,
+        reason: null,
+      },
+      job: { jobId: JOB, status: "needs_review", errorClass: "ingest_failed", progress: 100 },
+    },
+  }));
+  assert.match(storageFailed, /The model could not be stored/);
+  assert.doesNotMatch(storageFailed, /The generation did not finish/);
 
   const review = renderToStaticMarkup(createElement(FurnitureGeneratorPanel, {
     onOpenPreview: () => undefined,

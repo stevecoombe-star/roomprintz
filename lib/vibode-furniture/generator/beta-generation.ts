@@ -185,6 +185,8 @@ export function customerJobCopy(job: CustomerJobSnapshot): Readonly<{
     };
   }
   if (job.status === "needs_review") {
+    const retained = retainedOutputCopy(job.errorClass);
+    if (retained) return retained;
     return {
       title: "Awaiting operator review",
       detail: "An operator needs to review this generation. It will not start again on its own.",
@@ -192,6 +194,8 @@ export function customerJobCopy(job: CustomerJobSnapshot): Readonly<{
     };
   }
   if (job.status === "failed") {
+    const retained = retainedOutputCopy(job.errorClass);
+    if (retained) return retained;
     return { title: "The generation did not finish", detail: failedDetail(job.errorClass), poll: false };
   }
   if (job.status === "expired") {
@@ -428,6 +432,42 @@ function recoverableFromRecord(value: unknown, nowMs: number): RecoverableGenera
     outputExpiresAt: record.status === "ready" ? outputExpiresAt : null,
     previewAvailable: record.status === "ready" && previewAvailable,
   };
+}
+
+function retainedOutputCopy(errorClass: string | null): Readonly<{
+  title: string;
+  detail: string;
+  poll: false;
+}> | null {
+  if (errorClass === "oversized_output") {
+    return {
+      title: "The model is too large to store",
+      detail: "Meshy finished this model. It is larger than Vibode can store, so it was not added to your library.",
+      poll: false,
+    };
+  }
+  if (errorClass === "invalid_output") {
+    return {
+      title: "The model could not be read",
+      detail: "Meshy finished this model, but Vibode could not use the file.",
+      poll: false,
+    };
+  }
+  if (errorClass === "download_failed") {
+    return {
+      title: "The model could not be downloaded",
+      detail: "Meshy finished this model, but Vibode could not download it yet.",
+      poll: false,
+    };
+  }
+  if (errorClass === "ingest_failed") {
+    return {
+      title: "The model could not be stored",
+      detail: "Meshy finished this model, but Vibode could not store it yet.",
+      poll: false,
+    };
+  }
+  return null;
 }
 
 function failedDetail(errorClass: string | null): string {

@@ -15,7 +15,6 @@ import { isUuidLike } from "@/lib/vibode-stage/asset-id";
 import {
   isPersonalFurnitureAssetId,
   PERSONAL_FURNITURE_BUCKET,
-  PERSONAL_FURNITURE_GLB_MAX_BYTES,
 } from "@/lib/vibode-furniture/asset-id";
 import {
   FURNITURE_VIEW_SLOT_ORDER,
@@ -37,6 +36,8 @@ import {
   MESHY_ABSENCE_RECONCILE_WAIT_MS,
   MESHY_CLAIM_LEASE_MS,
   MESHY_MAX_SUBMIT_ATTEMPTS,
+  GENERATION_OUTPUT_ATTEMPT_LIMIT,
+  GENERATION_OUTPUT_MAX_BYTES,
   MESHY_MIN_OVERALL_WAIT_MS,
   MESHY_PROVIDER_ID,
   MESHY_TEST_CREDIT_CEILING,
@@ -106,6 +107,7 @@ export type GenerationJob = {
   claimNonce: string | null;
   claimExpiresAtMs: number | null;
   attemptCount: number;
+  outputAttemptCount: number;
   providerContactedAtMs: number | null;
   absenceReconciledAtMs: number | null;
   resubmitAuthorized: boolean;
@@ -293,6 +295,7 @@ export function reserveGeneration(db: GenerationDatabase, input: ReserveInput): 
     claimNonce: null,
     claimExpiresAtMs: null,
     attemptCount: 0,
+    outputAttemptCount: 0,
     providerContactedAtMs: null,
     absenceReconciledAtMs: null,
     resubmitAuthorized: false,
@@ -675,7 +678,7 @@ export function recordGenerationOutput(
   if (!job.ok) return job;
   const row = job.job;
   if (row.status !== "ingesting") return { ok: false, code: "not_claimable" };
-  if (!SHA.test(input.sha256) || input.byteSize <= 0 || input.byteSize > PERSONAL_FURNITURE_GLB_MAX_BYTES) {
+  if (!SHA.test(input.sha256) || input.byteSize <= 0 || input.byteSize > GENERATION_OUTPUT_MAX_BYTES) {
     return { ok: false, code: "not_claimable" };
   }
   const path = generationCandidatePath(row.userId, row.jobId);
@@ -748,7 +751,7 @@ export function linkGenerationSavedAsset(
 }
 
 function storedByteSize(value: number): boolean {
-  return Number.isInteger(value) && value > 0 && value <= PERSONAL_FURNITURE_GLB_MAX_BYTES;
+  return Number.isInteger(value) && value > 0 && value <= GENERATION_OUTPUT_MAX_BYTES;
 }
 
 export function failGenerationOutput(
@@ -764,14 +767,93 @@ export function failGenerationOutput(
   const job = ownedLease(db, input);
   if (!job.ok) return job;
   if (job.job.status !== "ingesting" && job.job.status !== "running") return { ok: false, code: "not_claimable" };
-  // Provider status and consumed credits stay. A rejected GLB is still a paid result.
-  job.job.status = "failed";
+  // Provider status and consumed credits stay. A paid Meshy result is not a
+  // provider failure: it stays reviewable and the caller does not release it.
+  const paidResult = job.job.providerStatus === "SUCCEEDED"
+    && job.job.consumedCredits != null
+    && job.job.quotaState === "reconciled";
+  job.job.status = paidResult ? "needs_review" : "failed";
   job.job.errorClass = input.errorClass;
   job.job.errorCode = input.errorClass;
   job.job.savedAssetId = null;
   releaseClaim(job.job);
   touch(job.job, input.nowMs);
   return { ok: true, job: job.job };
+}
+
+export function beginGenerationOutputAttempt(
+  db: GenerationDatabase,
+  input: { userId: string; jobId: string; claimNonce: string; nowMs: number },
+): { ok: true; proceed: boolean; job: GenerationJob } | { ok: false; code: "not_found" | "lease_held" | "not_claimable" } {
+  const job = ownedLease(db, input);
+  if (!job.ok) return job;
+  if (job.job.status !== "ingesting") return { ok: false, code: "not_claimable" };
+  if (job.job.outputAttemptCount >= GENERATION_OUTPUT_ATTEMPT_LIMIT) {
+    parkRetainedOutput(job.job, retainedOutputReason(job.job), input.nowMs);
+    return { ok: true, proceed: false, job: job.job };
+  }
+  job.job.outputAttemptCount += 1;
+  job.job.claimExpiresAtMs = input.nowMs + MESHY_CLAIM_LEASE_MS;
+  touch(job.job, input.nowMs);
+  return { ok: true, proceed: true, job: job.job };
+}
+
+export function renewGenerationClaim(
+  db: GenerationDatabase,
+  input: { userId: string; jobId: string; claimNonce: string; nowMs: number },
+): MutationResult {
+  const job = ownedLease(db, input);
+  if (!job.ok) return job;
+  if (job.job.status !== "ingesting" && job.job.status !== "running") {
+    return { ok: false, code: "not_claimable" };
+  }
+  job.job.claimExpiresAtMs = input.nowMs + MESHY_CLAIM_LEASE_MS;
+  touch(job.job, input.nowMs);
+  return { ok: true, job: job.job };
+}
+
+export function deferGenerationOutput(
+  db: GenerationDatabase,
+  input: {
+    userId: string;
+    jobId: string;
+    claimNonce: string;
+    nowMs: number;
+    reason: "download" | "storage";
+  },
+): MutationResult {
+  const job = ownedLease(db, input);
+  if (!job.ok) return job;
+  if (job.job.status !== "ingesting") return { ok: false, code: "not_claimable" };
+  if (job.job.outputAttemptCount >= GENERATION_OUTPUT_ATTEMPT_LIMIT) {
+    parkRetainedOutput(job.job, input.reason, input.nowMs);
+    return { ok: true, job: job.job };
+  }
+  job.job.errorClass = null;
+  job.job.errorCode = input.reason;
+  releaseClaim(job.job);
+  touch(job.job, input.nowMs);
+  return { ok: true, job: job.job };
+}
+
+function retainedOutputReason(job: GenerationJob): "download" | "storage" {
+  return job.errorCode === "storage" ? "storage" : "download";
+}
+
+function parkRetainedOutput(
+  job: GenerationJob,
+  reason: "download" | "storage",
+  nowMs: number,
+): void {
+  const paidResult = job.providerStatus === "SUCCEEDED"
+    && job.consumedCredits != null
+    && job.quotaState === "reconciled";
+  job.status = paidResult ? "needs_review" : "failed";
+  job.errorClass = "ingest_failed";
+  job.errorCode = reason;
+  job.savedAssetId = null;
+  releaseClaim(job);
+  touch(job, nowMs);
 }
 
 export function attachGenerationInput(

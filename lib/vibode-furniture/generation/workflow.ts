@@ -25,9 +25,11 @@ import { estimateMeshy71Credits } from "./credits";
 import {
   applyGenerationObservation,
   attachGenerationInput,
+  beginGenerationOutputAttempt,
   bindGenerationTask,
   candidatePreviewOffer,
   claimGeneration,
+  deferGenerationOutput,
   discardGenerationCandidate,
   dropGenerationClaim,
   expireGenerationCandidate,
@@ -40,6 +42,7 @@ import {
   markGenerationNeedsReview,
   readGeneration,
   recordGenerationOutput,
+  renewGenerationClaim,
   reserveGeneration,
   settleGenerationRateLimit,
   type GenerationDatabase,
@@ -355,6 +358,16 @@ export async function advanceFurnitureGeneration(input: {
     if (!failedOutput.ok) return { ok: false, errorClass: failedOutput.code, message: "The generated model could not be stored." };
     return { ok: false, errorClass: "invalid_output", message: "The generated model link cannot be used." };
   }
+  const started = beginGenerationOutputAttempt(input.db, {
+    userId: input.actorUserId,
+    jobId: input.jobId,
+    claimNonce: nonce,
+    nowMs: input.nowMs,
+  });
+  if (!started.ok) return { ok: false, errorClass: started.code, message: "The generated model could not be stored." };
+  if (!started.proceed) {
+    return { ok: true, action: started.job.status === "needs_review" ? "needs_review" : "failed", job: started.job };
+  }
   const intake = await intakeProviderGlb({
     url: read.task.glbUrl,
     nowMs: input.nowMs,
@@ -362,8 +375,27 @@ export async function advanceFurnitureGeneration(input: {
     assetId: `vibode-furniture/generation/${input.jobId}`,
     download: input.download,
     validate: input.validate,
+    beforeValidate: async () => renewGenerationClaim(input.db, {
+      userId: input.actorUserId,
+      jobId: input.jobId,
+      claimNonce: nonce,
+      nowMs: input.nowMs,
+    }).ok,
   });
   if (!intake.ok) {
+    if (intake.errorClass === "ingest_failed") {
+      const deferred = deferGenerationOutput(input.db, {
+        userId: input.actorUserId,
+        jobId: input.jobId,
+        claimNonce: nonce,
+        nowMs: input.nowMs,
+        reason: "download",
+      });
+      if (!deferred.ok) return { ok: false, errorClass: deferred.code, message: "The generated model could not be downloaded." };
+      if (deferred.job.status === "needs_review") return { ok: true, action: "needs_review", job: deferred.job };
+      if (deferred.job.status === "failed") return { ok: true, action: "failed", job: deferred.job };
+      return { ok: true, action: "running", job: deferred.job };
+    }
     failGenerationOutput(input.db, {
       userId: input.actorUserId,
       jobId: input.jobId,
@@ -373,8 +405,29 @@ export async function advanceFurnitureGeneration(input: {
     });
     return intake;
   }
+  const renewed = renewGenerationClaim(input.db, {
+    userId: input.actorUserId,
+    jobId: input.jobId,
+    claimNonce: nonce,
+    nowMs: input.nowMs,
+  });
+  if (!renewed.ok) return { ok: true, action: "running", job: started.job };
   const path = generationCandidatePath(input.actorUserId, input.jobId);
-  await input.objects.put(path, intake.bytes);
+  try {
+    await input.objects.put(path, intake.bytes);
+  } catch {
+    const deferred = deferGenerationOutput(input.db, {
+      userId: input.actorUserId,
+      jobId: input.jobId,
+      claimNonce: nonce,
+      nowMs: input.nowMs,
+      reason: "storage",
+    });
+    if (!deferred.ok) return { ok: false, errorClass: deferred.code, message: "The generated model could not be stored." };
+    if (deferred.job.status === "needs_review") return { ok: true, action: "needs_review", job: deferred.job };
+    if (deferred.job.status === "failed") return { ok: true, action: "failed", job: deferred.job };
+    return { ok: true, action: "running", job: deferred.job };
+  }
   const recorded = recordGenerationOutput(input.db, {
     userId: input.actorUserId,
     jobId: input.jobId,
@@ -384,7 +437,7 @@ export async function advanceFurnitureGeneration(input: {
     sha256: createHash("sha256").update(intake.bytes).digest("hex"),
   });
   if (!recorded.ok) {
-    await input.objects.remove(path);
+    if (recorded.code !== "lease_held") await input.objects.remove(path);
     return { ok: false, errorClass: recorded.code, message: "The generated model could not be stored." };
   }
   if (recorded.job.outputBucket !== candidateBucket() || recorded.job.savedAssetId !== null) {

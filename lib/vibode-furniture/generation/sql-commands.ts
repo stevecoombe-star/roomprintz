@@ -77,6 +77,9 @@ export const GENERATION_RPC_ARGUMENTS = {
   fail_vibode_furniture_generation_create: ["p_user_id", "p_job_id", "p_claim_nonce", "p_error_class", "p_error_code"],
   settle_vibode_furniture_generation_rate_limit: ["p_user_id", "p_job_id", "p_claim_nonce"],
   drop_vibode_furniture_generation_claim: ["p_user_id", "p_job_id", "p_claim_nonce"],
+  begin_vibode_furniture_generation_output_attempt: ["p_user_id", "p_job_id", "p_claim_nonce"],
+  renew_vibode_furniture_generation_claim: ["p_user_id", "p_job_id", "p_claim_nonce"],
+  defer_vibode_furniture_generation_output: ["p_user_id", "p_job_id", "p_claim_nonce", "p_reason"],
   mark_vibode_furniture_generation_needs_review: ["p_user_id", "p_job_id", "p_claim_nonce", "p_reason"],
   apply_vibode_furniture_generation_observation: [
     "p_user_id",
@@ -333,6 +336,35 @@ export function createSqlGenerationCommands(rpc: PositionalGenerationRpc): Gener
     async dropClaim(input) {
       await rpc("drop_vibode_furniture_generation_claim", [input.userId, input.jobId, input.claimNonce]);
     },
+    async beginOutputAttempt(input) {
+      const data = asRecord(await rpc("begin_vibode_furniture_generation_output_attempt", [
+        input.userId,
+        input.jobId,
+        input.claimNonce,
+      ]));
+      if (!data || data.ok !== true || typeof data.status !== "string") return fail(data);
+      if (data.proceed === true) {
+        const attempts = integerAt(data.attempts);
+        if (attempts == null) return { ok: false, code: "unavailable" };
+        return { ok: true, proceed: true, attempts, status: "ingesting" };
+      }
+      return { ok: true, proceed: false, status: data.status };
+    },
+    async renewClaim(input) {
+      return statusResult(await rpc("renew_vibode_furniture_generation_claim", [
+        input.userId,
+        input.jobId,
+        input.claimNonce,
+      ]));
+    },
+    async deferOutputAttempt(input) {
+      return statusResult(await rpc("defer_vibode_furniture_generation_output", [
+        input.userId,
+        input.jobId,
+        input.claimNonce,
+        input.reason,
+      ]));
+    },
     async markNeedsReview(input) {
       return statusResult(await rpc("mark_vibode_furniture_generation_needs_review", [
         input.userId,
@@ -516,7 +548,7 @@ function recentFromRead(data: Record<string, unknown> | null): OwnerRecentGenera
   return {
     jobId: data.job_id,
     status: data.status as GenerationStatus,
-    errorClass: customerGenerationErrorClass(data.error_class),
+    errorClass: customerGenerationErrorClass(data.error_class, data.error_code),
     progress,
     createdAt: data.created_at,
     updatedAt: data.updated_at,
@@ -533,7 +565,8 @@ function publicFromRead(data: Record<string, unknown>): PublicGenerationJob | nu
     jobId: data.job_id,
     status: data.status as GenerationStatus,
     progress: typeof data.progress === "number" ? data.progress : 0,
-    errorClass: typeof data.error_class === "string" ? data.error_class : null,
+    errorClass: customerGenerationErrorClass(data.error_class, data.error_code)
+      ?? (typeof data.error_class === "string" ? data.error_class : null),
     outputExpiresAt: typeof data.output_expires_at === "string" ? data.output_expires_at : null,
   };
 }

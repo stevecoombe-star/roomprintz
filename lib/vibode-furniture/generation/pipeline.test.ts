@@ -9,7 +9,7 @@ import sharp from "sharp";
 
 import { encodeGlb } from "@/lib/afc-v2-runtime/glb-binary";
 import { encodeUntexturedFurnitureProbeGlb } from "@/lib/afc-v2-runtime/textured-furniture-probe-glb";
-import { PERSONAL_FURNITURE_BUCKET, PERSONAL_FURNITURE_GLB_MAX_BYTES } from "@/lib/vibode-furniture/asset-id";
+import { PERSONAL_FURNITURE_BUCKET } from "@/lib/vibode-furniture/asset-id";
 import { defaultFurnitureGeneratorSettings } from "@/lib/vibode-furniture/generator/settings";
 import { validatePersonalFurnitureGlb } from "@/lib/vibode-furniture/validate.server";
 
@@ -28,9 +28,22 @@ import { createMemoryGenerationCommands } from "./memory-commands";
 import { createMeshyAdapter } from "./meshy-adapter";
 import type { MeshyTransport, MeshyTransportCall, MeshyTransportResult } from "./meshy-task";
 import { createMemoryBucketStore } from "./objects";
+import type { GenerationDownloader } from "./output";
 import { cleanupTemporaryGenerationObjects, executeFurnitureGenerationClaim } from "./pipeline";
-import { createGenerationDatabase } from "./engine";
-import { GENERATION_INPUT_BUCKET } from "./policy";
+import {
+  beginGenerationOutputAttempt,
+  createGenerationDatabase,
+  deferGenerationOutput,
+  renewGenerationClaim,
+  type GenerationJob,
+} from "./engine";
+import {
+  GENERATION_INPUT_BUCKET,
+  GENERATION_OUTPUT_ATTEMPT_LIMIT,
+  GENERATION_OUTPUT_MAX_BYTES,
+  MESHY_CLAIM_LEASE_MS,
+  MESHY_DOWNLOAD_TIMEOUT_MS,
+} from "./policy";
 import { betaFrontPhotoBytesAllowed, FIRST_GENERATION_JPEG_MAX_BYTES, imagesFitGenerationTransport } from "./transport";
 
 const USER_A = "11111111-1111-4111-8111-111111111111";
@@ -112,6 +125,46 @@ const response = (status: number, body: unknown, unparsed = false): MeshyTranspo
   unparsed,
 });
 
+function heldSucceededJob(nowMs: number): GenerationJob {
+  const jobId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa9";
+  return {
+    jobId,
+    userId: USER_A,
+    provider: "meshy",
+    aiModel: "meshy-7.1",
+    operation: "image-to-3d",
+    idempotencyKey: "incident-key-0001",
+    requestSha256: "ab".repeat(32),
+    settings: defaultFurnitureGeneratorSettings(),
+    imageSlots: ["front"],
+    providerTaskName: `vibode-${jobId}`,
+    providerTaskId: TASK_ID,
+    providerStatus: "SUCCEEDED",
+    status: "ingesting",
+    progress: 100,
+    claimNonce: "12121212-1212-4121-8121-121212121212",
+    claimExpiresAtMs: nowMs + MESHY_CLAIM_LEASE_MS,
+    attemptCount: 1,
+    outputAttemptCount: 0,
+    providerContactedAtMs: nowMs - 1_000,
+    absenceReconciledAtMs: null,
+    resubmitAuthorized: false,
+    quotaState: "reconciled",
+    reservedCredits: 30,
+    consumedCredits: 30,
+    outputBucket: null,
+    outputObjectPath: null,
+    outputSha256: null,
+    outputByteSize: null,
+    outputExpiresAtMs: null,
+    errorClass: null,
+    errorCode: null,
+    savedAssetId: null,
+    createdAtMs: nowMs - 2_000,
+    updatedAtMs: nowMs - 1_000,
+  };
+}
+
 function succeededTask(credits: number) {
   return response(200, {
     id: TASK_ID,
@@ -126,7 +179,7 @@ function succeededTask(credits: number) {
 async function runPass(
   ctx: ReturnType<typeof harness>,
   provider: ReturnType<typeof scripted>,
-  download: () => Promise<Awaited<ReturnType<typeof okGlb>>>,
+  download: GenerationDownloader,
 ) {
   const previous = globalThis.fetch;
   globalThis.fetch = async () => {
@@ -345,9 +398,9 @@ test("provider failure, oversized output, and compressed GLBs free the slot", as
     kind: "ok",
     status: 200,
     body: new Uint8Array([1, 2, 3, 4]),
-    contentLength: PERSONAL_FURNITURE_GLB_MAX_BYTES + 1,
+    contentLength: GENERATION_OUTPUT_MAX_BYTES + 1,
   }));
-  assert.equal(oversized.db.jobs[0]?.status, "failed");
+  assert.equal(oversized.db.jobs[0]?.status, "needs_review");
   assert.equal(oversized.db.jobs[0]?.errorClass, "oversized_output");
   assert.equal(oversized.db.jobs[0]?.providerStatus, "SUCCEEDED");
   assert.equal(oversized.db.jobs[0]?.consumedCredits, 20);
@@ -371,6 +424,11 @@ test("provider failure, oversized output, and compressed GLBs free the slot", as
     oversizedJobId,
   );
   assert.equal(ownerOperator.status, 401);
+  const retained = await runPass(oversized, huge, async () => ({ kind: "too_large" }));
+  assert.equal(retained.action, "idle");
+  assert.equal(huge.posts(), 1);
+  assert.equal(oversized.db.jobs[0]?.providerTaskId, TASK_ID);
+  assert.equal(oversized.db.jobs[0]?.consumedCredits, 20);
 
   const compressed = harness();
   await allowOne(compressed);
@@ -390,8 +448,134 @@ test("provider failure, oversized output, and compressed GLBs free the slot", as
   assert.equal(compressed.db.jobs[0]?.errorClass, "invalid_output");
   assert.equal(compressed.db.jobs[0]?.providerStatus, "SUCCEEDED");
   assert.equal(compressed.db.jobs[0]?.consumedCredits, 20);
-  assert.equal(compressed.db.jobs[0]?.status, "failed");
+  assert.equal(compressed.db.jobs[0]?.status, "needs_review");
   assert.equal(compressed.db.controls.paidSubmissionsUsed, 1);
+});
+
+test("a measured Meshy GLB is stored once, and download or storage failure retries without another post", async () => {
+  const measured = harness();
+  await allowOne(measured);
+  await postFurnitureGeneration(request("idem-key-0001", await png()), measured.deps);
+  const provider = scripted([
+    response(202, { result: TASK_ID }),
+    succeededTask(30),
+    succeededTask(30),
+    succeededTask(30),
+  ]);
+  assert.equal((await runPass(measured, provider, okGlb)).action, "submitted");
+  let downloads = 0;
+  const download = async () => {
+    downloads += 1;
+    if (downloads === 1) return { kind: "timeout" as const };
+    return {
+      kind: "ok" as const,
+      status: 200,
+      body: encodeUntexturedFurnitureProbeGlb(),
+      contentLength: 70_297_756,
+    };
+  };
+  assert.equal((await runPass(measured, provider, download)).action, "waiting");
+  assert.equal(measured.db.jobs[0]?.status, "ingesting");
+  assert.equal(measured.db.jobs[0]?.providerTaskId, TASK_ID);
+  let puts = 0;
+  const originalPut = measured.objects.put.bind(measured.objects);
+  measured.objects.put = async (input) => {
+    puts += 1;
+    if (puts === 1) throw new Error("storage_unavailable");
+    await originalPut(input);
+  };
+  assert.equal((await runPass(measured, provider, download)).action, "waiting");
+  assert.equal(measured.db.jobs[0]?.status, "ingesting");
+  assert.equal((await runPass(measured, provider, download)).action, "ready");
+  assert.equal(provider.posts(), 1);
+  assert.equal(measured.db.jobs[0]?.consumedCredits, 30);
+  assert.equal(measured.db.jobs[0]?.status, "ready");
+  assert.equal(measured.db.controls.paidSubmissionsUsed, 1);
+  assert.equal(measured.db.jobs[0]?.outputAttemptCount, 3);
+});
+
+test("three output failures stop without another post or another credit", async () => {
+  const ctx = harness();
+  await allowOne(ctx);
+  await postFurnitureGeneration(request("idem-key-0001", await png()), ctx.deps);
+  const provider = scripted([
+    response(202, { result: TASK_ID }),
+    succeededTask(30),
+    succeededTask(30),
+    succeededTask(30),
+  ]);
+  assert.equal((await runPass(ctx, provider, okGlb)).action, "submitted");
+  let downloads = 0;
+  const download = async () => {
+    downloads += 1;
+    return { kind: "timeout" as const };
+  };
+  assert.equal((await runPass(ctx, provider, download)).action, "waiting");
+  assert.equal((await runPass(ctx, provider, download)).action, "waiting");
+  assert.equal((await runPass(ctx, provider, download)).action, "needs_review");
+  assert.equal((await runPass(ctx, provider, download)).action, "idle");
+  assert.equal(downloads, GENERATION_OUTPUT_ATTEMPT_LIMIT);
+  assert.equal(provider.posts(), 1);
+  assert.equal(ctx.db.jobs[0]?.status, "needs_review");
+  assert.equal(ctx.db.jobs[0]?.errorClass, "ingest_failed");
+  assert.equal(ctx.db.jobs[0]?.errorCode, "download");
+  assert.equal(ctx.db.jobs[0]?.consumedCredits, 30);
+  assert.equal(ctx.db.jobs[0]?.attemptCount, 1);
+  assert.equal(ctx.db.controls.creditsConsumed, 30);
+  assert.equal(ctx.db.controls.paidSubmissionsUsed, 1);
+});
+
+test("a renewed claim covers the download and stops at the lease boundary", () => {
+  const db = createGenerationDatabase();
+  const now = 1_700_000_000_000;
+  const job = heldSucceededJob(now);
+  db.jobs.push(job);
+  db.controls.creditsConsumed = 30;
+  db.controls.paidSubmissionsUsed = 1;
+  const started = beginGenerationOutputAttempt(db, {
+    userId: job.userId,
+    jobId: job.jobId,
+    claimNonce: job.claimNonce ?? "",
+    nowMs: now,
+  });
+  assert.equal(started.ok, true);
+  if (!started.ok) return;
+  assert.equal(started.proceed, true);
+  if (!started.proceed) return;
+  assert.equal(job.claimExpiresAtMs, now + MESHY_CLAIM_LEASE_MS);
+  assert.equal(MESHY_DOWNLOAD_TIMEOUT_MS < MESHY_CLAIM_LEASE_MS, true);
+  const duringDownload = renewGenerationClaim(db, {
+    userId: job.userId,
+    jobId: job.jobId,
+    claimNonce: job.claimNonce ?? "",
+    nowMs: now + MESHY_DOWNLOAD_TIMEOUT_MS,
+  });
+  assert.equal(duringDownload.ok, true);
+  if (duringDownload.ok) {
+    assert.equal(job.claimExpiresAtMs, now + MESHY_DOWNLOAD_TIMEOUT_MS + MESHY_CLAIM_LEASE_MS);
+  }
+  const expired = renewGenerationClaim(db, {
+    userId: job.userId,
+    jobId: job.jobId,
+    claimNonce: job.claimNonce ?? "",
+    nowMs: (job.claimExpiresAtMs ?? 0),
+  });
+  assert.equal(expired.ok, false);
+  assert.equal(job.consumedCredits, 30);
+  assert.equal(job.attemptCount, 1);
+  assert.equal(db.controls.creditsConsumed, 30);
+  assert.equal(db.controls.paidSubmissionsUsed, 1);
+  job.claimExpiresAtMs = now + MESHY_CLAIM_LEASE_MS;
+  const deferred = deferGenerationOutput(db, {
+    userId: job.userId,
+    jobId: job.jobId,
+    claimNonce: job.claimNonce ?? "",
+    nowMs: now,
+    reason: "storage",
+  });
+  assert.equal(deferred.ok, true);
+  if (deferred.ok) assert.equal(deferred.job.status, "ingesting");
+  assert.equal(job.consumedCredits, 30);
 });
 
 test("an ambiguous create stays held after administrator recovery", async () => {
@@ -838,6 +1022,8 @@ test("routes keep recovery separate and the worker cannot post", () => {
   assert.doesNotMatch(discard, /duplicateChargeRisk|adminAuthorize|recover|paidSubmissionAuthorized/);
   const create = read("app/api/vibode/furniture-generations/route.ts");
   assert.match(create, /export const maxDuration = 60;/);
+  const save = read("app/api/vibode/furniture-generations/[jobId]/save/route.ts");
+  assert.match(save, /export const maxDuration = 300;/);
   const allowance = read("app/api/vibode/admin/furniture-generations/allowance/route.ts");
   assert.match(allowance, /postFurnitureGenerationAllowance/);
   const recover = read("app/api/vibode/admin/furniture-generations/[jobId]/recover/route.ts");

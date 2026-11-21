@@ -1,14 +1,14 @@
 /**
  * Provider GLB intake. Downloads stay on an injected transport.
- * The permanent 25 MiB ceiling and the existing GLB validator both apply.
- * A candidate is not a personal asset and is not saved here.
+ * Generation accepts the measured Meshy output ceiling. Manual uploads
+ * keep their own 25 MiB check. A candidate is not a personal asset.
  */
 
-import { PERSONAL_FURNITURE_BUCKET, PERSONAL_FURNITURE_GLB_MAX_BYTES } from "@/lib/vibode-furniture/asset-id";
+import { PERSONAL_FURNITURE_BUCKET } from "@/lib/vibode-furniture/asset-id";
 import type { PersonalGlbValidator } from "@/lib/vibode-furniture/store";
 
 import { meshyAssetUrlDecision } from "./meshy-task";
-import { MESHY_DOWNLOAD_TIMEOUT_MS } from "./policy";
+import { GENERATION_OUTPUT_MAX_BYTES, MESHY_DOWNLOAD_TIMEOUT_MS } from "./policy";
 
 export type GenerationDownload =
   | Readonly<{ kind: "ok"; status: number; body: Uint8Array; contentLength: number | null }>
@@ -52,6 +52,7 @@ export async function intakeProviderGlb(input: Readonly<{
   assetId: string;
   download: GenerationDownloader;
   validate: PersonalGlbValidator;
+  beforeValidate?: () => Promise<boolean>;
 }>): Promise<ProviderGlbIntake> {
   const decision = meshyAssetUrlDecision({
     url: input.url,
@@ -64,23 +65,26 @@ export async function intakeProviderGlb(input: Readonly<{
   const first = await input.download({
     url: input.url,
     timeoutMs: MESHY_DOWNLOAD_TIMEOUT_MS,
-    maxBytes: PERSONAL_FURNITURE_GLB_MAX_BYTES,
+    maxBytes: GENERATION_OUTPUT_MAX_BYTES,
   });
   const followed = await followOneRedirect(input, first);
   if (!followed.ok) return followed.result;
   const downloaded = followed.download;
   if (downloaded.kind === "too_large") {
-    return { ok: false, errorClass: "oversized_output", message: "This GLB is too large. The limit is 25 MB." };
+    return { ok: false, errorClass: "oversized_output", message: "This GLB is too large. The limit is 100 MB." };
   }
   if (downloaded.kind !== "ok" || downloaded.status !== 200) {
     return { ok: false, errorClass: "ingest_failed", message: "The generated model could not be downloaded." };
   }
   if (
     downloaded.body.byteLength <= 0 ||
-    downloaded.body.byteLength > PERSONAL_FURNITURE_GLB_MAX_BYTES ||
-    (downloaded.contentLength != null && downloaded.contentLength > PERSONAL_FURNITURE_GLB_MAX_BYTES)
+    downloaded.body.byteLength > GENERATION_OUTPUT_MAX_BYTES ||
+    (downloaded.contentLength != null && downloaded.contentLength > GENERATION_OUTPUT_MAX_BYTES)
   ) {
-    return { ok: false, errorClass: "oversized_output", message: "This GLB is too large. The limit is 25 MB." };
+    return { ok: false, errorClass: "oversized_output", message: "This GLB is too large. The limit is 100 MB." };
+  }
+  if (input.beforeValidate && !(await input.beforeValidate())) {
+    return { ok: false, errorClass: "ingest_failed", message: "The generated model could not be downloaded." };
   }
   const validated = await input.validate({ bytes: downloaded.body, assetId: input.assetId });
   if (!validated.accepted || validated.widthM == null || validated.heightM == null || validated.depthM == null) {
@@ -121,7 +125,7 @@ async function followOneRedirect(
   const second = await input.download({
     url: nextUrl,
     timeoutMs: MESHY_DOWNLOAD_TIMEOUT_MS,
-    maxBytes: PERSONAL_FURNITURE_GLB_MAX_BYTES,
+    maxBytes: GENERATION_OUTPUT_MAX_BYTES,
   });
   if (second.kind === "redirect") {
     return {

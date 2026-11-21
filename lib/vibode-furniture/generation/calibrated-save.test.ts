@@ -171,6 +171,7 @@ function readyJob(jobId: string, bytes: Uint8Array): GenerationJob {
     claimNonce: null,
     claimExpiresAtMs: null,
     attemptCount: 1,
+    outputAttemptCount: 0,
     providerContactedAtMs: NOW - 1000,
     absenceReconciledAtMs: null,
     resubmitAuthorized: false,

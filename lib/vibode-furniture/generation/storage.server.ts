@@ -8,10 +8,12 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { RUNTIME_ASSET_SIGNED_GET_EXPIRES_SEC } from "@/lib/afc-v2-runtime/runtime-furniture-assets";
+
 import type { BucketObjectStore } from "./contracts";
 import { generationObjectAllowed } from "./objects";
 
-const SIGNED_URL_SECONDS = 60;
+const IMAGE_SIGNED_URL_SECONDS = 60;
 
 const CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "model/gltf-binary"]);
 
@@ -42,7 +44,10 @@ export function createSupabaseGenerationObjectStore(supabase: SupabaseClient): B
     },
     async sign(input) {
       if (!generationObjectAllowed(input.bucket, input.path, input.ownerUserId)) return null;
-      const { data, error } = await supabase.storage.from(input.bucket).createSignedUrl(input.path, SIGNED_URL_SECONDS);
+      const { data, error } = await supabase.storage.from(input.bucket).createSignedUrl(
+        input.path,
+        input.path.endsWith(".glb") ? RUNTIME_ASSET_SIGNED_GET_EXPIRES_SEC : IMAGE_SIGNED_URL_SECONDS,
+      );
       const signedUrl = data?.signedUrl?.trim() ?? "";
       if (error || !signedUrl) return null;
       return signedUrl;

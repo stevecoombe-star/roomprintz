@@ -233,6 +233,29 @@ export type GenerationCommands = {
     nowMs: number;
   }>): Promise<GenerationCommandResult<{ status: string }>>;
   dropClaim(input: Readonly<{ userId: string; jobId: string; claimNonce: string; nowMs: number }>): Promise<void>;
+  beginOutputAttempt(input: Readonly<{
+    userId: string;
+    jobId: string;
+    claimNonce: string;
+    nowMs: number;
+  }>): Promise<
+    | { ok: true; proceed: true; attempts: number; status: "ingesting" }
+    | { ok: true; proceed: false; status: string }
+    | { ok: false; code: string }
+  >;
+  renewClaim(input: Readonly<{
+    userId: string;
+    jobId: string;
+    claimNonce: string;
+    nowMs: number;
+  }>): Promise<GenerationCommandResult<{ status: string }>>;
+  deferOutputAttempt(input: Readonly<{
+    userId: string;
+    jobId: string;
+    claimNonce: string;
+    nowMs: number;
+    reason: "download" | "storage";
+  }>): Promise<GenerationCommandResult<{ status: string }>>;
   markNeedsReview(input: Readonly<{
     userId: string;
     jobId: string;
