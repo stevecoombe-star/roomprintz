@@ -1,4 +1,7 @@
 import type { SceneObjectDefinition } from "@/lib/afc-v2-runtime/types";
+import type { ModelDimensions, ModelSizingMode } from "@/lib/vibode-stage/model-dimensions";
+
+import { effectivePersonalDimensions } from "./dimension-edit";
 
 import {
   isPersonalFurnitureAssetId,
@@ -17,6 +20,10 @@ export type PersonalFurnitureAssetRecord = Readonly<{
   authoredWidthM: number;
   authoredHeightM: number;
   authoredDepthM: number;
+  displayWidthM?: number | null;
+  displayHeightM?: number | null;
+  displayDepthM?: number | null;
+  sizingMode?: ModelSizingMode;
   sha256: string;
   byteSize: number;
   storageBucket: string;
@@ -31,6 +38,10 @@ export type PersonalFurnitureLibraryItem = Readonly<{
   authoredWidthM: number;
   authoredHeightM: number;
   authoredDepthM: number;
+  widthM: number;
+  heightM: number;
+  depthM: number;
+  sizingMode: ModelSizingMode;
   previewUrl: string | null;
 }>;
 
@@ -85,6 +96,7 @@ export function toPersonalLibraryItem(
   asset: PersonalFurnitureAssetRecord,
   previewUrl: string | null,
 ): PersonalFurnitureLibraryItem {
+  const dimensions = libraryDimensions(asset);
   return {
     assetId: asset.assetId,
     displayName: asset.displayName,
@@ -92,7 +104,20 @@ export function toPersonalLibraryItem(
     authoredWidthM: asset.authoredWidthM,
     authoredHeightM: asset.authoredHeightM,
     authoredDepthM: asset.authoredDepthM,
+    widthM: dimensions.widthM,
+    heightM: dimensions.heightM,
+    depthM: dimensions.depthM,
+    sizingMode: dimensions.sizingMode,
     previewUrl,
+  };
+}
+
+export function libraryDimensions(asset: PersonalFurnitureAssetRecord): ModelDimensions {
+  return effectivePersonalDimensions(asset) ?? {
+    widthM: asset.authoredWidthM,
+    heightM: asset.authoredHeightM,
+    depthM: asset.authoredDepthM,
+    sizingMode: "uniform",
   };
 }
 

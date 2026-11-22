@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 
 import type { SceneObjectDefinition } from "@/lib/afc-v2-runtime/types";
+import type { ModelAxisScale } from "@/lib/afc-v2-runtime/model-axis-scale";
 import type { RuntimeFurnitureAssetDefinition } from "@/lib/afc-v2-runtime/runtime-furniture-assets";
+import { explicitModelDimensions } from "@/lib/vibode-stage/model-dimensions";
 import { runtimeDefinitionLeaksProvenance } from "@/lib/vibode-stage/partner-runtime-assets";
 
 import {
@@ -13,6 +15,10 @@ import {
   personalFurniturePendingPath,
   personalFurniturePermanentPath,
 } from "./asset-id";
+import {
+  DIMENSION_RANGE_MESSAGE,
+  personalPlacementScale,
+} from "./dimension-edit";
 import {
   normalizePersonalCategory,
   normalizePersonalDisplayName,
@@ -304,7 +310,12 @@ export async function placePersonalFurniture(input: Readonly<{
   store: PersonalFurnitureStore;
   objects: PersonalObjectStore;
 }>): Promise<
-  | Readonly<{ ok: true; assetId: string; runtimeAsset: RuntimeFurnitureAssetDefinition }>
+  | Readonly<{
+    ok: true;
+    assetId: string;
+    runtimeAsset: RuntimeFurnitureAssetDefinition;
+    modelAxisScale?: ModelAxisScale;
+  }>
   | PersonalFurnitureFailure
 > {
   if (!isPersonalFurnitureAssetId(input.assetId)) {
@@ -318,7 +329,49 @@ export async function placePersonalFurniture(input: Readonly<{
   if (!signed) return failure(500, "PREVIEW_UNAVAILABLE", "This model could not be opened.");
   const runtimeAsset = runtimeFromAsset(asset, signed.signedUrl, signed.expiresAt);
   if (!runtimeAsset) return failure(500, "PREVIEW_UNAVAILABLE", "This model could not be opened.");
-  return { ok: true, assetId: asset.assetId, runtimeAsset };
+  const modelAxisScale = personalPlacementScale(asset);
+  return {
+    ok: true,
+    assetId: asset.assetId,
+    runtimeAsset,
+    ...(modelAxisScale ? { modelAxisScale } : {}),
+  };
+}
+
+export async function updatePersonalFurnitureDimensions(input: Readonly<{
+  userId: string;
+  assetId: string;
+  widthM: number;
+  heightM: number;
+  depthM: number;
+  sizingMode: string;
+  store: PersonalFurnitureStore;
+  objects: PersonalObjectStore;
+}>): Promise<
+  | Readonly<{ ok: true; item: PersonalFurnitureLibraryItem }>
+  | PersonalFurnitureFailure
+> {
+  if (!isPersonalFurnitureAssetId(input.assetId)) {
+    return failure(404, "ASSET_NOT_FOUND", "That model isn't in your library.");
+  }
+  const dimensions = explicitModelDimensions({
+    modelWidthM: input.widthM,
+    modelHeightM: input.heightM,
+    modelDepthM: input.depthM,
+    modelSizingMode: input.sizingMode,
+  });
+  if (!dimensions) {
+    return failure(400, "INVALID_DIMENSIONS", DIMENSION_RANGE_MESSAGE);
+  }
+  const updated = await input.store.updateDimensions(input.userId, input.assetId, dimensions);
+  if (updated === "invalid") {
+    return failure(400, "INVALID_DIMENSIONS", DIMENSION_RANGE_MESSAGE);
+  }
+  if (updated === "missing" || updated.userId !== input.userId) {
+    return failure(404, "ASSET_NOT_FOUND", "That model isn't in your library.");
+  }
+  const preview = await signPreview(input.objects, updated);
+  return { ok: true, item: toPersonalLibraryItem(updated, preview) };
 }
 
 export async function personalSceneAssetsAreOwned(input: Readonly<{

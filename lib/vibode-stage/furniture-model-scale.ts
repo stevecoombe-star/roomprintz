@@ -12,6 +12,7 @@
 import {
   composeImportAxisScale,
   isIdentityModelAxisScale,
+  isModelAxisScale,
   MODEL_AXIS_SCALE_IDENTITY,
   type ModelAxisScale,
 } from "@/lib/afc-v2-runtime/model-axis-scale";
@@ -133,6 +134,19 @@ export function expectedRenderedModelSize(input: Readonly<{
     heightM: input.intrinsic.heightM * input.importScale.y,
     depthM: input.intrinsic.depthM * input.importScale.z,
   };
+}
+
+/**
+ * A scale stored on the placed object wins. Catalog lookup remains for
+ * partner products that do not snapshot a scale.
+ */
+export function modelAxisScaleForPlacement(input: Readonly<{
+  persisted?: ModelAxisScale | null;
+  lookedUp?: ModelAxisScale | null;
+}>): ModelAxisScale {
+  if (input.persisted && isModelAxisScale(input.persisted)) return input.persisted;
+  if (input.lookedUp && isModelAxisScale(input.lookedUp)) return input.lookedUp;
+  return MODEL_AXIS_SCALE_IDENTITY;
 }
 
 export function furnitureAxisScaleOrUndefined(

@@ -244,6 +244,22 @@ class LibraryRecords implements PersonalFurnitureStore {
     return this.assets.filter((asset) => asset.userId === userId && asset.libraryVisibility === "active");
   }
 
+  async updateDimensions(
+    userId: string,
+    assetId: string,
+    dimensions: { widthM: number; heightM: number; depthM: number; sizingMode: "uniform" | "exact" },
+  ) {
+    const asset = this.assets.find((item) => (
+      item.userId === userId && item.assetId === assetId && item.libraryVisibility === "active"
+    ));
+    if (!asset) return "missing" as const;
+    asset.displayWidthM = dimensions.widthM;
+    asset.displayHeightM = dimensions.heightM;
+    asset.displayDepthM = dimensions.depthM;
+    asset.sizingMode = dimensions.sizingMode;
+    return { ...asset };
+  }
+
   async archiveAsset(userId: string, assetId: string) {
     const asset = this.assets.find((item) => item.userId === userId && item.assetId === assetId);
     if (!asset) return "missing" as const;

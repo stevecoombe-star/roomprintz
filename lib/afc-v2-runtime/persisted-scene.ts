@@ -11,6 +11,11 @@
  */
 
 import {
+  isIdentityModelAxisScale,
+  isModelAxisScale,
+  type ModelAxisScale,
+} from "./model-axis-scale";
+import {
   AFC_V2_RUNTIME_COORDINATE_SPACE,
   AFC_V2_USER_SIZE_DEFAULT,
   clampUserSizeMultiplier,
@@ -113,6 +118,7 @@ export function cloneSceneObjectIdentity(
     productId?: string;
     variantId?: string;
     userSizeMultiplier?: number;
+    modelAxisScale?: ModelAxisScale;
   } = {};
   const productId = typeof identity?.productId === "string" ? identity.productId.trim() : "";
   const variantId = typeof identity?.variantId === "string" ? identity.variantId.trim() : "";
@@ -122,7 +128,14 @@ export function cloneSceneObjectIdentity(
   if (productId) next.productId = productId;
   if (variantId) next.variantId = variantId;
   if (userSize !== AFC_V2_USER_SIZE_DEFAULT) next.userSizeMultiplier = userSize;
+  const scale = persistedModelAxisScale(identity?.modelAxisScale);
+  if (scale) next.modelAxisScale = scale;
   return next;
+}
+
+function persistedModelAxisScale(value: unknown): ModelAxisScale | null {
+  if (!isModelAxisScale(value) || isIdentityModelAxisScale(value)) return null;
+  return { x: value.x, y: value.y, z: value.z };
 }
 
 export function cloneSceneObjectDefinition(
@@ -277,6 +290,16 @@ function validateOptionalUserSizeMultiplier(
   return { ok: true, userSizeMultiplier };
 }
 
+function validateOptionalModelAxisScale(
+  item: Record<string, unknown>,
+): { ok: true; modelAxisScale?: ModelAxisScale } | SceneValidationFailure {
+  if (!("modelAxisScale" in item) || item.modelAxisScale == null) return { ok: true };
+  if (!isModelAxisScale(item.modelAxisScale)) {
+    return { ok: false, reason: "modelAxisScale must be a positive finite scale." };
+  }
+  return { ok: true, modelAxisScale: persistedModelAxisScale(item.modelAxisScale) ?? undefined };
+}
+
 export function validatePersistedSceneObjects(
   value: unknown,
 ): SceneObjectValidationResult {
@@ -319,6 +342,8 @@ export function validatePersistedSceneObjects(
     if (!variantId.ok) return variantId;
     const userSize = validateOptionalUserSizeMultiplier(item.userSizeMultiplier);
     if (!userSize.ok) return userSize;
+    const axisScale = validateOptionalModelAxisScale(item);
+    if (!axisScale.ok) return axisScale;
     seen.add(objectId);
     objects.push(cloneSceneObjectDefinition({
       objectId,
@@ -327,6 +352,7 @@ export function validatePersistedSceneObjects(
       productId: productId.id,
       variantId: variantId.id,
       userSizeMultiplier: userSize.userSizeMultiplier,
+      modelAxisScale: axisScale.modelAxisScale,
     }));
   }
   return { ok: true, objects };

@@ -21,6 +21,7 @@ import {
 } from "@/lib/afc-v2-runtime/furniture-assets";
 import { cloneFurnitureGlbScene } from "@/lib/afc-v2-runtime/furniture-glb-loader";
 import { isPersonalFurnitureAssetId } from "@/lib/vibode-furniture/asset-id";
+import { beginPlacementFootprint } from "@/lib/afc-v2-runtime/model-axis-scale";
 import type { EnsurePersonalFurniturePlacement } from "@/lib/vibode-furniture/place-client";
 import {
   createFurnitureTemplateCache,
@@ -1341,6 +1342,7 @@ function AfcProductionRoomViewerReady({
         descriptor,
         imported: cloneFurnitureGlbScene(template),
         metricScale: activeWorld.metricScale,
+        ...(definition.modelAxisScale ? { modelAxisScale: definition.modelAxisScale } : {}),
       });
       live.localAabb = measurePlacementLocalAabb(
         live.placement,
@@ -1587,7 +1589,17 @@ function AfcProductionRoomViewerReady({
             if (!templateCache.template(assetId)) {
               return instantiateFailed(PI5A_INSTANTIATE_FAILED_MESSAGE);
             }
-            return mountDescriptor(assetId, undefined, resolveAsset);
+            const scale = placed.modelAxisScale;
+            const endFootprint = scale ? beginPlacementFootprint({ assetId, scale }) : null;
+            try {
+              return mountDescriptor(
+                assetId,
+                scale ? { modelAxisScale: scale } : undefined,
+                resolveAsset,
+              );
+            } finally {
+              endFootprint?.();
+            }
           }
 
           const productId = identity?.productId?.trim() ?? "";

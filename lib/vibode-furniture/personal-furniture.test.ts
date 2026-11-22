@@ -32,6 +32,7 @@ import {
   listPersonalFurniture,
   personalSceneAssetsAreOwned,
   placePersonalFurniture,
+  updatePersonalFurnitureDimensions,
 } from "./operations";
 import { resolveMixedSceneRuntimeAssets, resolvePersonalRuntimeAssets } from "./runtime-resolve";
 import { personalSceneAssetOwnership } from "./scene-guard.server";
@@ -172,6 +173,22 @@ class MemoryRecords implements PersonalFurnitureStore {
 
   async listActive(userId: string) {
     return this.assets.filter((item) => item.userId === userId && item.libraryVisibility === "active");
+  }
+
+  async updateDimensions(
+    userId: string,
+    assetId: string,
+    dimensions: { widthM: number; heightM: number; depthM: number; sizingMode: "uniform" | "exact" },
+  ) {
+    const item = this.assets.find((asset) => (
+      asset.userId === userId && asset.assetId === assetId && asset.libraryVisibility === "active"
+    ));
+    if (!item) return "missing" as const;
+    item.displayWidthM = dimensions.widthM;
+    item.displayHeightM = dimensions.heightM;
+    item.displayDepthM = dimensions.depthM;
+    item.sizingMode = dimensions.sizingMode;
+    return { ...item };
   }
 
   async archiveAsset(userId: string, assetId: string) {
@@ -928,4 +945,124 @@ test("an unreferenced permanent object is replaced and a saved asset is not", as
   assert.equal(repeat.idempotent, true);
   assert.deepEqual(objects.bytes.get(reserved.permanent), saved);
   assert.equal(objects.permanentWrites, 2);
+});
+
+test("editing dimensions keeps the GLB, the credit-free record, and existing placements", async () => {
+  const records = new MemoryRecords();
+  const objects = new MemoryObjects();
+  const assetId = createPersonalFurnitureAssetId("dddddddd-dddd-4ddd-8ddd-dddddddddddd")!;
+  const path = personalFurniturePermanentPath(USER_A, assetId)!;
+  records.assets.push({
+    assetId,
+    userId: USER_A,
+    displayName: "Coffee table",
+    category: null,
+    origin: "uploaded",
+    authoredWidthM: 1,
+    authoredHeightM: 0.4,
+    authoredDepthM: 0.6,
+    sha256: "ab".repeat(32),
+    byteSize: 128,
+    storageBucket: PERSONAL_FURNITURE_BUCKET,
+    storageObjectPath: path,
+    libraryVisibility: "active",
+  });
+  objects.bytes.set(path, new Uint8Array([1, 2, 3, 4]));
+  const originalBytes = objects.bytes.get(path);
+  const existing = object(assetId, "obj-room");
+  const before = structuredClone(existing);
+  const unchanged = await placePersonalFurniture({
+    userId: USER_A,
+    assetId,
+    store: records,
+    objects,
+  });
+  assert.equal(unchanged.ok, true);
+  if (!unchanged.ok) return;
+  assert.equal(unchanged.modelAxisScale, undefined);
+
+  const saved = await updatePersonalFurnitureDimensions({
+    userId: USER_A,
+    assetId,
+    widthM: 2,
+    heightM: 0.8,
+    depthM: 1.2,
+    sizingMode: "uniform",
+    store: records,
+    objects,
+  });
+  assert.equal(saved.ok, true);
+  if (!saved.ok) return;
+  assert.equal(saved.item.widthM, 2);
+  assert.equal(saved.item.heightM, 0.8);
+  assert.equal(saved.item.depthM, 1.2);
+  assert.equal(saved.item.sizingMode, "uniform");
+  assert.equal(saved.item.authoredWidthM, 1);
+  assert.equal(records.assets[0]?.sha256, "ab".repeat(32));
+  assert.equal(records.assets[0]?.byteSize, 128);
+  assert.deepEqual(objects.bytes.get(path), originalBytes);
+  assert.deepEqual(existing, before);
+
+  const placed = await placePersonalFurniture({
+    userId: USER_A,
+    assetId,
+    store: records,
+    objects,
+  });
+  assert.equal(placed.ok, true);
+  if (!placed.ok) return;
+  assert.deepEqual(placed.modelAxisScale, { x: 2, y: 2, z: 2 });
+  const snapshot = { ...existing, modelAxisScale: placed.modelAxisScale };
+  const resized = await updatePersonalFurnitureDimensions({
+    userId: USER_A,
+    assetId,
+    widthM: 2,
+    heightM: 0.4,
+    depthM: 1.2,
+    sizingMode: "exact",
+    store: records,
+    objects,
+  });
+  assert.equal(resized.ok, true);
+  if (!resized.ok) return;
+  assert.equal(resized.item.sizingMode, "exact");
+  assert.deepEqual(snapshot.modelAxisScale, { x: 2, y: 2, z: 2 });
+  const next = await placePersonalFurniture({
+    userId: USER_A,
+    assetId,
+    store: records,
+    objects,
+  });
+  assert.equal(next.ok, true);
+  if (!next.ok) return;
+  assert.deepEqual(next.modelAxisScale, { x: 2, y: 1, z: 2 });
+  assert.equal(existing.modelAxisScale, undefined);
+
+  const foreign = await updatePersonalFurnitureDimensions({
+    userId: USER_B,
+    assetId,
+    widthM: 1,
+    heightM: 0.4,
+    depthM: 0.6,
+    sizingMode: "uniform",
+    store: records,
+    objects,
+  });
+  assert.equal(foreign.ok, false);
+  if (foreign.ok) return;
+  assert.equal(foreign.status, 404);
+  const invalid = await updatePersonalFurnitureDimensions({
+    userId: USER_A,
+    assetId,
+    widthM: 0,
+    heightM: 0.4,
+    depthM: 0.6,
+    sizingMode: "uniform",
+    store: records,
+    objects,
+  });
+  assert.equal(invalid.ok, false);
+  if (invalid.ok) return;
+  assert.equal(invalid.status, 400);
+  assert.equal(records.assets[0]?.displayWidthM, 2);
 });

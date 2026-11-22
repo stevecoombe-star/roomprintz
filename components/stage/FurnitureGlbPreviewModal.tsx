@@ -5,7 +5,20 @@ import { createPortal } from "react-dom";
 import * as THREE from "three";
 
 import { CandidateCalibrationForm } from "@/components/stage/CandidateCalibrationForm";
+import { LibraryDimensionEditor } from "@/components/stage/LibraryDimensionEditor";
 import type { CalibrationAxis } from "@/lib/vibode-furniture/generation/calibrate";
+import {
+  blurDimensionDraft,
+  dimensionDraftCanSave,
+  dimensionDraftSizingMode,
+  dimensionPreviewScale,
+  editDimensionDraft,
+  setDimensionDraftLocked,
+  setDimensionDraftUnit,
+  startDimensionDraft,
+  type DimensionDraft,
+} from "@/lib/vibode-furniture/dimension-edit";
+import { savePersonalFurnitureDimensions } from "@/lib/vibode-furniture/dimension-client";
 import { saveCalibratedCandidate } from "@/lib/vibode-furniture/generator/calibrated-save-client";
 import {
   buildCalibrationPreview,
@@ -32,10 +45,13 @@ import {
   previewOrbitLimits,
   previewSaveState,
   readPreviewGlb,
+  scaledPreviewPosition,
   type GlbPreviewRequest,
   type GroundedFurnitureBounds,
   type PreviewModalState,
 } from "@/lib/vibode-furniture/generator/preview";
+import type { ModelAxisScale } from "@/lib/afc-v2-runtime/model-axis-scale";
+import type { ModelDimensions } from "@/lib/vibode-stage/model-dimensions";
 
 const FOCUS =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-400";
@@ -49,6 +65,7 @@ export function FurnitureGlbPreviewModal({
   onClose,
   onCandidateSaved,
   onCandidateLibraryChanged,
+  onDimensionsSaved,
 }: {
   state: PreviewModalState;
   onClose: () => void;
@@ -58,6 +75,7 @@ export function FurnitureGlbPreviewModal({
     idempotent: boolean;
   }>) => void;
   onCandidateLibraryChanged?: () => void;
+  onDimensionsSaved?: (saved: Readonly<{ assetId: string; dimensions: ModelDimensions }>) => void;
 }) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -186,6 +204,8 @@ export function FurnitureGlbPreviewModal({
       onBackdrop={() => onClose()}
       onCandidateSaved={onCandidateSaved}
       onCandidateLibraryChanged={onCandidateLibraryChanged}
+      onDimensionsSaved={onDimensionsSaved}
+      onPreviewScale={(scale) => sessionRef.current?.setScale(scale)}
     />,
     document.body,
   );
@@ -205,6 +225,8 @@ export function FurnitureGlbPreviewDialog({
   onBackdrop,
   onCandidateSaved,
   onCandidateLibraryChanged,
+  onDimensionsSaved,
+  onPreviewScale,
 }: {
   session?: number;
   request: GlbPreviewRequest;
@@ -223,6 +245,8 @@ export function FurnitureGlbPreviewDialog({
     idempotent: boolean;
   }>) => void;
   onCandidateLibraryChanged?: () => void;
+  onDimensionsSaved?: (saved: Readonly<{ assetId: string; dimensions: ModelDimensions }>) => void;
+  onPreviewScale?: (scale: ModelAxisScale | null) => void;
 }) {
   const copy = previewCopy(request);
   const save = previewSaveState(request);
@@ -235,7 +259,15 @@ export function FurnitureGlbPreviewDialog({
   const [savePhase, setSavePhase] = useState<CalibrationSavePhase>("edit");
   const [notice, setNotice] = useState<string | null>(null);
   const [locked, setLocked] = useState(false);
+  const libraryDimensions = request.kind === "library" ? request.dimensions ?? null : null;
+  const [dimensionEditing, setDimensionEditing] = useState(false);
+  const [dimensionDraft, setDimensionDraft] = useState<DimensionDraft | null>(null);
+  const [savedDimensions, setSavedDimensions] = useState<ModelDimensions | null>(libraryDimensions);
+  const [dimensionNotice, setDimensionNotice] = useState<string | null>(null);
+  const [dimensionSaving, setDimensionSaving] = useState(false);
   const submitGate = useRef({ pending: false });
+  const onPreviewScaleRef = useRef(onPreviewScale);
+  onPreviewScaleRef.current = onPreviewScale;
   if (session !== seenSession) {
     setSeenSession(session);
     setAxis("height");
@@ -245,8 +277,25 @@ export function FurnitureGlbPreviewDialog({
     setSavePhase("edit");
     setNotice(null);
     setLocked(false);
+    setDimensionEditing(false);
+    setDimensionDraft(null);
+    setSavedDimensions(libraryDimensions);
+    setDimensionNotice(null);
+    setDimensionSaving(false);
     submitGate.current.pending = false;
   }
+  useEffect(() => {
+    const target = dimensionEditing && dimensionDraft ? dimensionDraft.current : savedDimensions;
+    if (!bounds || !target) {
+      onPreviewScaleRef.current?.(null);
+      return;
+    }
+    onPreviewScaleRef.current?.(dimensionPreviewScale({
+      widthM: bounds.widthM,
+      heightM: bounds.heightM,
+      depthM: bounds.depthM,
+    }, target));
+  }, [bounds, dimensionDraft, dimensionEditing, savedDimensions]);
   const calibration = request.kind === "candidate"
     ? buildCalibrationPreview({
       measured: bounds,
@@ -257,6 +306,47 @@ export function FurnitureGlbPreviewDialog({
     })
     : null;
   const saveEnabled = savePhase === "confirm" && calibration?.ready === true && !locked;
+  const shownDimensions = dimensionEditing && dimensionDraft ? dimensionDraft.current : savedDimensions;
+  const commitDimensions = () => {
+    if (request.kind !== "library" || !dimensionDraft || dimensionSaving) return;
+    if (!dimensionDraftCanSave(dimensionDraft)) return;
+    const assetId = request.assetId;
+    const widthM = dimensionDraft.current.widthM;
+    const heightM = dimensionDraft.current.heightM;
+    const depthM = dimensionDraft.current.depthM;
+    const sizingMode = dimensionDraftSizingMode(dimensionDraft);
+    setDimensionSaving(true);
+    setDimensionNotice(null);
+    void (async () => {
+      try {
+        const token = await readOwnerAccessToken();
+        if (!token) {
+          setDimensionNotice("Sign in again to save these dimensions.");
+          return;
+        }
+        const result = await savePersonalFurnitureDimensions({
+          assetId,
+          token,
+          widthM,
+          heightM,
+          depthM,
+          sizingMode,
+        });
+        if (!result.ok) {
+          setDimensionNotice(result.message);
+          return;
+        }
+        setSavedDimensions(result.dimensions);
+        setDimensionDraft(null);
+        setDimensionEditing(false);
+        onDimensionsSaved?.({ assetId, dimensions: result.dimensions });
+      } catch {
+        setDimensionNotice("The model dimensions could not be saved. Check the connection and try again.");
+      } finally {
+        setDimensionSaving(false);
+      }
+    })();
+  };
   const editCalibration = (apply: () => void) => {
     if (submitGate.current.pending || locked) return;
     apply();
@@ -384,11 +474,54 @@ export function FurnitureGlbPreviewDialog({
           ) : null}
         </div>
         <div data-preview-scroll className="max-h-[46%] shrink-0 overflow-y-auto border-t border-neutral-800 px-4 py-3">
-          <p className="text-xs text-neutral-200" data-preview-dimensions={bounds ? "ready" : "pending"}>
-            {bounds
-              ? (request.kind === "candidate" ? formatGeneratedDimensions(bounds) : formatFurnitureDimensions(bounds))
-              : "Dimensions appear after the model loads."}
+          <p className="text-xs text-neutral-200" data-preview-dimensions={bounds || shownDimensions ? "ready" : "pending"}>
+            {shownDimensions
+              ? formatFurnitureDimensions(shownDimensions)
+              : bounds
+                ? (request.kind === "candidate" ? formatGeneratedDimensions(bounds) : formatFurnitureDimensions(bounds))
+                : "Dimensions appear after the model loads."}
           </p>
+          {request.kind === "library" && savedDimensions && ready && !dimensionEditing ? (
+            <button
+              type="button"
+              onClick={() => {
+                const next = startDimensionDraft(savedDimensions);
+                if (!next) return;
+                setDimensionNotice(null);
+                setDimensionDraft(next);
+                setDimensionEditing(true);
+              }}
+              className={`${BUTTON} mt-3 border-neutral-500 bg-neutral-800 text-neutral-100`}
+            >
+              Edit dimensions
+            </button>
+          ) : null}
+          {dimensionEditing && dimensionDraft ? (
+            <LibraryDimensionEditor
+              draft={dimensionDraft}
+              saving={dimensionSaving}
+              notice={dimensionNotice}
+              onEdit={(axisName, value) => {
+                setDimensionDraft((current) => current ? editDimensionDraft(current, axisName, value) : current);
+              }}
+              onUnit={(unit) => {
+                setDimensionDraft((current) => current ? setDimensionDraftUnit(current, unit) : current);
+              }}
+              onLocked={(nextLocked) => {
+                setDimensionDraft((current) => current ? setDimensionDraftLocked(current, nextLocked) : current);
+              }}
+              onBlur={() => {
+                setDimensionDraft((current) => current ? blurDimensionDraft(current) : current);
+              }}
+              onSave={commitDimensions}
+              onCancel={() => {
+                if (dimensionSaving) return;
+                setDimensionEditing(false);
+                setDimensionDraft(null);
+                setDimensionNotice(null);
+              }}
+            />
+          ) : null}
           <p className="mt-1 text-[11px] leading-5 text-neutral-500">
             Drag to orbit. Scroll to zoom. Arrow keys orbit when the view is focused.
           </p>
@@ -442,6 +575,7 @@ type PreviewPhase =
 type PreviewSession = Readonly<{
   reset: () => void;
   nudge: (key: string) => boolean;
+  setScale: (scale: ModelAxisScale | null) => void;
   dispose: () => void;
 }>;
 
@@ -481,11 +615,13 @@ function mountFurniturePreview(input: {
   };
   const home = { ...orbit };
   const camera = new THREE.PerspectiveCamera(35, width / height, initial.near, initial.far);
+  let scaleSpan = 1;
+  const groundedPosition = input.model.position.clone();
   const apply = () => {
     const position = orbitPreviewPosition(initial.target, orbit);
     camera.position.set(position.x, position.y, position.z);
     camera.near = previewNear(orbit.distance);
-    camera.far = previewFar(orbit.distance);
+    camera.far = previewFar(orbit.distance) * scaleSpan;
     camera.lookAt(initial.target.x, initial.target.y, initial.target.z);
     camera.updateProjectionMatrix();
     light.position.set(position.x, position.y + orbit.distance * 0.2, position.z);
@@ -585,6 +721,16 @@ function mountFurniturePreview(input: {
       orbit.theta = home.theta;
       orbit.phi = home.phi;
       orbit.distance = home.distance;
+      apply();
+    },
+    setScale: (scale) => {
+      const next = scale && [scale.x, scale.y, scale.z].every((value) => Number.isFinite(value) && value > 0)
+        ? scale
+        : { x: 1, y: 1, z: 1 };
+      scaleSpan = Math.max(next.x, next.y, next.z, 1);
+      input.model.scale.set(next.x, next.y, next.z);
+      const position = scaledPreviewPosition(groundedPosition, next);
+      input.model.position.set(position.x, position.y, position.z);
       apply();
     },
     nudge: (key: string) => {

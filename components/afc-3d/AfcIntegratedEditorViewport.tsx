@@ -24,7 +24,7 @@ import {
   replaceScenePlacementFootprints,
   type ModelAxisScale,
 } from "@/lib/afc-v2-runtime/model-axis-scale";
-import { stageModelAxisScale } from "@/lib/vibode-stage/furniture-model-scale";
+import { modelAxisScaleForPlacement, stageModelAxisScale } from "@/lib/vibode-stage/furniture-model-scale";
 import { harmonizeMaterialCatalogFromStage } from "@/lib/vibode-stage/harmonize-materials";
 import {
   removeFurnitureRenderingVisible,
@@ -148,11 +148,14 @@ export function AfcIntegratedEditorViewport({
     return replaceScenePlacementFootprints(persistedScene.objects.map((object) => ({
       objectId: object.objectId,
       assetId: object.assetId,
-      scale: stagePlacementScale({
-        assetId: object.assetId,
-        variantId: object.variantId,
-        catalog: stageCatalog,
-        extraVariants: stageExtraVariants,
+      scale: modelAxisScaleForPlacement({
+        persisted: object.modelAxisScale,
+        lookedUp: stagePlacementScale({
+          assetId: object.assetId,
+          variantId: object.variantId,
+          catalog: stageCatalog,
+          extraVariants: stageExtraVariants,
+        }),
       }),
     })));
   }, [persistedScene.objects, stageCatalog, stageExtraVariants]);

@@ -270,7 +270,8 @@ export function StageMyFurniturePanel({
                       <div className="mt-0.5 text-[10px] text-neutral-500">
                         {[
                           item.category,
-                          `${item.authoredWidthM.toFixed(2)} × ${item.authoredDepthM.toFixed(2)} × ${item.authoredHeightM.toFixed(2)} m`,
+                          `${item.widthM.toFixed(2)} × ${item.depthM.toFixed(2)} × ${item.heightM.toFixed(2)} m`,
+                          item.sizingMode === "exact" ? "Custom proportions" : null,
                         ].filter(Boolean).join(" · ")}
                       </div>
                       <div className="mt-2 flex gap-1">
@@ -284,6 +285,12 @@ export function StageMyFurniturePanel({
                               url: item.previewUrl,
                               label: item.displayName,
                               assetId: item.assetId,
+                              dimensions: {
+                                widthM: item.widthM,
+                                heightM: item.heightM,
+                                depthM: item.depthM,
+                                sizingMode: item.sizingMode,
+                              },
                             });
                           }}
                           className={`rounded-md border border-neutral-800 px-2 py-1 text-[11px] text-neutral-300 ${FOCUS}`}
@@ -325,6 +332,15 @@ export function StageMyFurniturePanel({
         onClose={closePreview}
         onCandidateLibraryChanged={() => {
           void load();
+        }}
+        onDimensionsSaved={({ assetId, dimensions }) => {
+          setItems((current) => current.map((item) => (
+            item.assetId === assetId
+              ? { ...item, ...dimensions }
+              : item
+          )));
+          setError(null);
+          setMessage("Dimensions saved. Future placements use this size.");
         }}
         onCandidateSaved={(saved) => {
           if (preview.open && preview.request.kind === "candidate") {

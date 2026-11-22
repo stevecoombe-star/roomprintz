@@ -29,6 +29,7 @@ import {
   FURNITURE_MODEL_SCALE_ASSET_TABLE,
   FURNITURE_MODEL_SCALE_VARIANT_TABLE,
   furnitureAxisScaleOrUndefined,
+  modelAxisScaleForPlacement,
   stageAssetDimensionFromRow,
   stageModelAxisScale,
   stageVariantDimensionFromRow,
@@ -625,9 +626,10 @@ function assemblePayload(input: Readonly<{
   | Readonly<{ ok: false; reason: string }> {
   const objects = input.scene.objects.map((object) => {
     const glbUrl = input.glbUrls.get(object.assetId) ?? "";
-    const modelAxisScale = furnitureAxisScaleOrUndefined(
-      input.modelAxisScales.get(object.objectId),
-    );
+    const modelAxisScale = furnitureAxisScaleOrUndefined(modelAxisScaleForPlacement({
+      persisted: object.modelAxisScale,
+      lookedUp: input.modelAxisScales.get(object.objectId),
+    }));
     return {
       objectId: object.objectId,
       assetId: object.assetId,
@@ -1002,9 +1004,10 @@ export async function inspectVibodeThumbnailContent(
   });
   if (!foreground.ok) return foreground.failure;
   const objects = placed.scene.objects.map((object) => {
-    const modelAxisScale = furnitureAxisScaleOrUndefined(
-      scaled.modelAxisScales.get(object.objectId),
-    );
+    const modelAxisScale = furnitureAxisScaleOrUndefined(modelAxisScaleForPlacement({
+      persisted: object.modelAxisScale,
+      lookedUp: scaled.modelAxisScales.get(object.objectId),
+    }));
     return {
       objectId: object.objectId,
       assetId: object.assetId,

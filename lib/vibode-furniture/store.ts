@@ -1,3 +1,5 @@
+import type { ModelDimensions } from "@/lib/vibode-stage/model-dimensions";
+
 import type { PersonalFurnitureAssetRecord, PersonalFurnitureUploadRecord } from "./library";
 
 export type PersonalFurnitureStore = Readonly<{
@@ -24,6 +26,11 @@ export type PersonalFurnitureStore = Readonly<{
   insertAsset: (asset: PersonalFurnitureAssetRecord) => Promise<"inserted" | "exists">;
   listActive: (userId: string) => Promise<readonly PersonalFurnitureAssetRecord[]>;
   archiveAsset: (userId: string, assetId: string) => Promise<"archived" | "missing">;
+  updateDimensions: (
+    userId: string,
+    assetId: string,
+    dimensions: ModelDimensions,
+  ) => Promise<PersonalFurnitureAssetRecord | "missing" | "invalid">;
   ownedAssetIds: (userId: string, assetIds: readonly string[]) => Promise<ReadonlySet<string>>;
 }>;
 

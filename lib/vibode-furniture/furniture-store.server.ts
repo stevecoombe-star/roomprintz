@@ -25,7 +25,7 @@ import type { PersonalRuntimeRow } from "./runtime-resolve";
 import type { PersonalFurnitureStore, PersonalObjectStore } from "./store";
 
 const ASSET_COLUMNS =
-  "asset_id, user_id, display_name, category, origin, authored_width_m, authored_height_m, authored_depth_m, sha256, byte_size, storage_bucket, storage_object_path, library_visibility";
+  "asset_id, user_id, display_name, category, origin, authored_width_m, authored_height_m, authored_depth_m, display_width_m, display_height_m, display_depth_m, dimension_sizing_mode, sha256, byte_size, storage_bucket, storage_object_path, library_visibility";
 
 const UPLOAD_COLUMNS =
   "upload_id, user_id, asset_id, storage_bucket, pending_object_path, permanent_object_path, status, result_asset_id, expires_at, updated_at";
@@ -244,6 +244,27 @@ function createRecordStore(supabase: SupabaseClient): PersonalFurnitureStore {
       const owned = await this.findOwnedAsset(userId, assetId);
       return owned?.libraryVisibility === "archived" ? "archived" : "missing";
     },
+    async updateDimensions(userId, assetId, dimensions) {
+      if (!isPersonalFurnitureAssetId(assetId)) return "missing";
+      const { data, error } = await supabase
+        .from("vibode_furniture_assets")
+        .update({
+          display_width_m: dimensions.widthM,
+          display_height_m: dimensions.heightM,
+          display_depth_m: dimensions.depthM,
+          dimension_sizing_mode: dimensions.sizingMode,
+        })
+        .eq("user_id", userId)
+        .eq("asset_id", assetId)
+        .eq("library_visibility", "active")
+        .select(ASSET_COLUMNS)
+        .maybeSingle();
+      if (error) {
+        if (error.code === "23514") return "invalid";
+        throw new Error("Failed to update furniture dimensions.");
+      }
+      return mapAsset(data) ?? "missing";
+    },
     async ownedAssetIds(userId, assetIds) {
       const ids = assetIds.filter(isPersonalFurnitureAssetId);
       if (ids.length === 0) return new Set<string>();
@@ -333,6 +354,12 @@ function mapRuntimeRow(value: unknown, ownerUserId: string): PersonalRuntimeRow 
   };
 }
 
+function nullableMetres(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function mapAsset(value: unknown): PersonalFurnitureAssetRecord | null {
   if (!value || typeof value !== "object") return null;
   const row = value as Record<string, unknown>;
@@ -361,6 +388,10 @@ function mapAsset(value: unknown): PersonalFurnitureAssetRecord | null {
     authoredWidthM: Number(row.authored_width_m),
     authoredHeightM: Number(row.authored_height_m),
     authoredDepthM: Number(row.authored_depth_m),
+    displayWidthM: nullableMetres(row.display_width_m),
+    displayHeightM: nullableMetres(row.display_height_m),
+    displayDepthM: nullableMetres(row.display_depth_m),
+    sizingMode: row.dimension_sizing_mode === "exact" ? "exact" : "uniform",
     sha256: row.sha256,
     byteSize: Number(row.byte_size),
     storageBucket: PERSONAL_FURNITURE_BUCKET,

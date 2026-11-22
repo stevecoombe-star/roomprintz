@@ -4,6 +4,11 @@
  */
 
 import {
+  isIdentityModelAxisScale,
+  isModelAxisScale,
+  type ModelAxisScale,
+} from "@/lib/afc-v2-runtime/model-axis-scale";
+import {
   parseRuntimeFurnitureAssetDefinition,
   type RuntimeFurnitureAssetDefinition,
 } from "@/lib/afc-v2-runtime/runtime-furniture-assets";
@@ -19,6 +24,7 @@ export type PersonalPlacementClientResult =
     ok: true;
     assetId: string;
     runtimeAsset: RuntimeFurnitureAssetDefinition;
+    modelAxisScale?: ModelAxisScale;
   }>
   | Readonly<{
     ok: false;
@@ -55,6 +61,7 @@ export async function fetchPersonalFurniturePlacement(input: Readonly<{
     errorCode?: string;
     assetId?: string;
     runtimeAsset?: unknown;
+    modelAxisScale?: unknown;
   } | null;
   if (!response.ok || !payload || payload.ok !== true) {
     return {
@@ -71,5 +78,25 @@ export async function fetchPersonalFurniturePlacement(input: Readonly<{
       error: "This furniture model is temporarily unavailable.",
     };
   }
-  return { ok: true, assetId: input.assetId, runtimeAsset };
+  const modelAxisScale = parsePlacementScale(payload.modelAxisScale);
+  if (modelAxisScale === "invalid") {
+    return {
+      ok: false,
+      errorCode: "RUNTIME_DEFINITION_UNAVAILABLE",
+      error: "This furniture model is temporarily unavailable.",
+    };
+  }
+  return {
+    ok: true,
+    assetId: input.assetId,
+    runtimeAsset,
+    ...(modelAxisScale ? { modelAxisScale } : {}),
+  };
+}
+
+function parsePlacementScale(value: unknown): ModelAxisScale | null | "invalid" {
+  if (value == null) return null;
+  if (!isModelAxisScale(value)) return "invalid";
+  if (isIdentityModelAxisScale(value)) return null;
+  return { x: value.x, y: value.y, z: value.z };
 }

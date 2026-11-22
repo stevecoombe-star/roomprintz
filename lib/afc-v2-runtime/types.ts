@@ -93,6 +93,12 @@ export type RuntimeSceneObject = Readonly<{
   productId?: string;
   variantId?: string;
   userSizeMultiplier?: number;
+  /**
+   * Physical scale captured when this object was placed.
+   * Width is X, height is Y, and depth is Z. Absent means identity,
+   * so an existing room keeps the size it was given.
+   */
+  modelAxisScale?: Readonly<{ x: number; y: number; z: number }>;
 }>;
 
 export type FurnitureAssetDefinition = Readonly<{
@@ -107,6 +113,7 @@ export type SceneObjectProductIdentity = Readonly<{
   productId?: string;
   variantId?: string;
   userSizeMultiplier?: number;
+  modelAxisScale?: Readonly<{ x: number; y: number; z: number }>;
 }>;
 
 export type SceneObjectDefinition = Readonly<{
@@ -116,6 +123,7 @@ export type SceneObjectDefinition = Readonly<{
   productId?: string;
   variantId?: string;
   userSizeMultiplier?: number;
+  modelAxisScale?: Readonly<{ x: number; y: number; z: number }>;
 }>;
 
 export type SerializedRuntimeScene = Readonly<{

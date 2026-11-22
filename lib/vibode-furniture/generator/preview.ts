@@ -9,6 +9,7 @@
 import * as THREE from "three";
 
 import { parseFurnitureGlb } from "@/lib/afc-v2-runtime/furniture-glb-loader";
+import type { ModelDimensions } from "@/lib/vibode-stage/model-dimensions";
 
 export const FURNITURE_PREVIEW_FIXTURE_URL =
   "/afc-v2-runtime/test-fixtures/pi5d-lounge-chair.glb";
@@ -22,7 +23,13 @@ const PREVIEW_PHI_MAX = Math.PI - 0.18;
 
 export type GlbPreviewRequest =
   | Readonly<{ kind: "fixture"; label: string }>
-  | Readonly<{ kind: "library"; label: string; url: string; assetId: string }>
+  | Readonly<{
+    kind: "library";
+    label: string;
+    url: string;
+    assetId: string;
+    dimensions?: ModelDimensions;
+  }>
   | Readonly<{ kind: "candidate"; label: string; url: string; jobId: string }>;
 
 export type PreviewModalState =
@@ -209,6 +216,23 @@ export function groundAlignPreviewModel(root: THREE.Object3D): GroundedFurniture
     minY: grounded.min.y,
     centerX: groundedCenter.x,
     centerZ: groundedCenter.z,
+  };
+}
+
+/**
+ * Scale a ground-aligned preview around the world origin.
+ * The unscaled position already puts the base on the floor and the
+ * footprint on the centre, so multiplying that position by the axis
+ * scale keeps both.
+ */
+export function scaledPreviewPosition(
+  grounded: PreviewVec3,
+  scale: PreviewVec3,
+): PreviewVec3 {
+  return {
+    x: grounded.x * scale.x,
+    y: grounded.y * scale.y,
+    z: grounded.z * scale.z,
   };
 }
 
