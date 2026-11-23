@@ -67,6 +67,11 @@ export type LiveRuntimeSceneObject = {
   authoredImportOffset: THREE.Vector3;
   /** Variant physical scale. Identity leaves the loaded GLB at its native size. */
   modelAxisScale: ModelAxisScale;
+  /**
+   * Scale captured on the placed object. Catalog lookup is not copied here,
+   * so a partner product can still follow its current dimensions.
+   */
+  placementModelAxisScale?: ModelAxisScale;
 };
 
 export type RuntimeSceneCollection = Map<string, LiveRuntimeSceneObject>;
@@ -213,6 +218,9 @@ export function mountLiveRuntimeSceneObject(input: Readonly<{
     authoredImportScale,
     authoredImportOffset,
     modelAxisScale,
+    placementModelAxisScale: input.modelAxisScale
+      ? { x: input.modelAxisScale.x, y: input.modelAxisScale.y, z: input.modelAxisScale.z }
+      : undefined,
   };
 }
 
@@ -288,6 +296,7 @@ export function serializeRuntimeScene(
       productId: object.productId,
       variantId: object.variantId,
       userSizeMultiplier: object.userSizeMultiplier,
+      modelAxisScale: object.placementModelAxisScale,
     })),
   };
 }
