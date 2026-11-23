@@ -338,6 +338,24 @@ export async function placePersonalFurniture(input: Readonly<{
   };
 }
 
+export function personalFurniturePlaceResponse(placed: Readonly<{
+  assetId: string;
+  runtimeAsset: RuntimeFurnitureAssetDefinition;
+  modelAxisScale?: ModelAxisScale;
+}>): Readonly<{
+  ok: true;
+  assetId: string;
+  runtimeAsset: RuntimeFurnitureAssetDefinition;
+  modelAxisScale?: ModelAxisScale;
+}> {
+  return {
+    ok: true,
+    assetId: placed.assetId,
+    runtimeAsset: placed.runtimeAsset,
+    ...(placed.modelAxisScale ? { modelAxisScale: placed.modelAxisScale } : {}),
+  };
+}
+
 export async function updatePersonalFurnitureDimensions(input: Readonly<{
   userId: string;
   assetId: string;

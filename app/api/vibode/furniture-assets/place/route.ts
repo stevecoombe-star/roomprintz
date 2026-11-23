@@ -7,7 +7,10 @@ import {
 } from "@/lib/afc-v2-production/production-http";
 import { authorizeOwnedVersionScene } from "@/lib/afc-v2-runtime/scene-persistence.server";
 import { personalFurnitureServices } from "@/lib/vibode-furniture/furniture-store.server";
-import { placePersonalFurniture } from "@/lib/vibode-furniture/operations";
+import {
+  personalFurniturePlaceResponse,
+  placePersonalFurniture,
+} from "@/lib/vibode-furniture/operations";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,11 +62,7 @@ export async function POST(request: Request) {
         errorCode: placed.errorCode,
       }, placed.status);
     }
-    return productionAfcJson({
-      ok: true,
-      assetId: placed.assetId,
-      runtimeAsset: placed.runtimeAsset,
-    }, 200);
+    return productionAfcJson(personalFurniturePlaceResponse(placed), 200);
   } catch {
     return productionAfcJson({
       ok: false,
