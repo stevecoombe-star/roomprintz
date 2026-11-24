@@ -12,6 +12,14 @@ import type {
   TesterJobPage,
   TesterPage,
 } from "@/lib/vibode-furniture/generation/admin-dashboard";
+import {
+  accountAllowanceHealth,
+  creditUtilization,
+  formatUtilizationPercent,
+  generationCapacity,
+  paidSubmissionUtilization,
+  type Utilization,
+} from "@/lib/vibode-furniture/generation/budget-health";
 
 export type FurnitureDashboardPhase = "loading" | "error" | "ready";
 
@@ -129,6 +137,7 @@ export function FurnitureGenerationDashboardView(props: FurnitureGenerationDashb
 
         {props.phase === "ready" && props.overview ? (
           <>
+            <CapacitySummary overview={props.overview} />
             <Overview overview={props.overview} />
             <ProductionStatus overview={props.overview} />
             <BudgetSection
@@ -229,6 +238,68 @@ function Overview({ overview }: { overview: DashboardOverview }) {
   );
 }
 
+function CapacitySummary({ overview }: { overview: DashboardOverview }) {
+  const capacity = generationCapacity(overview);
+  const credits = creditUtilization(overview);
+  const paid = paidSubmissionUtilization(overview);
+  return (
+    <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4" aria-label="Generation capacity">
+      <h2 className="text-base font-medium text-slate-100">Generation capacity</h2>
+      <p className="mt-2 text-sm text-slate-100">{capacity.headline}</p>
+      <p className="mt-1 text-sm text-slate-300">{capacity.consequence}</p>
+      <p className="mt-3 text-sm text-slate-200">
+        Estimated additional generations {formatCount(capacity.estimatedGenerations)}.
+        Credit budget could allow {formatCount(capacity.creditGenerations)}.
+        Paid attempts could allow {formatCount(capacity.paidAttemptGenerations)}.
+      </p>
+      <p className="mt-1 text-xs text-slate-400">
+        Estimate only. The certified default reservation is {formatCount(capacity.creditsPerGeneration)} credits.
+        A Meshy generation may not cost exactly that.
+      </p>
+      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <UtilizationCard
+          title="Global credit budget"
+          item={credits}
+          detail={`Consumed ${formatCount(overview.creditsConsumed)} · Reserved ${formatCount(overview.creditsReserved)} · Remaining ${formatCount(overview.remainingCreditBudget)}`}
+        />
+        <UtilizationCard
+          title="Paid submissions"
+          item={paid}
+          detail={`Authorized ${formatCount(overview.paidSubmissionsAuthorized)} · Used ${formatCount(overview.paidSubmissionsUsed)} · Remaining ${formatCount(overview.paidSubmissionsAuthorized - overview.paidSubmissionsUsed)}`}
+        />
+        <UtilizationCard
+          title="Estimated generation capacity"
+          item={capacityHealth(credits, paid)}
+          summary={capacityLine(capacity.estimatedGenerations, credits, paid)}
+          detail="The smaller of the remaining credit capacity and the remaining paid attempts. Reserved credits already reduce the credit capacity."
+        />
+      </div>
+      <p className="mt-3 text-xs text-slate-400">{capacity.concurrency}</p>
+      <p className="mt-1 text-xs text-slate-400">{capacity.worker}</p>
+    </section>
+  );
+}
+
+function capacityHealth(credits: Utilization, paid: Utilization): Utilization {
+  const rank: Record<Utilization["kind"], number> = {
+    unavailable: 4,
+    exceeded: 3,
+    exhausted: 2,
+    warning: 1,
+    healthy: 0,
+  };
+  if (rank[credits.kind] !== rank[paid.kind]) {
+    return rank[credits.kind] > rank[paid.kind] ? credits : paid;
+  }
+  return (paid.percent ?? 0) > (credits.percent ?? 0) ? paid : credits;
+}
+
+function capacityLine(estimated: number, credits: Utilization, paid: Utilization): string {
+  const binding = capacityHealth(credits, paid);
+  const percent = binding.percent == null ? binding.label : formatUtilizationPercent(binding.percent);
+  return `${formatCount(estimated)} estimated — ${percent} — ${binding.label}`;
+}
+
 function ProductionStatus({ overview }: { overview: DashboardOverview }) {
   const rows = [
     ["Database live_enabled", overview.liveEnabled ? "On" : "Off"],
@@ -272,32 +343,20 @@ function BudgetSection(props: {
   events: BudgetEventRecord[];
   historyMessage: string | null;
 }) {
-  const remainingPaid = props.overview.paidSubmissionsAuthorized - props.overview.paidSubmissionsUsed;
-  const estimated = estimatedAdditionalGenerations(props.overview);
+  const exposure = props.overview.unresolvedProviderCreditExposure;
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4" aria-label="Beta budget">
       <h2 className="text-base font-medium text-slate-100">Beta budget</h2>
       <p className="mt-1 text-xs text-slate-400">
         This is Vibode&apos;s internal operating budget. Saving it does not change the Meshy API key monthly limit or buy credits.
+        Meshy API key limits are managed separately in the{" "}
+        <a href="https://www.meshy.ai/developers" target="_blank" rel="noreferrer" className="text-slate-200 underline decoration-slate-600 underline-offset-2 hover:text-emerald-200">
+          Meshy Developer Platform
+        </a>.
       </p>
-      <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {([
-          ["Global credit ceiling", props.overview.creditCeiling],
-          ["Credits consumed", props.overview.creditsConsumed],
-          ["Credits reserved", props.overview.creditsReserved],
-          ["Remaining available credit budget", props.overview.remainingCreditBudget],
-          ["Paid submissions authorized", props.overview.paidSubmissionsAuthorized],
-          ["Paid submissions used", props.overview.paidSubmissionsUsed],
-          ["Remaining paid submissions", remainingPaid],
-          ["Estimated additional generations", estimated],
-          ["Unresolved provider-credit exposure", props.overview.unresolvedProviderCreditExposure],
-        ] as const).map(([label, value]) => (
-          <div key={label} className="rounded-xl border border-slate-800 px-3 py-2">
-            <dt className="text-xs text-slate-400">{label}</dt>
-            <dd className={`mt-1 text-sm ${typeof value === "number" && value < 0 ? "text-amber-200" : "text-slate-100"}`}>{formatCount(value)}</dd>
-          </div>
-        ))}
-      </dl>
+      <p className={`mt-3 text-sm ${exposure > 0 ? "text-amber-200" : "text-slate-300"}`}>
+        Unresolved provider-credit exposure {formatCount(exposure)}.
+      </p>
       <p className="mt-3 text-xs text-slate-400">
         Global generation admission is {props.overview.liveEnabled ? "on" : "off"}. Concurrency stays at 1.
         Consumed credits stay at {formatCount(props.overview.creditsConsumed)} and paid attempts already used stay at {formatCount(props.overview.paidSubmissionsUsed)}.
@@ -363,12 +422,6 @@ function BudgetSection(props: {
       </div>
     </section>
   );
-}
-
-function estimatedAdditionalGenerations(overview: DashboardOverview): number {
-  const credits = Math.max(0, Math.floor(overview.remainingCreditBudget / 30));
-  const attempts = Math.max(0, overview.paidSubmissionsAuthorized - overview.paidSubmissionsUsed);
-  return Math.min(credits, attempts);
 }
 
 function TesterSection(props: {
@@ -468,6 +521,7 @@ function TesterSection(props: {
                 <th className="px-2 py-2 font-medium">Reserved</th>
                 <th className="px-2 py-2 font-medium">Consumed</th>
                 <th className="px-2 py-2 font-medium">Remaining</th>
+                <th className="px-2 py-2 font-medium">Allowance health</th>
                 <th className="px-2 py-2 font-medium">Updated</th>
                 <th className="px-2 py-2 font-medium">History</th>
               </tr>
@@ -683,13 +737,16 @@ function TesterRow({
         <div className="mt-1 font-mono text-[11px] text-slate-500">{tester.userId}</div>
       </td>
       <td className="px-2 py-2 align-top text-slate-200">{classificationLabel(tester.classification)}</td>
-      <td className={`px-2 py-2 align-top font-medium ${tester.enabled ? "text-emerald-300" : "text-rose-300"}`}>
+      <td className={`px-2 py-2 align-top font-medium ${tester.enabled ? "text-slate-100" : "text-slate-300"}`}>
         {tester.enabled ? "Enabled" : "Disabled"}
       </td>
       <td className="px-2 py-2 align-top">{formatCount(tester.authorizedGenerations)}</td>
       <td className="px-2 py-2 align-top">{formatCount(tester.reservedGenerations)}</td>
       <td className="px-2 py-2 align-top">{formatCount(tester.consumedGenerations)}</td>
       <td className="px-2 py-2 align-top">{formatCount(tester.remainingGenerations)}</td>
+      <td className="min-w-40 px-2 py-2 align-top">
+        <AccountMeter tester={tester} />
+      </td>
       <td className="px-2 py-2 align-top">
         <time dateTime={tester.updatedAt}>{formatTimestamp(tester.updatedAt)}</time>
       </td>
@@ -1015,6 +1072,82 @@ function profileLabel(job: GenerationJobRecord): string {
   return [job.operation, job.profile.geometryResolution, job.profile.textureResolution, texture]
     .filter((part): part is string => Boolean(part))
     .join(" · ");
+}
+
+function UtilizationCard(props: {
+  title: string;
+  item: Utilization;
+  detail: string;
+  summary?: string;
+}) {
+  const percent = props.item.percent == null ? null : formatUtilizationPercent(props.item.percent);
+  const summary = props.summary ?? `${formatCount(props.item.used)} / ${formatCount(props.item.limit)}${percent ? ` — ${percent}` : ""} — ${props.item.label}`;
+  return (
+    <article className="rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-3">
+      <h3 className="text-xs text-slate-400">{props.title}</h3>
+      <p className={`mt-2 text-sm ${healthTextClass(props.item.kind, false)}`}>{summary}</p>
+      <UtilizationBar item={props.item} label={props.title} neutral={false} />
+      <p className="mt-2 text-xs text-slate-400">{props.detail}</p>
+    </article>
+  );
+}
+
+function AccountMeter({ tester }: { tester: BetaTesterRecord }) {
+  const health = accountAllowanceHealth(tester);
+  const percent = health.utilization.percent == null ? null : formatUtilizationPercent(health.utilization.percent);
+  const summary = `${formatCount(health.utilization.used)} / ${formatCount(health.utilization.limit)}${percent ? ` — ${percent}` : ""} — ${health.statusLabel}`;
+  return (
+    <div>
+      <p className={`text-xs ${healthTextClass(health.utilization.kind, health.disabled)}`}>{summary}</p>
+      <UtilizationBar
+        item={health.utilization}
+        label="Allowance health"
+        neutral={health.disabled}
+        statusLabel={health.statusLabel}
+      />
+    </div>
+  );
+}
+
+function UtilizationBar(props: {
+  item: Utilization;
+  label: string;
+  neutral: boolean;
+  statusLabel?: string;
+}) {
+  const percentText = props.item.percent == null ? props.item.label : formatUtilizationPercent(props.item.percent);
+  const status = props.statusLabel ?? props.item.label;
+  return (
+    <div
+      className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800"
+      role="meter"
+      aria-label={props.label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={props.item.barPercent}
+      aria-valuetext={`${percentText}. ${status}.`}
+    >
+      <div
+        className={`h-full ${props.neutral ? "bg-slate-500" : healthBarClass(props.item.kind)}`}
+        style={{ width: `${props.item.barPercent}%` }}
+      />
+    </div>
+  );
+}
+
+function healthTextClass(kind: Utilization["kind"], disabled: boolean): string {
+  if (disabled) return "text-slate-300";
+  if (kind === "healthy") return "text-emerald-200";
+  if (kind === "warning") return "text-amber-200";
+  if (kind === "exhausted" || kind === "exceeded") return "text-rose-200";
+  return "text-slate-300";
+}
+
+function healthBarClass(kind: Utilization["kind"]): string {
+  if (kind === "healthy") return "bg-emerald-400/80";
+  if (kind === "warning") return "bg-amber-400/90";
+  if (kind === "exhausted" || kind === "exceeded") return "bg-rose-400/90";
+  return "bg-slate-500";
 }
 
 function formatCount(value: number): string {

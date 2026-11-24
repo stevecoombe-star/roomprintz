@@ -191,6 +191,77 @@ test("a removed account shows retained audit events without a tester allowance",
   assert.match(html, /Access enabled to disabled/);
 });
 
+test("capacity health shows the blocking limit and refreshes from the saved budget", () => {
+  const blocked = render(view({
+    phase: "ready",
+    overview: overview({
+      liveEnabled: true,
+      generationAdmissionEnabled: true,
+      creditCeiling: 500,
+      creditsConsumed: 100,
+      creditsReserved: 30,
+      remainingCreditBudget: 370,
+      paidSubmissionsAuthorized: 20,
+      paidSubmissionsUsed: 20,
+    }),
+    testers: testers(),
+  }));
+  assert.match(blocked, /Generation capacity/);
+  assert.match(blocked, /Paid attempts exhausted/);
+  assert.match(blocked, /New generations cannot be admitted until more paid attempts are authorized/);
+  assert.match(blocked, /130 \/ 500 — 26% — Healthy/);
+  assert.match(blocked, /20 \/ 20 — 100% — Exhausted/);
+  assert.match(blocked, /0 estimated — 100% — Exhausted/);
+  assert.match(blocked, /Current occupancy is not reported/);
+  assert.match(blocked, /Worker configuration: Not verified from this application/);
+  assert.match(blocked, /https:\/\/www\.meshy\.ai\/developers/);
+  assert.match(blocked, /Meshy API key limits are managed separately/);
+  assert.doesNotMatch(blocked, /fully operational|Railway worker is operational/i);
+  const ada = blocked.slice(blocked.indexOf("ada@example.com"), blocked.indexOf("partner@example.com"));
+  const partner = blocked.slice(blocked.indexOf("partner@example.com"), blocked.indexOf("Jobs without a tester allowance"));
+  assert.match(ada, /Individual Beta/);
+  assert.match(ada, /3 \/ 5 — 60% — Healthy/);
+  assert.match(partner, /Furniture Partner/);
+  assert.match(partner, /4 \/ 10 — 40% — Disabled/);
+  assert.doesNotMatch(partner, /Healthy|Exhausted/);
+
+  const refreshed = render(view({
+    phase: "ready",
+    overview: overview({
+      liveEnabled: true,
+      generationAdmissionEnabled: true,
+      creditCeiling: 500,
+      creditsConsumed: 100,
+      creditsReserved: 30,
+      remainingCreditBudget: 370,
+      paidSubmissionsAuthorized: 40,
+      paidSubmissionsUsed: 20,
+    }),
+    testers: {
+      total: 1,
+      limit: 25,
+      offset: 0,
+      testers: [{
+        userId: USER_A,
+        email: "ada@example.com",
+        classification: "individual_beta",
+        enabled: true,
+        authorizedGenerations: 5,
+        reservedGenerations: 0,
+        consumedGenerations: 5,
+        remainingGenerations: 0,
+        updatedAt: "2026-11-05T00:00:00.000Z",
+      }],
+    },
+  }));
+  assert.match(refreshed, /Capacity available/);
+  assert.match(refreshed, /20 \/ 40 — 50% — Healthy/);
+  assert.match(refreshed, /12 estimated/);
+  assert.match(refreshed, /5 \/ 5 — 100% — Exhausted/);
+  assert.match(refreshed, /Save beta budget/);
+  assert.match(refreshed, /Save tester changes/);
+});
+
 function render(props: FurnitureGenerationDashboardViewProps): string {
   return renderToStaticMarkup(createElement(FurnitureGenerationDashboardView, props));
 }
