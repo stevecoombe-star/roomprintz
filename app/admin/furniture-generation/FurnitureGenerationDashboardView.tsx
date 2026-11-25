@@ -18,8 +18,17 @@ import {
   formatUtilizationPercent,
   generationCapacity,
   paidSubmissionUtilization,
+  STANDARD_GENERATION_CREDIT_ESTIMATE,
   type Utilization,
 } from "@/lib/vibode-furniture/generation/budget-health";
+import {
+  estimatedAccountGenerations,
+  formatProviderAge,
+  formatProviderInstant,
+  providerCreditAvailability,
+  type ProviderBalanceCredits,
+  type ProviderBalanceView,
+} from "@/lib/vibode-furniture/generation/provider-balance";
 
 export type FurnitureDashboardPhase = "loading" | "error" | "ready";
 
@@ -84,6 +93,9 @@ export type FurnitureGenerationDashboardViewProps = {
   onSaveBudget?: () => void;
   budgetEvents?: BudgetEventRecord[];
   budgetHistoryMessage?: string | null;
+  providerBalance?: ProviderBalanceView | null;
+  providerBalancePhase?: "idle" | "loading" | "ready";
+  onRefreshProviderBalance?: () => void;
 };
 
 const METRICS: Array<[string, keyof DashboardOverview]> = [
@@ -138,6 +150,11 @@ export function FurnitureGenerationDashboardView(props: FurnitureGenerationDashb
         {props.phase === "ready" && props.overview ? (
           <>
             <CapacitySummary overview={props.overview} />
+            <ProviderBalanceSection
+              balance={props.providerBalance ?? null}
+              phase={props.providerBalancePhase ?? "idle"}
+              onRefresh={props.onRefreshProviderBalance}
+            />
             <Overview overview={props.overview} />
             <ProductionStatus overview={props.overview} />
             <BudgetSection
@@ -280,6 +297,107 @@ function CapacitySummary({ overview }: { overview: DashboardOverview }) {
   );
 }
 
+function ProviderBalanceSection(props: {
+  balance: ProviderBalanceView | null;
+  phase: "idle" | "loading" | "ready";
+  onRefresh?: () => void;
+}) {
+  const loading = props.phase === "loading";
+  const credits = props.balance?.credits ?? null;
+  return (
+    <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4" aria-label="Meshy provider balance" aria-busy={loading}>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-base font-medium text-slate-100">Meshy Provider Balance</h2>
+        <button
+          type="button"
+          className={buttonClass}
+          disabled={loading}
+          onClick={props.onRefresh}
+        >
+          {loading ? "Refreshing balance" : "Refresh balance"}
+        </button>
+      </div>
+      <p className="mt-2 text-sm text-slate-200" aria-live="polite">
+        {loading && !credits ? "Loading Meshy provider balance." : providerStatusLine(props.balance)}
+        {loading && credits ? " Refreshing balance." : ""}
+      </p>
+      {credits && props.balance ? (
+        <>
+          <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <BalanceFact label="Total available credits" value={formatCount(credits.balance)} />
+            <BalanceFact label="Remaining monthly credits" value={formatCount(credits.monthlyCredits)} />
+            <BalanceFact label="Remaining permanent credits" value={formatCount(credits.permanentCredits)} />
+            <BalanceFact label="Next monthly refresh" value={monthlyRefreshText(credits)} />
+            <BalanceFact
+              label="Last successful retrieval"
+              value={props.balance.retrievedAtMs == null ? "No successful retrieval." : formatProviderInstant(props.balance.retrievedAtMs)}
+            />
+          </dl>
+          <p className="mt-3 text-sm text-slate-200">{providerAvailabilityLine(credits)}</p>
+          <p className="mt-1 text-xs text-slate-400">
+            Estimated account-credit capacity {formatCount(estimatedAccountGenerations(credits.balance, STANDARD_GENERATION_CREDIT_ESTIMATE) ?? 0)}.
+            This divides available account credits by {formatCount(STANDARD_GENERATION_CREDIT_ESTIMATE)}.
+            It is not proof that the generation API key can spend these credits.
+            A separately configured monthly spending cap can still block generation.
+          </p>
+        </>
+      ) : null}
+      <p className="mt-3 text-xs text-slate-400">
+        API key spending limits are configured separately in the{" "}
+        <a href="https://www.meshy.ai/developers" target="_blank" rel="noreferrer" className="text-slate-200 underline decoration-slate-600 underline-offset-2 hover:text-emerald-200">
+          Meshy Developer Platform
+        </a>
+        {" "}and are not included in this balance response.
+      </p>
+    </section>
+  );
+}
+
+function BalanceFact(props: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2">
+      <dt className="text-xs text-slate-400">{props.label}</dt>
+      <dd className="mt-1 text-sm text-slate-100">{props.value}</dd>
+    </div>
+  );
+}
+
+function providerStatusLine(balance: ProviderBalanceView | null): string {
+  if (!balance?.credits || balance.retrievedAtMs == null || balance.ageMs == null) {
+    return providerFailureLine(balance?.failure ?? "unavailable");
+  }
+  const when = `${formatProviderInstant(balance.retrievedAtMs)} (${formatProviderAge(balance.ageMs)})`;
+  if (balance.status === "live") return `Live balance. Last successful retrieval ${when}.`;
+  const stale = balance.status === "stale" ? " This reading is stale." : "";
+  const failure = balance.failure && balance.failure !== "throttled" ? ` ${providerFailureLine(balance.failure)}` : "";
+  const throttle = balance.failure === "throttled"
+    ? " Refresh was not sent because a balance request was just attempted."
+    : "";
+  return `Cached balance — last updated ${when}.${stale}${failure}${throttle}`;
+}
+
+function providerFailureLine(failure: ProviderBalanceView["failure"]): string {
+  if (failure === "unconfigured" || failure === "unauthorized") return "Authentication/configuration issue.";
+  if (failure === "rate_limited") return "Meshy rate limited the balance request.";
+  if (failure === "timeout") return "The balance request timed out.";
+  if (failure === "throttled") return "Refresh was not sent because a balance request was just attempted.";
+  return "Provider balance unavailable.";
+}
+
+function providerAvailabilityLine(credits: ProviderBalanceCredits): string {
+  if (credits.balance === 0) return "Reported zero balance. Insufficient credits for a standard generation.";
+  if (providerCreditAvailability(credits.balance, STANDARD_GENERATION_CREDIT_ESTIMATE) === "available") {
+    return "Balance available.";
+  }
+  return "Insufficient credits for a standard generation.";
+}
+
+function monthlyRefreshText(credits: ProviderBalanceCredits): string {
+  return credits.monthlyResetsAtMs == null
+    ? "No monthly refresh is scheduled."
+    : formatProviderInstant(credits.monthlyResetsAtMs);
+}
+
 function capacityHealth(credits: Utilization, paid: Utilization): Utilization {
   const rank: Record<Utilization["kind"], number> = {
     unavailable: 4,
@@ -311,7 +429,9 @@ function ProductionStatus({ overview }: { overview: DashboardOverview }) {
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4" aria-label="Production safety status">
       <h2 className="text-base font-medium text-slate-100">Production safety status</h2>
-      <p className="mt-1 text-xs text-slate-400">This page cannot change credentials or contact the provider.</p>
+      <p className="mt-1 text-xs text-slate-400">
+        These status fields do not change credentials, budgets, or admission. Provider contact on this page is limited to the separate read-only balance request.
+      </p>
       <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
         {rows.map(([label, value]) => (
           <div key={label} className="rounded-xl border border-slate-800 px-3 py-2">

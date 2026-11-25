@@ -29,6 +29,11 @@ import {
   type BudgetEventRecord,
 } from "@/lib/vibode-furniture/generation/admin-budget";
 import { parseTesterMutation } from "@/lib/vibode-furniture/generation/admin-tester";
+import {
+  parseProviderBalanceView,
+  unavailableProviderBalance,
+  type ProviderBalanceView,
+} from "@/lib/vibode-furniture/generation/provider-balance";
 
 import {
   FurnitureGenerationDashboardView,
@@ -77,6 +82,9 @@ export default function FurnitureGenerationDashboard() {
   const [budgetMessage, setBudgetMessage] = useState<string | null>(null);
   const [budgetEvents, setBudgetEvents] = useState<BudgetEventRecord[]>([]);
   const [budgetHistoryMessage, setBudgetHistoryMessage] = useState<string | null>(null);
+  const [providerBalance, setProviderBalance] = useState<ProviderBalanceView | null>(null);
+  const [providerBalancePhase, setProviderBalancePhase] = useState<"idle" | "loading" | "ready">("idle");
+  const balanceTicket = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,6 +115,15 @@ export default function FurnitureGenerationDashboard() {
     })();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const ticket = balanceTicket.current + 1;
+    balanceTicket.current = ticket;
+    void loadProviderBalance(false, ticket);
+    return () => {
+      if (balanceTicket.current === ticket) balanceTicket.current = ticket + 1;
     };
   }, []);
 
@@ -184,6 +201,24 @@ export default function FurnitureGenerationDashboard() {
     applyBudget(parsedOverview);
     await loadBudgetHistory();
     if (focusUserId && focusUserId === jobsUserId) await loadJobs(focusUserId, 0);
+  }
+
+  async function loadProviderBalance(refresh: boolean, ticket: number) {
+    setProviderBalancePhase("loading");
+    try {
+      const body = await getJson(
+        `/api/admin/furniture-generation/provider-balance${refresh ? "?refresh=1" : ""}`,
+      );
+      if (ticket !== balanceTicket.current) return;
+      const parsed = parseProviderBalanceView(body);
+      if (parsed) setProviderBalance(parsed);
+      else setProviderBalance((current) => preserveProviderBalance(current));
+      setProviderBalancePhase("ready");
+    } catch {
+      if (ticket !== balanceTicket.current) return;
+      setProviderBalance((current) => preserveProviderBalance(current));
+      setProviderBalancePhase("ready");
+    }
   }
 
   async function loadBudgetHistory() {
@@ -412,8 +447,28 @@ export default function FurnitureGenerationDashboard() {
       }}
       budgetEvents={budgetEvents}
       budgetHistoryMessage={budgetHistoryMessage}
+      providerBalance={providerBalance}
+      providerBalancePhase={providerBalancePhase}
+      onRefreshProviderBalance={() => {
+        if (providerBalancePhase === "loading") return;
+        const ticket = balanceTicket.current + 1;
+        balanceTicket.current = ticket;
+        void loadProviderBalance(true, ticket);
+      }}
     />
   );
+}
+
+function preserveProviderBalance(current: ProviderBalanceView | null): ProviderBalanceView {
+  if (current?.credits && current.retrievedAtMs != null && current.ageMs != null) {
+    return {
+      ...current,
+      status: "stale",
+      failure: "unavailable",
+      providerRequest: "failed",
+    };
+  }
+  return unavailableProviderBalance("unavailable", "failed");
 }
 
 function readBudgetInteger(value: string, maximum: number): number | null {

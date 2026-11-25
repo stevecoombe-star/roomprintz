@@ -15,6 +15,7 @@ import type {
   TesterJobPage,
   TesterPage,
 } from "@/lib/vibode-furniture/generation/admin-dashboard";
+import { formatProviderInstant, type ProviderBalanceView } from "@/lib/vibode-furniture/generation/provider-balance";
 
 import {
   FurnitureGenerationDashboardView,
@@ -261,6 +262,143 @@ test("capacity health shows the blocking limit and refreshes from the saved budg
   assert.match(refreshed, /Save beta budget/);
   assert.match(refreshed, /Save tester changes/);
 });
+
+test("provider balance stays separate from Vibode capacity", () => {
+  const blocked = overview({
+    liveEnabled: true,
+    generationAdmissionEnabled: true,
+    creditCeiling: 500,
+    creditsConsumed: 100,
+    creditsReserved: 30,
+    remainingCreditBudget: 370,
+    paidSubmissionsAuthorized: 20,
+    paidSubmissionsUsed: 20,
+  });
+  const unavailable = between(render(view({ phase: "ready", overview: blocked, testers: testers() })), "Meshy provider balance", "Global overview");
+  assert.match(unavailable, /Meshy Provider Balance/);
+  assert.match(unavailable, /Provider balance unavailable/);
+  assert.match(unavailable, /Refresh balance/);
+  assert.match(unavailable, /are not included in this balance response/);
+  assert.doesNotMatch(unavailable, /Total available credits|Live balance|Reported zero balance/);
+
+  const loading = between(render(view({
+    phase: "ready",
+    overview: blocked,
+    providerBalancePhase: "loading",
+  })), "Meshy provider balance", "Global overview");
+  assert.match(loading, /Loading Meshy provider balance/);
+  assert.match(loading, /<button[^>]*disabled[^>]*>Refreshing balance/);
+  assert.doesNotMatch(loading, /Total available credits/);
+
+  const live = between(render(view({
+    phase: "ready",
+    overview: blocked,
+    testers: testers(),
+    providerBalance: providerBalance({
+      status: "live",
+      credits: credits(90, 60, 30, 1_793_491_200_000),
+      ageMs: 0,
+      providerRequest: "succeeded",
+    }),
+    providerBalancePhase: "ready",
+  })), "Meshy provider balance", "Global overview");
+  assert.match(live, /Live balance/);
+  assert.match(live, /Total available credits/);
+  assert.match(live, /Remaining monthly credits/);
+  assert.match(live, /Remaining permanent credits/);
+  assert.match(live, new RegExp(formatProviderInstant(1_793_491_200_000).replace(/[.]/g, "\\.")));
+  assert.match(live, /Balance available/);
+  assert.match(live, /Estimated account-credit capacity 3/);
+  assert.match(live, /not proof that the generation API key can spend these credits/);
+  assert.doesNotMatch(live, /Cached balance|Insufficient credits|Reported zero balance/);
+  const page = render(view({
+    phase: "ready",
+    overview: blocked,
+    testers: testers(),
+    providerBalance: providerBalance({
+      status: "live",
+      credits: credits(90, 60, 30, 1_793_491_200_000),
+      ageMs: 0,
+      providerRequest: "succeeded",
+    }),
+  }));
+  assert.match(page, /Paid attempts exhausted/);
+  assert.match(page, /130 \/ 500 — 26% — Healthy/);
+  assert.match(page, /Save beta budget/);
+  assert.match(page, /Save tester changes/);
+
+  const low = between(render(view({
+    phase: "ready",
+    overview: blocked,
+    providerBalance: providerBalance({
+      status: "cached",
+      credits: credits(20, 20, 0, null),
+      ageMs: 5_000,
+      providerRequest: "not_sent",
+    }),
+  })), "Meshy provider balance", "Global overview");
+  assert.match(low, /Cached balance — last updated/);
+  assert.match(low, /Insufficient credits for a standard generation/);
+  assert.match(low, /Estimated account-credit capacity 0/);
+  assert.match(low, /No monthly refresh is scheduled/);
+  assert.doesNotMatch(low, /Live balance|Reported zero balance|This reading is stale/);
+
+  const zero = between(render(view({
+    phase: "ready",
+    overview: blocked,
+    providerBalance: providerBalance({
+      status: "live",
+      credits: credits(0, 0, 0, null),
+      ageMs: 0,
+      providerRequest: "succeeded",
+    }),
+  })), "Meshy provider balance", "Global overview");
+  assert.match(zero, /Reported zero balance\. Insufficient credits for a standard generation/);
+  assert.match(zero, /Total available credits/);
+  assert.doesNotMatch(zero, /Provider balance unavailable|Balance available/);
+
+  const stale = between(render(view({
+    phase: "ready",
+    overview: blocked,
+    providerBalance: providerBalance({
+      status: "stale",
+      credits: credits(70, 40, 30, null),
+      ageMs: 120_000,
+      failure: "unauthorized",
+      providerRequest: "failed",
+    }),
+    providerBalancePhase: "loading",
+  })), "Meshy provider balance", "Global overview");
+  assert.match(stale, /Cached balance — last updated/);
+  assert.match(stale, /This reading is stale/);
+  assert.match(stale, /Authentication\/configuration issue/);
+  assert.match(stale, /70/);
+  assert.match(stale, /Refreshing balance/);
+  assert.doesNotMatch(stale, /Live balance|Reported zero balance/);
+});
+
+function between(html: string, start: string, end: string): string {
+  const from = html.indexOf(start);
+  const to = html.indexOf(end, from + start.length);
+  return html.slice(from, to === -1 ? undefined : to);
+}
+
+function credits(
+  balance: number,
+  monthlyCredits: number,
+  permanentCredits: number,
+  monthlyResetsAtMs: number | null,
+): NonNullable<ProviderBalanceView["credits"]> {
+  return { balance, monthlyCredits, permanentCredits, monthlyResetsAtMs };
+}
+
+function providerBalance(overrides: Partial<ProviderBalanceView> & Pick<ProviderBalanceView, "status" | "credits" | "ageMs" | "providerRequest">): ProviderBalanceView {
+  return {
+    retrievedAtMs: 1_700_000_000_000,
+    failure: null,
+    ...overrides,
+  };
+}
 
 function render(props: FurnitureGenerationDashboardViewProps): string {
   return renderToStaticMarkup(createElement(FurnitureGenerationDashboardView, props));
