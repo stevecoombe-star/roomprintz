@@ -12,6 +12,7 @@
     "furniture-generation:worker": "node --conditions=react-server --import tsx furniture-generation-worker/src/index.ts",
     "cleanup:worker": "node --conditions=react-server --import tsx cleanup-worker/src/index.ts",
     "typecheck": "tsc --noEmit",
+    "test:ui": "node --import tsx --test --test-concurrency=1 lib/brand-tokens.test.ts components/ui/vibode-button.test.tsx",
     "test:b2i": "node --conditions=react-server --import tsx --test --test-concurrency=1 app/admin/3d-room-lab/g0-containment/tests/*.test.ts",
     "test:g0-observed-run": "node --conditions=react-server --import tsx --test --test-concurrency=1 app/admin/3d-room-lab/g0-containment/tests/non-p-stale-observed-run.test.ts",
     "test:b1-contracts": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/benchmark-fixture-intake-contract.test.ts",

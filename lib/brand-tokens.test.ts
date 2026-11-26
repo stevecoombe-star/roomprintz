@@ -51,6 +51,22 @@ const THEME_COLOR_NAMES = [
   "action-hover",
   "action-pressed",
   "action-border",
+  "action-secondary",
+  "action-secondary-ink",
+  "action-secondary-hover",
+  "action-secondary-pressed",
+  "tool",
+  "tool-ink",
+  "tool-hover",
+  "tool-pressed",
+  "quiet-hover",
+  "quiet-pressed",
+  "danger",
+  "danger-ink",
+  "danger-hover",
+  "danger-pressed",
+  "danger-border",
+  "focus",
 ] as const;
 
 const PRESERVED_TAILWIND_FAMILIES = [
@@ -178,6 +194,55 @@ test("provisional interaction colours derive from canonical variables", () => {
   assert.deepEqual(declarations("--color-action-border"), [
     "--color-action-border: var(--brand-deep-teal);",
   ]);
+});
+
+test("button interaction colours stay derived and danger stays outside the brand palette", () => {
+  const theme = themeBlock();
+  assert.match(css, /The primary border remains provisional/);
+  assert.match(css, /Not one of the five approved brand colours/);
+  assert.deepEqual(declarations("--support-danger"), ["--support-danger: #9F1239;"]);
+  assert.equal(theme.includes("#9F1239"), false);
+  assert.deepEqual(declarations("--color-action-secondary"), [
+    "--color-action-secondary: var(--brand-deep-teal);",
+  ]);
+  assert.deepEqual(declarations("--color-action-secondary-ink"), [
+    "--color-action-secondary-ink: var(--brand-white);",
+  ]);
+  assert.deepEqual(declarations("--color-action-secondary-hover"), [
+    "--color-action-secondary-hover: color-mix(in srgb, var(--brand-deep-teal) 88%, var(--brand-white) 12%);",
+  ]);
+  assert.deepEqual(declarations("--color-action-secondary-pressed"), [
+    "--color-action-secondary-pressed: color-mix(in srgb, var(--brand-deep-teal) 88%, var(--brand-charcoal) 12%);",
+  ]);
+  assert.deepEqual(declarations("--color-tool"), ["--color-tool: var(--brand-deep-teal);"]);
+  assert.deepEqual(declarations("--color-tool-ink"), ["--color-tool-ink: var(--brand-white);"]);
+  assert.deepEqual(declarations("--color-tool-hover"), [
+    "--color-tool-hover: color-mix(in srgb, var(--brand-deep-teal) 88%, var(--brand-white) 12%);",
+  ]);
+  assert.deepEqual(declarations("--color-tool-pressed"), [
+    "--color-tool-pressed: color-mix(in srgb, var(--brand-deep-teal) 88%, var(--brand-charcoal) 12%);",
+  ]);
+  assert.deepEqual(declarations("--color-quiet-hover"), [
+    "--color-quiet-hover: color-mix(in srgb, var(--brand-warm-white) 90%, var(--brand-deep-teal) 10%);",
+  ]);
+  assert.deepEqual(declarations("--color-quiet-pressed"), [
+    "--color-quiet-pressed: color-mix(in srgb, var(--brand-warm-white) 82%, var(--brand-deep-teal) 18%);",
+  ]);
+  assert.deepEqual(declarations("--color-danger"), ["--color-danger: var(--support-danger);"]);
+  assert.deepEqual(declarations("--color-danger-ink"), ["--color-danger-ink: var(--brand-white);"]);
+  assert.deepEqual(declarations("--color-danger-hover"), [
+    "--color-danger-hover: color-mix(in srgb, var(--support-danger) 88%, var(--brand-white) 12%);",
+  ]);
+  assert.deepEqual(declarations("--color-danger-pressed"), [
+    "--color-danger-pressed: color-mix(in srgb, var(--support-danger) 86%, var(--brand-charcoal) 14%);",
+  ]);
+  assert.deepEqual(declarations("--color-danger-border"), [
+    "--color-danger-border: color-mix(in srgb, var(--support-danger) 86%, var(--brand-charcoal) 14%);",
+  ]);
+  assert.deepEqual(declarations("--color-focus"), ["--color-focus: var(--brand-charcoal);"]);
+  for (const derived of ["#517176", "#36565B", "#E9EAE6", "#D9DDDA", "#AB2E51", "#8D1435"]) {
+    assert.equal(css.split(derived).length - 1, 1, derived);
+  }
 });
 
 test("viewport frame, page colours, dark mode, and type stay intact", () => {
