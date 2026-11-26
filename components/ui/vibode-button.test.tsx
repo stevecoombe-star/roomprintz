@@ -249,6 +249,9 @@ test("button source uses semantic tokens and leaves product screens untouched", 
     for (const file of sourceFiles(root)) {
       const relative = path.relative(process.cwd(), file);
       if (owned.has(path.normalize(relative))) continue;
+      if (relative === path.normalize("app/dev") || relative.startsWith(`${path.normalize("app/dev")}${path.sep}`)) {
+        continue;
+      }
       const text = readFileSync(file, "utf8");
       const hits = PRODUCT_REFERENCE.filter((token) => text.includes(token));
       if (hits.length > 0) violations.push(`${relative}: ${hits.join(", ")}`);
@@ -263,6 +266,6 @@ test("button source uses semantic tokens and leaves product screens untouched", 
   const script = JSON.parse(readFileSync("package.json", "utf8")).scripts["test:ui"];
   assert.equal(
     script,
-    "node --import tsx --test --test-concurrency=1 lib/brand-tokens.test.ts components/ui/vibode-button.test.tsx",
+    "node --import tsx --test --test-concurrency=1 lib/brand-tokens.test.ts components/ui/vibode-button.test.tsx app/dev/design-studio/design-studio-route.test.ts",
   );
 });
