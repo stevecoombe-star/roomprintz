@@ -80,6 +80,37 @@ function GridIcon() {
   );
 }
 
+function MoveIcon() {
+  return (
+    <Icon>
+      <path d="M9 4v10M4 9h10" />
+    </Icon>
+  );
+}
+
+function RotateIcon() {
+  return (
+    <Icon>
+      <path d="M13 6.5A5 5 0 1 0 14 11" />
+      <path d="M13 3.5v3h-3" />
+    </Icon>
+  );
+}
+
+function SizeIcon() {
+  return (
+    <Icon>
+      <path d="M4 8V4h4M14 10v4h-4" />
+    </Icon>
+  );
+}
+
+const ICON_TOOLS = [
+  ["move", "Move", MoveIcon],
+  ["rotate", "Rotate", RotateIcon],
+  ["size", "Size", SizeIcon],
+] as const;
+
 const EMPTY_COLORS: Record<string, string> = {};
 let cachedColors: Record<string, string> | null = null;
 
@@ -154,6 +185,8 @@ export function DesignStudio() {
   const [tool, setTool] = useState<ToolName>("move");
   const [formResult, setFormResult] = useState("No form event yet.");
   const [toolbarNote, setToolbarNote] = useState("No toolbar action yet.");
+  const [iconTool, setIconTool] = useState<ToolName>("move");
+  const [iconNote, setIconNote] = useState("No icon tool yet.");
 
   function recordClick() {
     setClicks((count) => count + 1);
@@ -172,7 +205,7 @@ export function DesignStudio() {
           <p className="text-sm font-semibold text-ink-secondary">Vibode</p>
           <h1 className="text-3xl font-semibold">Design Studio</h1>
           <p className="max-w-3xl rounded-[8px] border border-ink-secondary bg-canvas px-4 py-3 text-sm font-semibold">
-            Development only. This page is for local certification of provisional button primitives. It is not a product screen.
+            Development only. This page certifies button primitives. It is not a product screen. Button Design System V1.0 visuals are owner-approved. Accessibility certification and product adoption remain open.
           </p>
         </header>
 
@@ -186,9 +219,9 @@ export function DesignStudio() {
             ))}
           </div>
           <div className="space-y-3 rounded-[8px] border border-dashed border-ink-secondary p-4">
-            <h3 className="text-sm font-semibold">Provisional supporting colours</h3>
+            <h3 className="text-sm font-semibold">Supporting status colour</h3>
             <p className="max-w-3xl text-sm text-ink-secondary">
-              These are not part of the five canonical brand colours. Destructive support is a separate status colour. Hover, pressed, and focus treatments are derived in the stylesheet.
+              Destructive support is an approved status colour. It is not one of the five canonical brand colours. Hover, pressed, and focus treatments stay the existing derived tokens.
             </p>
             <div className="grid max-w-xs grid-cols-1 gap-4">
               {PROVISIONAL_TOKENS.map(([name, variable]) => (
@@ -200,7 +233,7 @@ export function DesignStudio() {
 
         <Section id="certification" title="Buttons — current defaults">
           <p className="max-w-3xl text-sm text-ink-secondary">
-            These are the real button primitives with their current provisional defaults. Primary keeps the Deep Teal border until owner review.
+            These are the approved V1.0 button primitives. The labels here are examples, not product action assignments. Accessibility certification is still open.
           </p>
           <div className="flex flex-wrap gap-3">
             {VARIANTS.map(({ variant, label }) => (
@@ -251,7 +284,7 @@ export function DesignStudio() {
 
         <Section id="exploration" title="Design exploration — experiments, not defaults">
           <p className="max-w-3xl text-sm text-ink-secondary">
-            Overrides in this section are local to the preview. They do not change the component defaults shown above.
+            These local overrides are not approved alternatives. They do not change the V1.0 defaults shown above.
           </p>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-3 rounded-[8px] border border-ink-secondary p-4" style={{ backgroundColor: "var(--brand-white)" }} data-experiment="surface-white">
@@ -274,7 +307,7 @@ export function DesignStudio() {
             <div className="space-y-3 rounded-[8px] bg-canvas p-4 [&_button]:border-ink-secondary" data-experiment="border-deep-teal">
               <p className="text-xs font-semibold text-ink-secondary">Experiment — Deep Teal border</p>
               <VibodeButton>Apply</VibodeButton>
-              <p className="text-xs text-ink">This matches the current provisional default.</p>
+              <p className="text-xs text-ink">This matches the approved 1px Deep Teal border.</p>
             </div>
             <div className="space-y-3 rounded-[8px] bg-canvas p-4 [&_button]:border-ink" data-experiment="border-charcoal">
               <p className="text-xs font-semibold text-ink-secondary">Experiment — Charcoal border</p>
@@ -290,7 +323,7 @@ export function DesignStudio() {
             <div className="space-y-3 rounded-[8px] bg-canvas p-4 [&_button]:rounded-[8px]" data-experiment="radius-8">
               <p className="text-xs font-semibold text-ink-secondary">Experiment — 8px radius</p>
               <VibodeButton>Catalog</VibodeButton>
-              <p className="text-xs text-ink">This matches the current provisional default.</p>
+              <p className="text-xs text-ink">This matches the approved 8px radius.</p>
             </div>
             <div className="space-y-3 rounded-[8px] bg-canvas p-4 [&_button]:rounded-[12px]" data-experiment="radius-12">
               <p className="text-xs font-semibold text-ink-secondary">Experiment — 12px radius</p>
@@ -401,6 +434,54 @@ export function DesignStudio() {
               </VibodeIconButton>
               <VibodeButton size="standard">Room Scale</VibodeButton>
             </div>
+          </div>
+        </Section>
+
+        <Section id="icon-selection" title="Selected icon-only controls">
+          <p className="max-w-3xl text-sm text-ink-secondary">
+            These are real icon buttons with local demonstration state. The selected mark sits under the glyph. Choosing a tool does not change STAGE.
+          </p>
+          {SIZES.map(({ size, detail }) => (
+            <div key={size} className="space-y-2">
+              <p className="text-xs text-ink-secondary">{detail}</p>
+              <div
+                className="flex flex-wrap items-center gap-2"
+                role="group"
+                aria-label={`${size} icon tool selection`}
+                data-demo={`icon-tools-${size}`}
+              >
+                {ICON_TOOLS.map(([value, label, Glyph]) => (
+                  <VibodeIconButton
+                    key={value}
+                    label={label}
+                    size={size}
+                    variant={iconTool === value ? "tool" : "outline"}
+                    selected={iconTool === value}
+                    data-demo={`icon-tool-${size}-${value}`}
+                    onClick={() => {
+                      setIconTool(value);
+                      setIconNote(`${label} selected`);
+                    }}
+                  >
+                    <Glyph />
+                  </VibodeIconButton>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="flex flex-wrap items-center gap-3">
+            <VibodeIconButton
+              label="Pinned tool"
+              size="standard"
+              variant="tool"
+              selected
+              disabled
+              data-demo="icon-tool-disabled"
+              onClick={() => setIconNote("Disabled icon activated")}
+            >
+              <GridIcon />
+            </VibodeIconButton>
+            <p data-demo="icon-tool-note">{iconNote}</p>
           </div>
         </Section>
 

@@ -3,24 +3,29 @@ import type { ComponentProps } from "react";
 /**
  * Reusable native button for later Vibode screens.
  *
- * Sizes are provisional until owner visual review:
- * - compact is 32px. It meets the 24px WCAG 2.2 minimum and is below the
- *   44px enhanced target. Use it for a labeled toolbar control with a pointer
- *   or keyboard, not as the only primary action on a page. Its 12px label is
- *   a short control name, not body copy.
- * - standard is 40px.
- * - large is 44px and is the size for a standalone primary action.
+ * Owner-approved visual specification, Vibode Button Design System V1.0:
+ * - Primary border is 1px Deep Teal, so Sand Gold keeps a visible edge on White.
+ * - Corner radius is 8px. Label weight is semibold.
+ * - Compact is 32px, standard is 40px, and large is 44px.
+ * - Destructive support keeps its separate status colour and a 2px border.
+ * - Hover, pressed, and the Charcoal focus ring stay the existing derived tokens.
+ * - Selected state sets aria-pressed only when `selected` is passed. Its
+ *   non-colour cue is an underline on a labelled button, or a short mark under
+ *   the glyph on an icon button. Neither cue changes the control's size or
+ *   runs along its boundary.
+ * - Colour changes respect reduced motion.
  *
- * The primary Deep Teal border is provisional. It exists so Sand Gold can
- * keep a visible edge on White. Selected state sets aria-pressed only when
- * `selected` is passed. Its non-colour cue is an underline on a labelled
- * button, or a short mark under the glyph on an icon button. Neither cue
- * changes the control's size or runs along its boundary.
- * Destructive state uses a 2px border as its non-colour shape cue.
+ * Compact meets the 24px WCAG 2.2 minimum and is below the 44px enhanced
+ * target. Use it for a labeled toolbar control with a pointer or keyboard,
+ * not as the only primary action on a page. Its 12px label is a short control
+ * name, not body copy. Large is the size for a standalone primary action.
+ * Which variant a product action uses is a screen decision, not part of this
+ * specification.
  *
- * The focus ring uses Charcoal and is intended for a light canvas. These
- * primitives are not mounted on dark photography yet. Disabled controls use
- * the native disabled attribute, so the browser does not activate them.
+ * Accessibility certification of these primitives is not complete. Screen
+ * contrast, focus on dark photography, and product adoption still need review.
+ * The focus ring is intended for a light canvas. Disabled controls use the
+ * native disabled attribute, so the browser does not activate them.
  */
 
 export const VIBODE_BUTTON_VARIANTS = [

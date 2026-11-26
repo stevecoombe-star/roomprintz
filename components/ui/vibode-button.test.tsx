@@ -136,6 +136,7 @@ test("variants and sizes map to semantic classes", () => {
     }
     if (variant === "primary") {
       assert.equal(classes.has("bg-tool"), false);
+      assert.equal(classes.has("border"), true);
     }
     if (variant !== "destructive") {
       assert.equal(classes.has("border-2"), false, variant);
@@ -159,6 +160,8 @@ test("buttons keep native type, disabled, and focus behaviour", () => {
   assert.match(idle, /<button\b/);
   assert.match(idle, /type="button"/);
   assert.doesNotMatch(idle, /\sdisabled(?:=|>|\s)/);
+  assert.equal(buttonClasses(idle).has("focus-visible:outline-2"), true);
+  assert.equal(buttonClasses(idle).has("focus-visible:outline-offset-2"), true);
   assert.equal(buttonClasses(idle).has("focus-visible:outline-focus"), true);
   assert.equal(buttonClasses(idle).has("motion-reduce:transition-none"), true);
   assert.equal([...buttonClasses(idle)].some((name) => name.startsWith("shadow")), false);
@@ -257,7 +260,10 @@ test("button source uses semantic tokens and leaves product screens untouched", 
   assert.doesNotMatch(source, /#[0-9A-Fa-f]{3,8}\b/);
   assert.doesNotMatch(source, /#(?:38BDF8|FF00FF|f5c518|3d7eff)/i);
   assert.match(source, /border-action-border/);
-  assert.match(source, /The primary Deep Teal border is provisional/);
+  assert.match(source, /Owner-approved visual specification, Vibode Button Design System V1.0/);
+  assert.match(source, /Primary border is 1px Deep Teal/);
+  assert.match(source, /Accessibility certification of these primitives is not complete/);
+  assert.doesNotMatch(source, /primary Deep Teal border is provisional/i);
 
   const owned = new Set(BUTTON_FILES.map((file) => path.normalize(file)));
   const violations: string[] = [];

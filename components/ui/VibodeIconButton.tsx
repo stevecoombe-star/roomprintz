@@ -9,6 +9,7 @@ import {
 /**
  * Icon-only control. `label` is required and becomes the accessible name.
  * The icon is hidden from assistive technology so it cannot replace that name.
+ * A selected icon button uses the approved mark under the glyph.
  */
 
 export type VibodeIconButtonProps = Omit<VibodeButtonProps, "children" | "aria-label"> & {
