@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { AuthPanel } from "@/components/AuthPanel";
 import { LatestFurnitureCollectionImportBanner } from "@/components/LatestFurnitureCollectionImportBanner";
+import { VibodeButton } from "@/components/ui/VibodeButton";
 
 export default function LandingPage() {
   const [selectedPath, setSelectedPath] = useState<"upload" | "product" | "sample" | null>(null);
@@ -26,77 +27,61 @@ export default function LandingPage() {
           : null;
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-50 flex flex-col">
+    <main className="scheme-light min-h-screen bg-canvas text-ink flex flex-col">
       <div className="flex-1">
         <div className="max-w-5xl mx-auto px-4 py-10 md:py-14 space-y-8">
           <section className="space-y-4">
-            <div className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/5 px-3 py-1 text-[11px] text-emerald-200 font-medium">
+            <div className="inline-flex items-center rounded-full border border-ink-secondary bg-canvas-warm px-3 py-1 text-[11px] text-ink-secondary font-medium">
               Vibode • Closed Beta
             </div>
-            <h1 className="text-3xl md:text-5xl font-semibold tracking-tight max-w-3xl">
+            <h1 className="text-3xl md:text-5xl font-semibold tracking-tight max-w-3xl text-ink">
               See it in your room before you buy.
             </h1>
-            <p className="text-sm md:text-base text-slate-300 max-w-2xl">
+            <p className="text-sm md:text-base text-ink-secondary max-w-2xl">
               Vibode helps you visualize furniture in real rooms in under a minute. Start from your
               own room, a product link, or a sample room to test the workflow.
             </p>
             <div className="flex flex-col sm:flex-row gap-3 pt-1">
-              <button
-                type="button"
-                onClick={() => scrollToAuth()}
-                className="inline-flex items-center justify-center rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-medium px-4 py-2.5 transition shadow-lg shadow-emerald-500/20"
-              >
+              <VibodeButton type="button" variant="primary" size="large" onClick={() => scrollToAuth()}>
                 Log in / Create account
-              </button>
-              <p className="text-[11px] text-slate-500 max-w-xs">
+              </VibodeButton>
+              <p className="text-[11px] text-ink-secondary max-w-xs">
                 Invite-only beta. Sign in to start designing your first room.
               </p>
             </div>
           </section>
 
-          <LatestFurnitureCollectionImportBanner />
+          <LatestFurnitureCollectionImportBanner appearance="retail" />
 
           <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <article className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-3">
-              <h2 className="text-sm font-semibold text-slate-100">1) Upload room</h2>
-              <p className="text-xs text-slate-300">
+            <article className="rounded-2xl border border-line bg-canvas-warm p-4 space-y-3">
+              <h2 className="text-sm font-semibold text-ink">1) Upload room</h2>
+              <p className="text-xs text-ink-secondary">
                 Start with a photo of your room and place products where you want them.
               </p>
-              <button
-                type="button"
-                onClick={() => scrollToAuth("upload")}
-                className="text-xs rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-medium px-3 py-1.5 transition"
-              >
+              <VibodeButton type="button" variant="primary" size="compact" onClick={() => scrollToAuth("upload")}>
                 Start with room photo
-              </button>
+              </VibodeButton>
             </article>
 
-            <article className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-3">
-              <h2 className="text-sm font-semibold text-slate-100">2) Paste a product</h2>
-              <p className="text-xs text-slate-300">
+            <article className="rounded-2xl border border-line bg-canvas-warm p-4 space-y-3">
+              <h2 className="text-sm font-semibold text-ink">2) Paste a product</h2>
+              <p className="text-xs text-ink-secondary">
                 Paste a product link or image to see it instantly in your room before buying.
               </p>
-              <button
-                type="button"
-                onClick={() => scrollToAuth("product")}
-                className="text-xs rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-medium px-3 py-1.5 transition"
-              >
+              <VibodeButton type="button" variant="primary" size="compact" onClick={() => scrollToAuth("product")}>
                 Start with a product link
-              </button>
+              </VibodeButton>
             </article>
 
-            <article className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-3">
-              <h2 className="text-sm font-semibold text-slate-100">3) Try sample room</h2>
-              <p className="text-xs text-slate-300">
+            <article className="rounded-2xl border border-line bg-canvas-warm p-4 space-y-3">
+              <h2 className="text-sm font-semibold text-ink">3) Try sample room</h2>
+              <p className="text-xs text-ink-secondary">
                 Run the full flow on a sample room first, then move to your own images.
               </p>
-              <button
-                type="button"
-                onClick={() => scrollToAuth("sample")}
-                className="text-xs rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-medium px-3 py-1.5 transition"
-              >
+              <VibodeButton type="button" variant="primary" size="compact" onClick={() => scrollToAuth("sample")}>
                 Start with sample room
-              </button>
+              </VibodeButton>
             </article>
           </section>
         </div>
@@ -104,29 +89,29 @@ export default function LandingPage() {
 
       <section
         id="auth-panel"
-        className="border-t border-slate-900/80 bg-slate-950/95"
+        className="border-t border-line bg-canvas-warm"
       >
         <div className="max-w-3xl mx-auto px-4 py-6">
-          <h2 className="text-sm font-semibold tracking-tight mb-1">
+          <h2 className="text-sm font-semibold tracking-tight mb-1 text-ink">
             Log in or create your Vibode account
           </h2>
-          <p className="text-[11px] text-slate-400 mb-3">
+          <p className="text-[11px] text-ink-secondary mb-3">
             Use your email and password to access Vibode. After sign-in, you&apos;ll be sent directly
             to the editor workspace.
           </p>
           {pathPrompt ? (
-            <p className="text-[11px] text-emerald-200/90 mb-3 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2 py-1.5">
+            <p className="text-[11px] text-ink-secondary mb-3 rounded-md border border-line bg-canvas px-2 py-1.5">
               {pathPrompt}
             </p>
           ) : null}
-          <AuthPanel redirectToAppOnAuth />
+          <AuthPanel redirectToAppOnAuth appearance="retail" />
         </div>
       </section>
 
-      <footer className="border-t border-slate-900/80 py-3 text-[11px] text-slate-500 bg-slate-950">
+      <footer className="border-t border-line py-3 text-[11px] text-ink-secondary bg-canvas">
         <div className="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <span>© {new Date().getFullYear()} Vibode. All rights reserved.</span>
-          <span className="text-slate-600">Private beta.</span>
+          <span>Private beta.</span>
         </div>
       </footer>
     </main>

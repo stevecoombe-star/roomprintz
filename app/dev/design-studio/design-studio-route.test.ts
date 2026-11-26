@@ -27,6 +27,17 @@ function isAuthorizedMyRoomsAdoption(relative: string): boolean {
   );
 }
 
+function isAuthorizedLandingLoginAdoption(relative: string): boolean {
+  const normalized = path.normalize(relative);
+  return (
+    normalized === path.normalize("app/page.tsx") ||
+    normalized === path.normalize("app/login/LoginInner.tsx") ||
+    normalized === path.normalize("app/login/page.tsx") ||
+    normalized === path.normalize("components/AuthPanel.tsx") ||
+    normalized === path.normalize("components/LatestFurnitureCollectionImportBanner.tsx")
+  );
+}
+
 const ALLOWED_BUTTON_IMPORTS = new Set([
   path.normalize("components/ui/VibodeButton.tsx"),
   path.normalize("components/ui/VibodeIconButton.tsx"),
@@ -156,7 +167,13 @@ test("the gate stays on the server and product screens stay unchanged", () => {
   for (const root of ["app", "components"]) {
     for (const file of sourceFiles(root)) {
       const relative = path.normalize(path.relative(process.cwd(), file));
-      if (ALLOWED_BUTTON_IMPORTS.has(relative) || isAuthorizedMyRoomsAdoption(relative)) continue;
+      if (
+        ALLOWED_BUTTON_IMPORTS.has(relative) ||
+        isAuthorizedMyRoomsAdoption(relative) ||
+        isAuthorizedLandingLoginAdoption(relative)
+      ) {
+        continue;
+      }
       const text = readFileSync(file, "utf8");
       if (/\bVibodeButton\b|\bVibodeIconButton\b|<DesignStudio\b|design-studio/.test(text)) {
         violations.push(relative);
@@ -167,4 +184,7 @@ test("the gate stays on the server and product screens stay unchanged", () => {
   assert.equal(isAuthorizedMyRoomsAdoption("components/my-rooms/MyRoomsHeader.tsx"), true);
   assert.equal(isAuthorizedMyRoomsAdoption("components/my-furniture/MyFurniturePageClient.tsx"), false);
   assert.equal(isAuthorizedMyRoomsAdoption("app/editor/page.tsx"), false);
+  assert.equal(isAuthorizedLandingLoginAdoption("app/page.tsx"), true);
+  assert.equal(isAuthorizedLandingLoginAdoption("app/editor/page.tsx"), false);
+  assert.equal(isAuthorizedLandingLoginAdoption("app/app/profile/page.tsx"), false);
 });

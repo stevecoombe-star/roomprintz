@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
+import { vibodeButtonClassName } from "@/components/ui/VibodeButton";
 
 type CollectionImportResponse = {
   collectionImport?: {
@@ -35,7 +36,13 @@ function buildDismissKey(importId: string | null, updatedAt: string | null): str
   return `${BANNER_DISMISS_KEY_PREFIX}:${encodeURIComponent(importId)}:${encodeURIComponent(updatedAt)}`;
 }
 
-export function LatestFurnitureCollectionImportBanner() {
+type LatestFurnitureCollectionImportBannerProps = {
+  appearance?: "default" | "retail";
+};
+
+export function LatestFurnitureCollectionImportBanner({
+  appearance = "default",
+}: LatestFurnitureCollectionImportBannerProps = {}) {
   const pathname = usePathname();
   const [isLoading, setIsLoading] = useState(true);
   const [isDismissed, setIsDismissed] = useState(false);
@@ -110,41 +117,49 @@ export function LatestFurnitureCollectionImportBanner() {
       ? Math.max(0, Math.trunc(collectionImport.itemCount))
       : null;
 
+  const retail = appearance === "retail";
+  const linkClass = retail
+    ? vibodeButtonClassName({ variant: "outline", size: "compact" })
+    : "rounded-lg border border-emerald-400/60 px-2.5 py-1 text-xs text-emerald-100 hover:border-emerald-300 hover:text-white";
+
   return (
-    <section className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3">
+    <section
+      className={
+        retail
+          ? "rounded-2xl border border-line bg-canvas-warm px-4 py-3"
+          : "rounded-2xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3"
+      }
+    >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-1">
-          <p className="text-xs font-medium uppercase tracking-wide text-emerald-200">
+          <p
+            className={
+              retail
+                ? "text-xs font-medium uppercase tracking-wide text-ink-secondary"
+                : "text-xs font-medium uppercase tracking-wide text-emerald-200"
+            }
+          >
             Furniture Collection added
           </p>
-          <p className="text-sm text-slate-100">
+          <p className={retail ? "text-sm text-ink" : "text-sm text-slate-100"}>
             {collectionName} by {partnerName}
             {itemCount !== null ? ` (${itemCount} item${itemCount === 1 ? "" : "s"})` : ""}
           </p>
-          <p className="text-xs text-slate-200/90">
+          <p className={retail ? "text-xs text-ink-secondary" : "text-xs text-slate-200/90"}>
             Upload or select a room to try these pieces.
           </p>
           <div className="flex flex-wrap items-center gap-2 pt-1">
             {viewCollectionHref ? (
-              <Link
-                href={viewCollectionHref}
-                className="rounded-lg border border-emerald-400/60 px-2.5 py-1 text-xs text-emerald-100 hover:border-emerald-300 hover:text-white"
-              >
+              <Link href={viewCollectionHref} className={linkClass}>
                 View collection
               </Link>
             ) : null}
             {isEditorContext ? (
-              <Link
-                href="/editor?newRoom=1"
-                className="rounded-lg border border-emerald-400/60 px-2.5 py-1 text-xs text-emerald-100 hover:border-emerald-300 hover:text-white"
-              >
+              <Link href="/editor?newRoom=1" className={linkClass}>
                 Upload your room
               </Link>
             ) : (
-              <a
-                href="#auth-panel"
-                className="rounded-lg border border-emerald-400/60 px-2.5 py-1 text-xs text-emerald-100 hover:border-emerald-300 hover:text-white"
-              >
+              <a href="#auth-panel" className={linkClass}>
                 Upload your room
               </a>
             )}
@@ -153,7 +168,11 @@ export function LatestFurnitureCollectionImportBanner() {
         <button
           type="button"
           onClick={dismissBanner}
-          className="self-start rounded border border-slate-600 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-500 hover:text-slate-100"
+          className={
+            retail
+              ? "self-start rounded-lg border border-ink-secondary bg-canvas px-2 py-1 text-[11px] font-semibold text-ink-secondary hover:bg-quiet-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+              : "self-start rounded border border-slate-600 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-500 hover:text-slate-100"
+          }
         >
           Dismiss
         </button>

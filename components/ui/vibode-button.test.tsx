@@ -116,6 +116,17 @@ function isAuthorizedMyRoomsAdoption(relative: string): boolean {
   );
 }
 
+function isAuthorizedLandingLoginAdoption(relative: string): boolean {
+  const normalized = path.normalize(relative);
+  return (
+    normalized === path.normalize("app/page.tsx") ||
+    normalized === path.normalize("app/login/LoginInner.tsx") ||
+    normalized === path.normalize("app/login/page.tsx") ||
+    normalized === path.normalize("components/AuthPanel.tsx") ||
+    normalized === path.normalize("components/LatestFurnitureCollectionImportBanner.tsx")
+  );
+}
+
 function sourceFiles(directory: string): string[] {
   const found: string[] = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -284,7 +295,7 @@ test("button source uses semantic tokens and leaves product screens untouched", 
       if (relative === path.normalize("app/dev") || relative.startsWith(`${path.normalize("app/dev")}${path.sep}`)) {
         continue;
       }
-      if (isAuthorizedMyRoomsAdoption(relative)) continue;
+      if (isAuthorizedMyRoomsAdoption(relative) || isAuthorizedLandingLoginAdoption(relative)) continue;
       const text = readFileSync(file, "utf8");
       const hits = PRODUCT_REFERENCE.filter((token) => text.includes(token));
       if (hits.length > 0) violations.push(`${relative}: ${hits.join(", ")}`);
@@ -294,6 +305,12 @@ test("button source uses semantic tokens and leaves product screens untouched", 
   assert.equal(isAuthorizedMyRoomsAdoption("components/my-rooms/MyRoomsHeader.tsx"), true);
   assert.equal(isAuthorizedMyRoomsAdoption("components/my-furniture/MyFurnitureHeader.tsx"), false);
   assert.equal(isAuthorizedMyRoomsAdoption("app/editor/page.tsx"), false);
+  assert.equal(isAuthorizedLandingLoginAdoption("app/page.tsx"), true);
+  assert.equal(isAuthorizedLandingLoginAdoption("app/login/LoginInner.tsx"), true);
+  assert.equal(isAuthorizedLandingLoginAdoption("components/AuthPanel.tsx"), true);
+  assert.equal(isAuthorizedLandingLoginAdoption("app/editor/page.tsx"), false);
+  assert.equal(isAuthorizedLandingLoginAdoption("app/app/page.tsx"), false);
+  assert.equal(isAuthorizedLandingLoginAdoption("app/app/profile/page.tsx"), false);
   assert.doesNotMatch(readFileSync("components/my-furniture/MyFurnitureHeader.tsx", "utf8"), /VibodeButton|VibodeIconButton/);
   assert.doesNotMatch(readFileSync("app/editor/page.tsx", "utf8"), /VibodeButton|VibodeIconButton/);
 
@@ -304,6 +321,6 @@ test("button source uses semantic tokens and leaves product screens untouched", 
   const script = JSON.parse(readFileSync("package.json", "utf8")).scripts["test:ui"];
   assert.equal(
     script,
-    "node --import tsx --test --test-concurrency=1 lib/brand-tokens.test.ts components/ui/vibode-button.test.tsx app/dev/design-studio/design-studio-route.test.ts",
+    "node --import tsx --test --test-concurrency=1 lib/brand-tokens.test.ts components/ui/vibode-button.test.tsx app/dev/design-studio/design-studio-route.test.ts components/my-rooms/my-rooms-brand.test.tsx components/landing-login-brand.test.ts",
   );
 });

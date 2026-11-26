@@ -37,18 +37,18 @@ export default function LoginInner() {
   }, [loading, user, router, next]);
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-50 flex items-center justify-center px-4">
+    <main className="scheme-light min-h-screen bg-canvas text-ink flex items-center justify-center px-4">
       <div className="w-full max-w-2xl">
-        <h1 className="text-lg font-semibold mb-2">Log in to Vibode</h1>
-        <p className="text-[11px] text-slate-400 mb-3">
+        <h1 className="text-lg font-semibold mb-2 text-ink">Log in to Vibode</h1>
+        <p className="text-[11px] text-ink-secondary mb-3">
           Use your Vibode account email and password. After login, you&apos;ll be sent to your
           workspace.
         </p>
 
-        <AuthPanel />
+        <AuthPanel appearance="retail" />
 
-        <p className="text-[11px] text-slate-500 mt-2">
-          Redirect after login: <span className="text-slate-300">{next}</span>
+        <p className="text-[11px] text-ink-secondary mt-2">
+          Redirect after login: <span className="text-ink">{next}</span>
         </p>
       </div>
     </main>
