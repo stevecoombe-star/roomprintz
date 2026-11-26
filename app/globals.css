@@ -5,6 +5,13 @@
   --foreground: #171717;
   /* Main Vibode viewport frame. The STAGE selection outline reads this token. */
   --vibode-viewport-frame: #38BDF8;
+
+  /* Approved canonical Vibode brand colours. Kept outside the OS colour-scheme query. */
+  --brand-white: #FFFFFF;
+  --brand-warm-white: #FCF9F4;
+  --brand-charcoal: #1F1F1F;
+  --brand-deep-teal: #395E63;
+  --brand-sand-gold: #F6DDA1;
 }
 
 @theme inline {
@@ -12,6 +19,27 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Semantic UI colours. No component references these yet. */
+  --color-canvas: var(--brand-white);
+  --color-canvas-warm: var(--brand-warm-white);
+  --color-ink: var(--brand-charcoal);
+  --color-ink-secondary: var(--brand-deep-teal);
+  --color-action: var(--brand-sand-gold);
+  --color-action-ink: var(--brand-charcoal);
+
+  /*
+   * Provisional interaction treatments for UI-1B. No component applies these.
+   * Hover mixes 92% Sand Gold with 8% Charcoal in sRGB:
+   *   0.92×(246,221,161) + 0.08×(31,31,31) = (228.8, 205.8, 150.6) → #E5CE97
+   * Pressed mixes 84% Sand Gold with 16% Charcoal in sRGB:
+   *   0.84×(246,221,161) + 0.16×(31,31,31) = (211.6, 190.6, 140.2) → #D4BF8C
+   * The action border uses Deep Teal so a Sand Gold control can meet a 3:1
+   * edge against White. Final button styling is decided in UI-1B.
+   */
+  --color-action-hover: color-mix(in srgb, var(--brand-sand-gold) 92%, var(--brand-charcoal) 8%);
+  --color-action-pressed: color-mix(in srgb, var(--brand-sand-gold) 84%, var(--brand-charcoal) 16%);
+  --color-action-border: var(--brand-deep-teal);
 }
 
 @media (prefers-color-scheme: dark) {
