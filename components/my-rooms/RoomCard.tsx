@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { MoveToFolderMenu } from "@/components/my-rooms/MoveToFolderMenu";
+import { myRoomsMenuDangerClass, myRoomsMenuItemClass } from "@/components/my-rooms/surface";
 import type { MyRoomsFolder, MyRoomsRoom } from "@/components/my-rooms/types";
 import { formatRoomRecencyLabel } from "@/components/my-rooms/utils";
 
@@ -52,16 +53,16 @@ export function RoomCard({
   const previewPending = room.preview_status === "pending" && !hasImage;
 
   return (
-    <article className="group relative overflow-visible rounded-2xl bg-slate-900/50 transition hover:bg-slate-900/65">
+    <article className="group relative overflow-visible rounded-2xl bg-canvas transition hover:bg-quiet-hover">
       <button
         type="button"
         onClick={onOpen}
-        className="block w-full text-left focus:outline-none disabled:opacity-60"
+        className="block w-full text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-60"
         aria-label={`Open ${room.title}`}
         disabled={isBusy}
       >
-        <div className="overflow-hidden rounded-2xl border border-slate-800/70 bg-slate-900">
-          <div className="relative aspect-[4/3] w-full bg-slate-900" aria-busy={previewPending}>
+        <div className="overflow-hidden rounded-2xl border border-line bg-canvas">
+          <div className="relative aspect-[4/3] w-full bg-canvas-warm" aria-busy={previewPending}>
             {hasImage ? (
               <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -76,12 +77,12 @@ export function RoomCard({
                 <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent to-black/10" />
               </>
             ) : previewPending ? (
-              <div className="h-full w-full animate-pulse bg-slate-800/80" />
+              <div className="h-full w-full animate-pulse bg-quiet-pressed" />
             ) : (
-              <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 p-4">
-                <div className="w-full max-w-[170px] rounded-lg border border-slate-700/70 bg-slate-900/85 px-3 py-2 text-center">
-                  <div className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Preview</div>
-                  <div className="mt-1 truncate text-xs text-slate-300">Not available yet</div>
+              <div className="flex h-full w-full items-center justify-center bg-canvas-warm p-4">
+                <div className="w-full max-w-[170px] rounded-lg border border-line bg-canvas px-3 py-2 text-center">
+                  <div className="text-[10px] uppercase tracking-[0.16em] text-ink-secondary">Preview</div>
+                  <div className="mt-1 truncate text-xs text-ink">Not available yet</div>
                 </div>
               </div>
             )}
@@ -89,11 +90,11 @@ export function RoomCard({
         </div>
 
         <div className="px-1 pb-2 pt-2">
-          <h3 className="truncate text-sm font-medium text-slate-100" title={room.title}>
+          <h3 className="truncate text-sm font-medium text-ink" title={room.title}>
             {room.title}
           </h3>
-          <p className="mt-1 truncate text-xs text-slate-400">{recencyLabel}</p>
-          <p className="mt-1 truncate text-[11px] text-slate-500" title={room.folder_name ?? "No folder"}>
+          <p className="mt-1 truncate text-xs text-ink-secondary">{recencyLabel}</p>
+          <p className="mt-1 truncate text-[11px] text-ink-secondary" title={room.folder_name ?? "No folder"}>
             {room.folder_name ? `${room.folder_name}` : "No folder"}
             {room.current_stage > 0 || room.selected_model
               ? ` • Stage ${room.current_stage}${room.selected_model ? ` • ${room.selected_model}` : ""}`
@@ -115,7 +116,7 @@ export function RoomCard({
           aria-busy={isRefreshingThumbnail}
           title="Refresh thumbnail"
           className={
-            "inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/85 text-slate-300 backdrop-blur transition hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-200 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 disabled:cursor-default " +
+            "inline-flex h-7 w-7 items-center justify-center rounded-md border border-ink-secondary bg-canvas/90 text-ink-secondary backdrop-blur transition hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-default " +
             (isRefreshingThumbnail
               ? "opacity-100"
               : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100")
@@ -134,7 +135,7 @@ export function RoomCard({
           }}
           disabled={isBusy}
           className={
-            "rounded-md border border-slate-700/80 bg-slate-950/85 px-2 py-1 text-xs text-slate-300 backdrop-blur transition disabled:opacity-50 " +
+            "rounded-md border border-ink-secondary bg-canvas/90 px-2 py-1 text-xs text-ink-secondary backdrop-blur transition hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:opacity-50 " +
             (menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100")
           }
           aria-haspopup="menu"
@@ -145,7 +146,7 @@ export function RoomCard({
         </button>
 
         {menuOpen ? (
-          <div className="absolute right-0 z-30 mt-2 w-44 rounded-xl border border-slate-700 bg-slate-900 p-2 shadow-xl shadow-slate-950/80">
+          <div className="absolute right-0 z-30 mt-2 w-44 rounded-xl border border-line bg-canvas p-2 shadow-lg">
             <button
               type="button"
               onClick={() => {
@@ -154,7 +155,7 @@ export function RoomCard({
                 onOpen();
               }}
               disabled={isBusy}
-              className="w-full rounded-md px-2 py-1 text-left text-xs text-slate-200 transition hover:bg-slate-800"
+              className={myRoomsMenuItemClass}
               role="menuitem"
             >
               Open
@@ -167,7 +168,7 @@ export function RoomCard({
                 onRename();
               }}
               disabled={isBusy}
-              className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-slate-200 transition hover:bg-slate-800"
+              className={`mt-1 ${myRoomsMenuItemClass}`}
               role="menuitem"
             >
               Rename
@@ -176,7 +177,7 @@ export function RoomCard({
               type="button"
               onClick={() => setShowMoveMenu((open) => !open)}
               disabled={isBusy}
-              className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-slate-200 transition hover:bg-slate-800"
+              className={`mt-1 ${myRoomsMenuItemClass}`}
               role="menuitem"
             >
               Move to Folder
@@ -201,7 +202,7 @@ export function RoomCard({
                 onDelete();
               }}
               disabled={isBusy}
-              className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-rose-300 transition hover:bg-rose-500/20"
+              className={myRoomsMenuDangerClass}
               role="menuitem"
             >
               Delete

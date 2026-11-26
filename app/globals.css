@@ -19,6 +19,19 @@
    * White text on #9F1239 is 8.02:1. The fill against White is 8.02:1.
    */
   --support-danger: #9F1239;
+
+  /*
+   * Provisional My Rooms supporting tokens. Not brand colours, and not
+   * approved for other screens until the owner accepts this pilot.
+   * The line mixes 70% Warm White with 30% Deep Teal:
+   *   0.70×(252,249,244) + 0.30×(57,94,99) = (193.5, 202.5, 200.5) → #C1CBC9
+   * #C1CBC9 against White is about 1.66:1, so it is a decorative edge only.
+   * Functional controls keep the full Deep Teal border.
+   * Warning ink #92400E is outside the brand palette. It is 7.09:1 on White
+   * and 5.98:1 on the warning surface. That surface mixes 92% Warm White
+   * with 8% warning ink → #F4EAE2.
+   */
+  --support-warning: #92400E;
 }
 
 @theme inline {
@@ -27,7 +40,10 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 
-  /* Semantic UI colours. Product screens do not reference these yet. */
+  /*
+   * Semantic UI colours. My Rooms is the first product surface that uses them.
+   * Other product screens still use their existing colours.
+   */
   --color-canvas: var(--brand-white);
   --color-canvas-warm: var(--brand-warm-white);
   --color-ink: var(--brand-charcoal);
@@ -74,6 +90,9 @@
   --color-danger-pressed: color-mix(in srgb, var(--support-danger) 86%, var(--brand-charcoal) 14%);
   --color-danger-border: color-mix(in srgb, var(--support-danger) 86%, var(--brand-charcoal) 14%);
   --color-focus: var(--brand-charcoal);
+  --color-line: color-mix(in srgb, var(--brand-warm-white) 70%, var(--brand-deep-teal) 30%);
+  --color-warning: var(--support-warning);
+  --color-warning-surface: color-mix(in srgb, var(--brand-warm-white) 92%, var(--support-warning) 8%);
 }
 
 @media (prefers-color-scheme: dark) {

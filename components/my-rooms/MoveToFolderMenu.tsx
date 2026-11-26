@@ -16,7 +16,7 @@ export function MoveToFolderMenu({
   isSaving,
 }: MoveToFolderMenuProps) {
   return (
-    <div className="mt-2 space-y-1 rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+    <div className="mt-2 space-y-1 rounded-lg border border-line bg-canvas-warm p-2">
       <button
         type="button"
         onClick={() => void onMove(null)}
@@ -24,8 +24,8 @@ export function MoveToFolderMenu({
         className={
           "flex w-full items-center justify-between rounded-md px-2 py-1 text-left text-xs transition " +
           (currentFolderId === null
-            ? "bg-slate-800 text-slate-100"
-            : "text-slate-300 hover:bg-slate-800/70 hover:text-slate-100")
+            ? "bg-tool text-tool-ink underline decoration-2 underline-offset-[3px]"
+            : "text-ink-secondary hover:bg-quiet-hover")
         }
       >
         <span>No folder</span>
@@ -33,7 +33,7 @@ export function MoveToFolderMenu({
       </button>
 
       {folders.length === 0 ? (
-        <div className="px-2 py-1 text-[11px] text-slate-500">No folders yet.</div>
+        <div className="px-2 py-1 text-[11px] text-ink-secondary">No folders yet.</div>
       ) : (
         folders.map((folder) => (
           <button
@@ -44,8 +44,8 @@ export function MoveToFolderMenu({
             className={
               "flex w-full items-center justify-between rounded-md px-2 py-1 text-left text-xs transition " +
               (currentFolderId === folder.id
-                ? "bg-slate-800 text-slate-100"
-                : "text-slate-300 hover:bg-slate-800/70 hover:text-slate-100")
+                ? "bg-tool text-tool-ink underline decoration-2 underline-offset-[3px]"
+                : "text-ink-secondary hover:bg-quiet-hover")
             }
           >
             <span className="truncate">{folder.name}</span>

@@ -5,9 +5,19 @@ import { useTokenBalance } from "@/hooks/useTokenBalance";
 
 type TokenBalanceBadgeProps = {
   className?: string;
+  shellClassName?: string;
+  labelClassName?: string;
+  separatorClassName?: string;
+  valueClassName?: string;
 };
 
-export function TokenBalanceBadge({ className = "" }: TokenBalanceBadgeProps) {
+export function TokenBalanceBadge({
+  className = "",
+  shellClassName = "border-slate-700 bg-slate-900/80 text-slate-200",
+  labelClassName = "text-slate-400",
+  separatorClassName = "mx-1 text-slate-600",
+  valueClassName = "font-medium text-slate-100",
+}: TokenBalanceBadgeProps) {
   const { visible, balance, isLoading, error } = useTokenBalance();
   if (!visible) return null;
 
@@ -20,13 +30,13 @@ export function TokenBalanceBadge({ className = "" }: TokenBalanceBadgeProps) {
   return (
     <Link
       href="/billing"
-      className={`inline-flex items-center rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-200 ${className}`.trim()}
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs ${shellClassName} ${className}`.trim()}
       title={title}
       aria-live="polite"
     >
-      <span className="text-slate-400">Tokens</span>
-      <span className="mx-1 text-slate-600">:</span>
-      <span className="font-medium text-slate-100">{isLoading && !hasBalance ? "…" : displayValue}</span>
+      <span className={labelClassName}>Tokens</span>
+      <span className={separatorClassName}>:</span>
+      <span className={valueClassName}>{isLoading && !hasBalance ? "…" : displayValue}</span>
     </Link>
   );
 }

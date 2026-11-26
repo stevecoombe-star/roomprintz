@@ -21,8 +21,8 @@ function navClass(active: boolean) {
   return (
     "w-full rounded-lg px-3 py-2 text-left text-sm transition " +
     (active
-      ? "bg-slate-800 text-slate-100"
-      : "text-slate-400 hover:bg-slate-900 hover:text-slate-100")
+      ? "bg-tool text-tool-ink underline decoration-2 underline-offset-[3px]"
+      : "text-ink-secondary hover:bg-quiet-hover")
   );
 }
 
@@ -41,8 +41,8 @@ export function MyRoomsSidebar({
   onDeleteFolder,
 }: MyRoomsSidebarProps) {
   return (
-    <div className="sticky top-4 rounded-2xl border border-slate-800/80 bg-slate-900/60 p-3">
-      <div className="mb-3 px-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">Library</div>
+    <div className="sticky top-4 rounded-2xl border border-line bg-canvas-warm p-3">
+      <div className="mb-3 px-2 text-[11px] uppercase tracking-[0.18em] text-ink-secondary">Library</div>
       <nav className="space-y-1">
         <button
           type="button"
@@ -52,7 +52,7 @@ export function MyRoomsSidebar({
         >
           <span className="flex items-center justify-between">
             <span>All Rooms</span>
-            <span className="text-[11px] text-slate-500">{totalRoomsCount}</span>
+            <span className="text-[11px]">{totalRoomsCount}</span>
           </span>
         </button>
 
@@ -67,12 +67,12 @@ export function MyRoomsSidebar({
       </nav>
 
       <div className="mt-5 flex items-center justify-between px-2">
-        <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Folders</div>
+        <div className="text-[11px] uppercase tracking-[0.18em] text-ink-secondary">Folders</div>
         <button
           type="button"
           onClick={onCreateFolder}
           disabled={!folderFeatureReady}
-          className="rounded-md px-2 py-1 text-[11px] text-slate-300 transition hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50 disabled:hover:bg-transparent"
+          className="rounded-md px-2 py-1 text-[11px] text-ink-secondary transition hover:bg-quiet-hover disabled:opacity-50 disabled:hover:bg-transparent"
           aria-label="Create folder"
         >
           + New
@@ -81,7 +81,7 @@ export function MyRoomsSidebar({
 
       <div className="mt-2 space-y-1">
         {folders.length === 0 ? (
-          <div className="px-3 py-2 text-xs text-slate-500">No folders yet.</div>
+          <div className="px-3 py-2 text-xs text-ink-secondary">No folders yet.</div>
         ) : (
           folders.map((folder) => {
             const active = selectedScope === "folder" && selectedFolderId === folder.id;
@@ -98,7 +98,7 @@ export function MyRoomsSidebar({
                   <span className="flex items-center justify-between gap-2">
                     <span className="truncate">{folder.name}</span>
                     {typeof folder.room_count === "number" ? (
-                      <span className="text-[11px] text-slate-500">{folder.room_count}</span>
+                      <span className="text-[11px]">{folder.room_count}</span>
                     ) : null}
                   </span>
                 </button>
@@ -106,7 +106,7 @@ export function MyRoomsSidebar({
                   type="button"
                   onClick={() => onRenameFolder(folder)}
                   disabled={folderBusy}
-                  className="rounded-md px-2 py-1 text-[11px] text-slate-400 transition hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
+                  className="rounded-md px-2 py-1 text-[11px] text-ink-secondary transition hover:bg-quiet-hover disabled:opacity-50"
                   aria-label={`Rename folder ${folder.name}`}
                 >
                   Edit
@@ -115,7 +115,7 @@ export function MyRoomsSidebar({
                   type="button"
                   onClick={() => onDeleteFolder(folder)}
                   disabled={folderBusy}
-                  className="rounded-md px-2 py-1 text-[11px] text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
+                  className="rounded-md px-2 py-1 text-[11px] text-danger transition hover:bg-danger/10 disabled:opacity-50"
                   aria-label={`Delete folder ${folder.name}`}
                 >
                   Del

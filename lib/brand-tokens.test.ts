@@ -67,6 +67,9 @@ const THEME_COLOR_NAMES = [
   "danger-pressed",
   "danger-border",
   "focus",
+  "line",
+  "warning",
+  "warning-surface",
 ] as const;
 
 const PRESERVED_TAILWIND_FAMILIES = [
@@ -240,6 +243,17 @@ test("button interaction colours stay derived and danger stays outside the brand
     "--color-danger-border: color-mix(in srgb, var(--support-danger) 86%, var(--brand-charcoal) 14%);",
   ]);
   assert.deepEqual(declarations("--color-focus"), ["--color-focus: var(--brand-charcoal);"]);
+  assert.deepEqual(declarations("--support-warning"), ["--support-warning: #92400E;"]);
+  assert.equal(theme.includes("#92400E"), false);
+  assert.deepEqual(declarations("--color-line"), [
+    "--color-line: color-mix(in srgb, var(--brand-warm-white) 70%, var(--brand-deep-teal) 30%);",
+  ]);
+  assert.deepEqual(declarations("--color-warning"), ["--color-warning: var(--support-warning);"]);
+  assert.deepEqual(declarations("--color-warning-surface"), [
+    "--color-warning-surface: color-mix(in srgb, var(--brand-warm-white) 92%, var(--support-warning) 8%);",
+  ]);
+  assert.match(css, /Provisional My Rooms supporting tokens/);
+  assert.match(css, /decorative edge only/);
   for (const derived of ["#517176", "#36565B", "#E9EAE6", "#D9DDDA", "#AB2E51", "#8D1435"]) {
     assert.equal(css.split(derived).length - 1, 1, derived);
   }

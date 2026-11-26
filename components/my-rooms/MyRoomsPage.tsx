@@ -9,6 +9,20 @@ import { MyRoomsGrid } from "@/components/my-rooms/MyRoomsGrid";
 import { MyRoomsHeader } from "@/components/my-rooms/MyRoomsHeader";
 import { MyRoomsLayout } from "@/components/my-rooms/MyRoomsLayout";
 import { MyRoomsSidebar } from "@/components/my-rooms/MyRoomsSidebar";
+import {
+  myRoomsDialogCardClass,
+  myRoomsDialogScrimClass,
+  myRoomsFieldClass,
+  myRoomsPageClass,
+  myRoomsTokenBadgeClass,
+  myRoomsTokenEmptyClass,
+  myRoomsTokenEmptyDetailClass,
+  myRoomsTokenEmptyLinkClass,
+  myRoomsTokenLowClass,
+  myRoomsTokenLowLinkClass,
+} from "@/components/my-rooms/surface";
+import { VibodeButton, vibodeButtonClassName } from "@/components/ui/VibodeButton";
+import { VibodeIconButton } from "@/components/ui/VibodeIconButton";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
 import type {
@@ -868,9 +882,9 @@ export function MyRoomsPage() {
 
   if (authLoading) {
     return (
-      <main className="min-h-screen bg-slate-950 text-slate-100">
+      <main className={myRoomsPageClass}>
         <div className="mx-auto max-w-4xl px-4 py-10">
-          <div className="text-sm text-slate-400">Checking your session...</div>
+          <div className="text-sm text-ink-secondary">Checking your session...</div>
         </div>
       </main>
     );
@@ -878,13 +892,13 @@ export function MyRoomsPage() {
 
   if (!user) {
     return (
-      <main className="min-h-screen bg-slate-950 text-slate-100">
+      <main className={myRoomsPageClass}>
         <div className="mx-auto max-w-2xl px-4 py-16 text-center">
-          <h1 className="text-2xl font-semibold">My Rooms</h1>
-          <p className="mt-2 text-sm text-slate-400">Please sign in to view your saved rooms.</p>
+          <h1 className="text-2xl font-semibold text-ink">My Rooms</h1>
+          <p className="mt-2 text-sm text-ink-secondary">Please sign in to view your saved rooms.</p>
           <Link
             href="/login?next=/my-rooms"
-            className="mt-6 inline-flex rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 transition hover:border-slate-500 hover:text-white"
+            className={`mt-6 ${vibodeButtonClassName({ variant: "outline", size: "standard" })}`}
           >
             Go to Sign In
           </Link>
@@ -929,15 +943,30 @@ export function MyRoomsPage() {
               if (!folderFeatureReady) return;
               setCreateDialogOpen(true);
             }}
-            tokenBadge={<TokenBalanceBadge />}
+            tokenBadge={
+              <TokenBalanceBadge
+                shellClassName={myRoomsTokenBadgeClass.shell}
+                labelClassName={myRoomsTokenBadgeClass.label}
+                separatorClassName={myRoomsTokenBadgeClass.separator}
+                valueClassName={myRoomsTokenBadgeClass.value}
+              />
+            }
           />
         }
         contextBar={<MyRoomsContextBar label={contextLabel} count={visibleRooms.length} />}
         grid={
           <>
-            <TokenStatusNotice className="mt-3" showGetMoreTokensCta />
+            <TokenStatusNotice
+              className="mt-3"
+              showGetMoreTokensCta
+              emptyClassName={myRoomsTokenEmptyClass}
+              emptyLinkClassName={myRoomsTokenEmptyLinkClass}
+              emptyDetailClassName={myRoomsTokenEmptyDetailClass}
+              lowClassName={myRoomsTokenLowClass}
+              lowLinkClassName={myRoomsTokenLowLinkClass}
+            />
             {!folderFeatureReady ? (
-              <div className="mt-3 rounded-xl border border-amber-700/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              <div className="mt-3 rounded-xl border border-warning bg-warning-surface px-3 py-2 text-xs text-warning">
                 Folders are temporarily unavailable. You can still use All Rooms and Recents.
               </div>
             ) : null}
@@ -967,7 +996,7 @@ export function MyRoomsPage() {
                       }
                     }
                   }}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 outline-none transition focus:border-slate-500"
+                  className={`${myRoomsFieldClass} text-xs`}
                 >
                   <option value="all">All Rooms</option>
                   <option value="recents">Recents</option>
@@ -984,22 +1013,24 @@ export function MyRoomsPage() {
               </div>
               {selectedScope === "folder" && selectedFolder ? (
                 <div className="flex items-center gap-2">
-                  <button
+                  <VibodeButton
                     type="button"
+                    variant="outline"
+                    size="compact"
                     onClick={() => handleRenameFolderStart(selectedFolder)}
                     disabled={isRenamingFolder || isDeletingFolder}
-                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-500 hover:text-slate-100 disabled:opacity-50"
                   >
                     Rename Folder
-                  </button>
-                  <button
+                  </VibodeButton>
+                  <VibodeButton
                     type="button"
+                    variant="destructive"
+                    size="compact"
                     onClick={() => setDeleteFolder(selectedFolder)}
                     disabled={isRenamingFolder || isDeletingFolder}
-                    className="rounded-lg border border-rose-400/30 px-3 py-1.5 text-xs text-rose-200 transition hover:bg-rose-500/10 disabled:opacity-50"
                   >
                     Delete Folder
-                  </button>
+                  </VibodeButton>
                 </div>
               ) : null}
             </div>
@@ -1041,201 +1072,191 @@ export function MyRoomsPage() {
       />
 
       {renameRoom ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="rename-room-title"
-        >
-          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl shadow-slate-950/80">
-            <h2 id="rename-room-title" className="text-sm font-semibold text-slate-100">
+        <div className={myRoomsDialogScrimClass} role="dialog" aria-modal="true" aria-labelledby="rename-room-title">
+          <div className={myRoomsDialogCardClass}>
+            <h2 id="rename-room-title" className="text-sm font-semibold text-ink">
               Rename room
             </h2>
-            <label className="mt-3 block text-[11px] text-slate-400">Room title</label>
+            <label className="mt-3 block text-[11px] text-ink-secondary">Room title</label>
             <input
               autoFocus
               value={renameValue}
               onChange={(event) => setRenameValue(event.target.value)}
               maxLength={120}
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-400"
+              className={`mt-1 text-sm ${myRoomsFieldClass}`}
             />
-            {renameError ? <div className="mt-2 text-xs text-rose-300">{renameError}</div> : null}
+            {renameError ? <div className="mt-2 text-xs text-danger">{renameError}</div> : null}
             <div className="mt-5 flex items-center justify-end gap-2">
-              <button
+              <VibodeButton
                 type="button"
+                variant="outline"
+                size="standard"
                 onClick={() => {
                   if (isRenamingRoom) return;
                   setRenameRoom(null);
                   setRenameValue("");
                   setRenameError(null);
                 }}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-500 hover:text-slate-100 disabled:opacity-50"
                 disabled={isRenamingRoom}
               >
                 Cancel
-              </button>
-              <button
+              </VibodeButton>
+              <VibodeButton
                 type="button"
+                variant="primary"
+                size="standard"
                 onClick={() => {
                   void handleRenameSave();
                 }}
-                className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-900 transition hover:bg-white disabled:opacity-50"
                 disabled={isRenamingRoom || renameValue.trim().length === 0}
               >
                 {isRenamingRoom ? "Saving..." : "Save"}
-              </button>
+              </VibodeButton>
             </div>
           </div>
         </div>
       ) : null}
 
       {renameFolder ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="rename-folder-title"
-        >
-          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl shadow-slate-950/80">
-            <h2 id="rename-folder-title" className="text-sm font-semibold text-slate-100">
+        <div className={myRoomsDialogScrimClass} role="dialog" aria-modal="true" aria-labelledby="rename-folder-title">
+          <div className={myRoomsDialogCardClass}>
+            <h2 id="rename-folder-title" className="text-sm font-semibold text-ink">
               Rename folder
             </h2>
-            <label className="mt-3 block text-[11px] text-slate-400">Folder name</label>
+            <label className="mt-3 block text-[11px] text-ink-secondary">Folder name</label>
             <input
               autoFocus
               value={renameFolderValue}
               onChange={(event) => setRenameFolderValue(event.target.value)}
               maxLength={120}
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-400"
+              className={`mt-1 text-sm ${myRoomsFieldClass}`}
             />
-            {renameFolderError ? <div className="mt-2 text-xs text-rose-300">{renameFolderError}</div> : null}
+            {renameFolderError ? <div className="mt-2 text-xs text-danger">{renameFolderError}</div> : null}
             <div className="mt-5 flex items-center justify-end gap-2">
-              <button
+              <VibodeButton
                 type="button"
+                variant="outline"
+                size="standard"
                 onClick={() => {
                   if (isRenamingFolder) return;
                   setRenameFolder(null);
                   setRenameFolderValue("");
                   setRenameFolderError(null);
                 }}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-500 hover:text-slate-100 disabled:opacity-50"
                 disabled={isRenamingFolder}
               >
                 Cancel
-              </button>
-              <button
+              </VibodeButton>
+              <VibodeButton
                 type="button"
+                variant="primary"
+                size="standard"
                 onClick={() => {
                   void handleRenameFolderSave();
                 }}
-                className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-900 transition hover:bg-white disabled:opacity-50"
                 disabled={isRenamingFolder || renameFolderValue.trim().length === 0}
               >
                 {isRenamingFolder ? "Saving..." : "Save"}
-              </button>
+              </VibodeButton>
             </div>
           </div>
         </div>
       ) : null}
 
       {deleteRoom ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="delete-room-title"
-        >
-          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl shadow-slate-950/80">
-            <h2 id="delete-room-title" className="text-sm font-semibold text-slate-100">
+        <div className={myRoomsDialogScrimClass} role="dialog" aria-modal="true" aria-labelledby="delete-room-title">
+          <div className={myRoomsDialogCardClass}>
+            <h2 id="delete-room-title" className="text-sm font-semibold text-ink">
               Delete room
             </h2>
-            <p className="mt-2 text-xs text-slate-400">
+            <p className="mt-2 text-xs text-ink-secondary">
               Delete &quot;{deleteRoom.title}&quot;? This removes the room and its generated history.
             </p>
             <div className="mt-5 flex items-center justify-end gap-2">
-              <button
+              <VibodeButton
                 type="button"
+                variant="outline"
+                size="standard"
                 onClick={() => {
                   if (isDeletingRoom) return;
                   setDeleteRoom(null);
                 }}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-500 hover:text-slate-100 disabled:opacity-50"
                 disabled={isDeletingRoom}
               >
                 Cancel
-              </button>
-              <button
+              </VibodeButton>
+              <VibodeButton
                 type="button"
+                variant="destructive"
+                size="standard"
                 onClick={() => {
                   void handleDeleteRoomConfirm();
                 }}
-                className="rounded-lg bg-rose-500/90 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-rose-500 disabled:opacity-50"
                 disabled={isDeletingRoom}
               >
                 {isDeletingRoom ? "Deleting..." : "Delete room"}
-              </button>
+              </VibodeButton>
             </div>
           </div>
         </div>
       ) : null}
 
       {deleteFolder ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="delete-folder-title"
-        >
-          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl shadow-slate-950/80">
-            <h2 id="delete-folder-title" className="text-sm font-semibold text-slate-100">
+        <div className={myRoomsDialogScrimClass} role="dialog" aria-modal="true" aria-labelledby="delete-folder-title">
+          <div className={myRoomsDialogCardClass}>
+            <h2 id="delete-folder-title" className="text-sm font-semibold text-ink">
               Delete folder
             </h2>
-            <p className="mt-2 text-xs text-slate-400">
+            <p className="mt-2 text-xs text-ink-secondary">
               Delete &quot;{deleteFolder.name}&quot;? {deleteFolderRoomCount}{" "}
               {deleteFolderRoomCount === 1 ? "room will" : "rooms will"} stay in your library and be moved to
               &quot;No folder.&quot;
             </p>
             <div className="mt-5 flex items-center justify-end gap-2">
-              <button
+              <VibodeButton
                 type="button"
+                variant="outline"
+                size="standard"
                 onClick={() => {
                   if (isDeletingFolder) return;
                   setDeleteFolder(null);
                 }}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-500 hover:text-slate-100 disabled:opacity-50"
                 disabled={isDeletingFolder}
               >
                 Cancel
-              </button>
-              <button
+              </VibodeButton>
+              <VibodeButton
                 type="button"
+                variant="destructive"
+                size="standard"
                 onClick={() => {
                   void handleDeleteFolderConfirm();
                 }}
-                className="rounded-lg bg-rose-500/90 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-rose-500 disabled:opacity-50"
                 disabled={isDeletingFolder}
               >
                 {isDeletingFolder ? "Deleting..." : "Delete folder"}
-              </button>
+              </VibodeButton>
             </div>
           </div>
         </div>
       ) : null}
 
       {toast ? (
-        <div className="fixed bottom-4 right-4 z-50">
+        <div className="scheme-light fixed bottom-4 right-4 z-50">
           <div
             className={
               "max-w-sm rounded-xl border px-4 py-3 text-xs shadow-lg " +
               (toast.type === "error"
-                ? "border-rose-500/40 bg-rose-500/10 text-rose-100"
-                : "border-slate-700 bg-slate-900 text-slate-100")
+                ? "border-danger bg-danger/10 text-danger"
+                : "border-line bg-canvas text-ink")
             }
           >
             <div className="flex items-start gap-3">
               <div className="flex-1 leading-relaxed">{toast.message}</div>
-              <button
-                type="button"
+              <VibodeIconButton
+                label="Dismiss"
+                size="compact"
+                variant="tertiary"
                 onClick={() => {
                   if (toastTimeoutRef.current !== null) {
                     window.clearTimeout(toastTimeoutRef.current);
@@ -1243,11 +1264,9 @@ export function MyRoomsPage() {
                   }
                   setToast(null);
                 }}
-                className="text-slate-300 hover:text-slate-50"
-                aria-label="Dismiss"
               >
                 x
-              </button>
+              </VibodeIconButton>
             </div>
           </div>
         </div>

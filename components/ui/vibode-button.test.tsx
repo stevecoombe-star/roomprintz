@@ -106,6 +106,16 @@ function buttonClasses(markup: string): Set<string> {
   return new Set(match[1].split(/\s+/));
 }
 
+function isAuthorizedMyRoomsAdoption(relative: string): boolean {
+  const normalized = path.normalize(relative);
+  return (
+    normalized === path.normalize("components/my-rooms") ||
+    normalized.startsWith(`${path.normalize("components/my-rooms")}${path.sep}`) ||
+    normalized === path.normalize("app/my-rooms") ||
+    normalized.startsWith(`${path.normalize("app/my-rooms")}${path.sep}`)
+  );
+}
+
 function sourceFiles(directory: string): string[] {
   const found: string[] = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -274,12 +284,18 @@ test("button source uses semantic tokens and leaves product screens untouched", 
       if (relative === path.normalize("app/dev") || relative.startsWith(`${path.normalize("app/dev")}${path.sep}`)) {
         continue;
       }
+      if (isAuthorizedMyRoomsAdoption(relative)) continue;
       const text = readFileSync(file, "utf8");
       const hits = PRODUCT_REFERENCE.filter((token) => text.includes(token));
       if (hits.length > 0) violations.push(`${relative}: ${hits.join(", ")}`);
     }
   }
   assert.deepEqual(violations, []);
+  assert.equal(isAuthorizedMyRoomsAdoption("components/my-rooms/MyRoomsHeader.tsx"), true);
+  assert.equal(isAuthorizedMyRoomsAdoption("components/my-furniture/MyFurnitureHeader.tsx"), false);
+  assert.equal(isAuthorizedMyRoomsAdoption("app/editor/page.tsx"), false);
+  assert.doesNotMatch(readFileSync("components/my-furniture/MyFurnitureHeader.tsx", "utf8"), /VibodeButton|VibodeIconButton/);
+  assert.doesNotMatch(readFileSync("app/editor/page.tsx", "utf8"), /VibodeButton|VibodeIconButton/);
 
   const css = readFileSync("app/globals.css", "utf8");
   assert.match(css, /--vibode-viewport-frame:\s*#38BDF8;/);

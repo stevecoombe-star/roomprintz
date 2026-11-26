@@ -19,6 +19,14 @@ const STUDIO_FILES = [
   "app/dev/design-studio/design-studio.tsx",
 ];
 
+function isAuthorizedMyRoomsAdoption(relative: string): boolean {
+  const normalized = path.normalize(relative);
+  return (
+    normalized.startsWith(`${path.normalize("components/my-rooms")}${path.sep}`) ||
+    normalized.startsWith(`${path.normalize("app/my-rooms")}${path.sep}`)
+  );
+}
+
 const ALLOWED_BUTTON_IMPORTS = new Set([
   path.normalize("components/ui/VibodeButton.tsx"),
   path.normalize("components/ui/VibodeIconButton.tsx"),
@@ -148,7 +156,7 @@ test("the gate stays on the server and product screens stay unchanged", () => {
   for (const root of ["app", "components"]) {
     for (const file of sourceFiles(root)) {
       const relative = path.normalize(path.relative(process.cwd(), file));
-      if (ALLOWED_BUTTON_IMPORTS.has(relative)) continue;
+      if (ALLOWED_BUTTON_IMPORTS.has(relative) || isAuthorizedMyRoomsAdoption(relative)) continue;
       const text = readFileSync(file, "utf8");
       if (/\bVibodeButton\b|\bVibodeIconButton\b|<DesignStudio\b|design-studio/.test(text)) {
         violations.push(relative);
@@ -156,4 +164,7 @@ test("the gate stays on the server and product screens stay unchanged", () => {
     }
   }
   assert.deepEqual(violations, []);
+  assert.equal(isAuthorizedMyRoomsAdoption("components/my-rooms/MyRoomsHeader.tsx"), true);
+  assert.equal(isAuthorizedMyRoomsAdoption("components/my-furniture/MyFurniturePageClient.tsx"), false);
+  assert.equal(isAuthorizedMyRoomsAdoption("app/editor/page.tsx"), false);
 });

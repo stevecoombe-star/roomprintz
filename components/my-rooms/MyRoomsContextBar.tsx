@@ -7,9 +7,9 @@ type MyRoomsContextBarProps = {
 
 export function MyRoomsContextBar({ label, count }: MyRoomsContextBarProps) {
   return (
-    <div className="mt-3 flex items-center justify-between rounded-xl border border-slate-800/80 bg-slate-900/35 px-3 py-2">
-      <div className="truncate text-xs text-slate-300">{label}</div>
-      <div className="shrink-0 text-[11px] text-slate-500">
+    <div className="mt-3 flex items-center justify-between rounded-xl border border-line bg-canvas-warm px-3 py-2">
+      <div className="truncate text-xs text-ink">{label}</div>
+      <div className="shrink-0 text-[11px] text-ink-secondary">
         {count} {count === 1 ? "room" : "rooms"}
       </div>
     </div>
