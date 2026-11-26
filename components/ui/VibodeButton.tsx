@@ -12,8 +12,10 @@ import type { ComponentProps } from "react";
  * - large is 44px and is the size for a standalone primary action.
  *
  * The primary Deep Teal border is provisional. It exists so Sand Gold can
- * keep a visible edge on White. Selected state adds an inset bar in the
- * current text colour and sets aria-pressed only when `selected` is passed.
+ * keep a visible edge on White. Selected state sets aria-pressed only when
+ * `selected` is passed. Its non-colour cue is an underline on a labelled
+ * button, or a short mark under the glyph on an icon button. Neither cue
+ * changes the control's size or runs along its boundary.
  * Destructive state uses a 2px border as its non-colour shape cue.
  *
  * The focus ring uses Charcoal and is intended for a light canvas. These
@@ -101,7 +103,21 @@ const ICON_SIZE_CLASS: Record<VibodeButtonSize, string> = {
   large: "size-11 px-0",
 };
 
-const SELECTED_CLASS = "shadow-[inset_0_-2px_0_0_currentColor]";
+const SELECTED_TEXT_CLASS = "underline decoration-2 underline-offset-[3px]";
+
+const SELECTED_ICON_CLASS = [
+  "relative",
+  "after:pointer-events-none",
+  "after:absolute",
+  "after:top-[calc(50%+0.5em+2px)]",
+  "after:left-1/2",
+  "after:h-[2px]",
+  "after:w-[14px]",
+  "after:-translate-x-1/2",
+  "after:rounded-full",
+  "after:bg-current",
+  "after:content-['']",
+].join(" ");
 
 export function vibodeButtonClassName({
   variant = "primary",
@@ -120,7 +136,7 @@ export function vibodeButtonClassName({
     BASE_CLASS,
     VARIANT_CLASS[variant],
     iconOnly ? ICON_SIZE_CLASS[size] : SIZE_CLASS[size],
-    selected ? SELECTED_CLASS : "",
+    selected ? (iconOnly ? SELECTED_ICON_CLASS : SELECTED_TEXT_CLASS) : "",
     className,
   ]
     .filter(Boolean)

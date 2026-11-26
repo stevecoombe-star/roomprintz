@@ -186,19 +186,35 @@ test("selected state is opt-in and is not communicated by colour alone", () => {
 
   const on = render(createElement(VibodeButton, { selected: true }, "Saved"));
   assert.match(on, /aria-pressed="true"/);
-  assert.equal(
-    buttonClasses(on).has("shadow-[inset_0_-2px_0_0_currentColor]"),
-    true,
-  );
+  const onClasses = buttonClasses(on);
+  for (const token of ["underline", "decoration-2", "underline-offset-[3px]"]) {
+    assert.equal(onClasses.has(token), true, token);
+  }
+  assert.equal(onClasses.has("shadow-[inset_0_-2px_0_0_currentColor]"), false);
+  assert.equal([...onClasses].some((name) => name.startsWith("after:")), false);
 
   const off = render(createElement(VibodeButton, { selected: false }, "Save"));
   assert.match(off, /aria-pressed="false"/);
-  assert.equal([...buttonClasses(off)].some((name) => name.startsWith("shadow")), false);
+  assert.equal(buttonClasses(off).has("underline"), false);
 
   const tool = buttonClasses(render(createElement(VibodeButton, { variant: "tool", selected: true }, "Move")));
   assert.equal(tool.has("bg-tool"), true);
   assert.equal(tool.has("bg-action"), false);
-  assert.equal(tool.has("shadow-[inset_0_-2px_0_0_currentColor]"), true);
+  assert.equal(tool.has("underline"), true);
+  assert.equal(tool.has("shadow-[inset_0_-2px_0_0_currentColor]"), false);
+
+  const icon = buttonClasses(
+    render(
+      <VibodeIconButton label="Move" selected>
+        <svg />
+      </VibodeIconButton>,
+    ),
+  );
+  assert.equal(icon.has("underline"), false);
+  assert.equal(icon.has("after:bg-current"), true);
+  assert.equal(icon.has("after:top-[calc(50%+0.5em+2px)]"), true);
+  assert.equal(icon.has("size-10"), true);
+  assert.equal(icon.has("shadow-[inset_0_-2px_0_0_currentColor]"), false);
 });
 
 test("icon buttons require an accessible name and hide the icon", () => {
